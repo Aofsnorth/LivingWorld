@@ -12,9 +12,20 @@ import (
 
 // Metadata Constants to avoid hardcoded magic numbers
 const (
-	// Metadata Indexes
-	MetaIndexFlags = 0
-	MetaIndexPose  = 6
+	// Metadata Indexes.
+	//
+	// These follow the Minecraft Java Edition 26.1 (protocol 775) entity-data
+	// layout. In 26.1 an Avatar class was inserted between LivingEntity and
+	// Player, so the player-section indices differ from older versions:
+	//   index 15 = Main Hand (Byte)
+	//   index 16 = Displayed Skin Parts (Byte)
+	//   index 17 = Additional Hearts / absorption (Float)  <- NOT skin parts
+	// Sending skin parts at the old index 17 makes a 26.1 client crash with
+	// "Invalid entity data item type ... old=0.0(Float), new=...(Byte)".
+	MetaIndexFlags     = 0
+	MetaIndexPose      = 6
+	MetaIndexMainHand  = 15
+	MetaIndexSkinParts = 16
 
 	// Metadata Types
 	MetaTypeByte = 0

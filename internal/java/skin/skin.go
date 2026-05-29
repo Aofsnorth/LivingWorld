@@ -78,21 +78,21 @@ func DownloadAndDecodeSkin(url string) ([]byte, error) {
 // FetchMojangSkin looks up a player's skin via Mojang API by username.
 // This is needed when the server runs in offline mode and the client doesn't
 // provide textures profile properties.
-func FetchMojangSkin(username string) (skinURL string, model string) {
+func FetchMojangSkin(username string) (skinURL, model, value, signature string) {
 	// Step 1: Get the Mojang UUID for this username.
 	resp, err := http.Get("https://api.mojang.com/users/profiles/minecraft/" + username)
 	if err != nil {
 		log.Printf("[Java] Mojang API lookup failed for %s: %v", username, err)
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		log.Printf("[Java] Mojang API returned %d for %s", resp.StatusCode, username)
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	var profile struct {
 		ID   string `json:"id"`
@@ -100,37 +100,39 @@ func FetchMojangSkin(username string) (skinURL string, model string) {
 	}
 	if err := json.Unmarshal(body, &profile); err != nil || profile.ID == "" {
 		log.Printf("[Java] Mojang profile parse failed for %s: %v", username, err)
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 
 	// Step 2: Get the session profile with textures.
 	resp2, err := http.Get("https://sessionserver.mojang.com/session/minecraft/profile/" + profile.ID)
 	if err != nil {
 		log.Printf("[Java] Mojang session lookup failed for %s: %v", username, err)
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != 200 {
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	body2, err := io.ReadAll(resp2.Body)
 	if err != nil {
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 	var sessionProfile struct {
 		Properties []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
+			Name      string `json:"name"`
+			Value     string `json:"value"`
+			Signature string `json:"signature"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(body2, &sessionProfile); err != nil {
-		return "", "wide"
+		return "", "wide", "", ""
 	}
 
 	for _, prop := range sessionProfile.Properties {
 		if strings.EqualFold(prop.Name, "textures") {
-			return ParseJavaSkinProperty(prop.Value)
+			u, m := ParseJavaSkinProperty(prop.Value)
+			return u, m, prop.Value, prop.Signature
 		}
 	}
-	return "", "wide"
+	return "", "wide", "", ""
 }

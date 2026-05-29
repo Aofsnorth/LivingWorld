@@ -7,18 +7,77 @@ import (
 	"livingworld/internal/world"
 )
 
+// Controller is implemented by a protocol session so the shared player model can
+// act on a connected client (send chat, disconnect, ...) without the player
+// package depending on any protocol code.
+type Controller interface {
+	SendMessage(msg string)
+	Kick(reason string)
+}
+
 type Manager struct {
 	mu      sync.RWMutex
 	players map[uuid.UUID]*Player
 
 	subMu       sync.RWMutex
 	subscribers map[string]chan Event
+
+	ctrlMu      sync.RWMutex
+	controllers map[uuid.UUID]Controller
 }
 
 func NewManager() *Manager {
 	return &Manager{
 		players:     make(map[uuid.UUID]*Player),
 		subscribers: make(map[string]chan Event),
+		controllers: make(map[uuid.UUID]Controller),
+	}
+}
+
+// SetController registers the live session that can act on a player.
+func (m *Manager) SetController(id uuid.UUID, c Controller) {
+	m.ctrlMu.Lock()
+	m.controllers[id] = c
+	m.ctrlMu.Unlock()
+}
+
+// RemoveController drops a player's session (on disconnect).
+func (m *Manager) RemoveController(id uuid.UUID) {
+	m.ctrlMu.Lock()
+	delete(m.controllers, id)
+	m.ctrlMu.Unlock()
+}
+
+// Message sends a chat message to a single player if connected.
+func (m *Manager) Message(id uuid.UUID, msg string) {
+	m.ctrlMu.RLock()
+	c := m.controllers[id]
+	m.ctrlMu.RUnlock()
+	if c != nil {
+		c.SendMessage(msg)
+	}
+}
+
+// Broadcast sends a chat message to every connected player.
+func (m *Manager) Broadcast(msg string) {
+	m.ctrlMu.RLock()
+	ctrls := make([]Controller, 0, len(m.controllers))
+	for _, c := range m.controllers {
+		ctrls = append(ctrls, c)
+	}
+	m.ctrlMu.RUnlock()
+	for _, c := range ctrls {
+		c.SendMessage(msg)
+	}
+}
+
+// Kick disconnects a player if connected.
+func (m *Manager) Kick(id uuid.UUID, reason string) {
+	m.ctrlMu.RLock()
+	c := m.controllers[id]
+	m.ctrlMu.RUnlock()
+	if c != nil {
+		c.Kick(reason)
 	}
 }
 
@@ -73,11 +132,7 @@ func (m *Manager) PlayerCount() int {
 }
 
 func (m *Manager) BroadcastChat(message string) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, p := range m.players {
-		p.SendMessage(message)
-	}
+	m.Broadcast(message)
 }
 
 func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float32, onGround bool) {
@@ -116,6 +171,22 @@ func (m *Manager) UpdateSneak(id uuid.UUID, sneaking bool) {
 	m.mu.Unlock()
 	if changed && p != nil {
 		m.publish(Event{Type: EventSneak, Player: p.Snapshot()})
+	}
+}
+
+func (m *Manager) UpdateSkinParts(id uuid.UUID, parts byte) {
+	m.mu.Lock()
+	p := m.players[id]
+	changed := false
+	if p != nil {
+		if p.SkinParts != parts {
+			p.SkinParts = parts
+			changed = true
+		}
+	}
+	m.mu.Unlock()
+	if changed && p != nil {
+		m.publish(Event{Type: EventSkin, Player: p.Snapshot()})
 	}
 }
 
@@ -167,6 +238,7 @@ const (
 	EventLeave EventType = "leave"
 	EventSwing EventType = "swing"
 	EventSneak EventType = "sneak"
+	EventSkin  EventType = "skin"
 )
 
 type Event struct {
@@ -200,6 +272,8 @@ type PlayerSnapshot struct {
 	ProfileProperties []ProfileProperty
 	BedrockSkinURL    string
 	Skin              *SkinData
+	SkinParts         byte
+	Creative          bool
 }
 
 type Player struct {
@@ -223,6 +297,7 @@ type Player struct {
 	Skin              *SkinData
 	ProfileProperties []ProfileProperty
 	BedrockSkinURL    string
+	SkinParts         byte
 }
 
 func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {
@@ -237,6 +312,7 @@ func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {
 		Position:   world.Position{X: 0, Y: 64, Z: 0},
 		Rotation:   world.Rotation{Pitch: 0, Yaw: 0},
 		OnGround:   true,
+		SkinParts:  0x7F,
 	}
 }
 
@@ -253,6 +329,8 @@ func (p *Player) Snapshot() PlayerSnapshot {
 		ProfileProperties: append([]ProfileProperty(nil), p.ProfileProperties...),
 		BedrockSkinURL:    p.BedrockSkinURL,
 		Skin:              p.Skin,
+		SkinParts:         p.SkinParts,
+		Creative:          p.Creative,
 	}
 }
 

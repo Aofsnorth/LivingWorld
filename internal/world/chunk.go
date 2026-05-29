@@ -1,5 +1,7 @@
 package world
 
+import "sync/atomic"
+
 const (
 	ChunkSize        = 16
 	SectionsPerChunk = 24
@@ -12,7 +14,17 @@ type Chunk struct {
 	heightMap []int32
 	biomes    []byte
 	lightData *LightData
+	dirty     atomic.Bool
 }
+
+// Dirty reports whether the chunk has unsaved block changes.
+func (c *Chunk) Dirty() bool { return c.dirty.Load() }
+
+// MarkDirty flags the chunk as having unsaved changes.
+func (c *Chunk) MarkDirty() { c.dirty.Store(true) }
+
+// ClearDirty resets the dirty flag (called after a successful save).
+func (c *Chunk) ClearDirty() { c.dirty.Store(false) }
 
 func NewChunk() *Chunk {
 	sections := make([]ChunkSection, SectionsPerChunk)
@@ -50,6 +62,7 @@ func (c *Chunk) SetBlock(x, y, z int, block Block) {
 		return
 	}
 	c.sections[chunkY].SetBlock(x, y&15, z, block)
+	c.dirty.Store(true)
 }
 
 type ChunkSection struct {
@@ -74,7 +87,7 @@ func (s *ChunkSection) IsEmpty() bool { return s.nonAirBlocks == 0 }
 
 func (s *ChunkSection) GetBlock(x, y, z int) Block {
 	idx := (y << 8) | (z << 4) | x
-	return GlobalBlockRegistry.Get(s.blocks[idx])
+	return BlockByID(s.blocks[idx])
 }
 
 func (s *ChunkSection) SetBlock(x, y, z int, block Block) {

@@ -1,8 +1,11 @@
 package world
 
 import (
+	"log"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type ChunkPos struct {
@@ -26,6 +29,7 @@ type World struct {
 	chunks    map[ChunkPos]*Chunk
 	players   map[uint64]*Player
 	generator ChunkGenerator
+	storage   Storage
 	mu        sync.RWMutex
 	dimension Dimension
 	time      int64
@@ -38,7 +42,57 @@ func NewWorld(name string) *World {
 		chunks:    make(map[ChunkPos]*Chunk),
 		players:   make(map[uint64]*Player),
 		dimension: DimensionOverworld,
+		storage:   NopStorage{},
 	}
+}
+
+// SetStorage attaches a persistence backend to the world. Pass NopStorage{} to
+// disable persistence.
+func (w *World) SetStorage(s Storage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if s == nil {
+		s = NopStorage{}
+	}
+	w.storage = s
+}
+
+// Save persists every chunk with unsaved changes. Safe to call concurrently.
+func (w *World) Save() error {
+	w.mu.RLock()
+	type entry struct {
+		pos ChunkPos
+		c   *Chunk
+	}
+	var dirty []entry
+	storage := w.storage
+	for pos, c := range w.chunks {
+		if c.Dirty() {
+			dirty = append(dirty, entry{pos, c})
+		}
+	}
+	w.mu.RUnlock()
+
+	if storage == nil {
+		return nil
+	}
+	var firstErr error
+	saved := 0
+	for _, e := range dirty {
+		if err := storage.SaveChunk(e.pos.X, e.pos.Z, e.c); err != nil {
+			log.Printf("[World %s] save chunk (%d,%d) failed: %v", w.name, e.pos.X, e.pos.Z, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		e.c.ClearDirty()
+		saved++
+	}
+	if saved > 0 {
+		log.Printf("[World %s] saved %d chunk(s)", w.name, saved)
+	}
+	return firstErr
 }
 
 func (w *World) Name() string                  { return w.name }
@@ -57,8 +111,9 @@ func (w *World) SetChunk(cx, cz int, c *Chunk) {
 }
 
 func (w *World) LoadChunk(cx, cz int) *Chunk {
+	pos := ChunkPos{cx, cz}
 	w.mu.RLock()
-	chunk := w.chunks[ChunkPos{cx, cz}]
+	chunk := w.chunks[pos]
 	w.mu.RUnlock()
 	if chunk != nil {
 		return chunk
@@ -66,12 +121,27 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Re-check under the write lock: another goroutine may have loaded it.
+	if chunk = w.chunks[pos]; chunk != nil {
+		return chunk
+	}
+
+	// Prefer the saved chunk (player edits) over regeneration.
+	if w.storage != nil {
+		if c, ok, err := w.storage.LoadChunk(cx, cz); err != nil {
+			log.Printf("[World %s] load chunk (%d,%d) failed, regenerating: %v", w.name, cx, cz, err)
+		} else if ok {
+			w.chunks[pos] = c
+			return c
+		}
+	}
+
 	if w.generator != nil {
 		chunk = w.generator.Generate(cx, cz)
 	} else {
 		chunk = NewChunk()
 	}
-	w.chunks[ChunkPos{cx, cz}] = chunk
+	w.chunks[pos] = chunk
 	return chunk
 }
 
@@ -88,8 +158,10 @@ func (w *World) SetBlock(x, y, z int, block Block) {
 }
 
 func (w *World) GetBlock(x, y, z int) Block {
-	chunkX, chunkZ := x>>4, z>>4
-	chunk := w.GetChunk(chunkX, chunkZ)
+	// Load-on-access: a block can't be read without its chunk being present, so
+	// fall through to disk/generation rather than reporting air for an unloaded
+	// (but possibly edited and persisted) chunk.
+	chunk := w.LoadChunk(x>>4, z>>4)
 	if chunk == nil {
 		return BlockAir{}
 	}
@@ -129,6 +201,7 @@ type Manager struct {
 	worlds       map[string]*World
 	defaultWorld *World
 	blockEvents  *BlockEventBus
+	autosaveStop chan struct{}
 }
 
 func NewManager() *Manager {
@@ -190,4 +263,68 @@ func (m *Manager) PublishBlockUpdate(source BlockUpdateSource, x, y, z int, bloc
 func (m *Manager) SetBlockAndPublish(source BlockUpdateSource, x, y, z int, block Block) {
 	m.GetDefaultWorld().SetBlock(x, y, z, block)
 	m.PublishBlockUpdate(source, x, y, z, block.ID())
+}
+
+// EnablePersistence attaches a DiskStorage to every world, rooted at
+// <baseDir>/<worldName>. Returns the first error encountered creating a backend.
+func (m *Manager) EnablePersistence(baseDir string) error {
+	for _, w := range m.GetAllWorlds() {
+		store, err := NewDiskStorage(filepath.Join(baseDir, w.Name()))
+		if err != nil {
+			return err
+		}
+		w.SetStorage(store)
+	}
+	return nil
+}
+
+// Save persists all dirty chunks across every world.
+func (m *Manager) Save() error {
+	var firstErr error
+	for _, w := range m.GetAllWorlds() {
+		if err := w.Save(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// StartAutosave periodically saves all worlds until Close is called. A non-positive
+// interval disables autosave.
+func (m *Manager) StartAutosave(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	m.mu.Lock()
+	if m.autosaveStop != nil {
+		m.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	m.autosaveStop = stop
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				_ = m.Save()
+			}
+		}
+	}()
+}
+
+// Close stops autosave and performs a final save of all worlds.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	if m.autosaveStop != nil {
+		close(m.autosaveStop)
+		m.autosaveStop = nil
+	}
+	m.mu.Unlock()
+	return m.Save()
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -46,8 +47,24 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 	if s == nil || s.addr == "" || width <= 0 || height <= 0 || len(rgba) < width*height*4 {
 		return ""
 	}
-	img := image.NewNRGBA(image.Rect(0, 0, width, height))
-	copy(img.Pix, rgba[:width*height*4])
+	var img *image.NRGBA
+	if width > 64 || height > 64 {
+		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
+		scaleX := width / 64
+		scaleY := height / 64
+		if scaleX == 0 { scaleX = 1 }
+		if scaleY == 0 { scaleY = 1 }
+		for y := 0; y < 64 && y*scaleY < height; y++ {
+			for x := 0; x < 64 && x*scaleX < width; x++ {
+				srcIdx := ((y*scaleY)*width + (x*scaleX)) * 4
+				dstIdx := (y*64 + x) * 4
+				copy(img.Pix[dstIdx:dstIdx+4], rgba[srcIdx:srcIdx+4])
+			}
+		}
+	} else {
+		img = image.NewNRGBA(image.Rect(0, 0, width, height))
+		copy(img.Pix, rgba[:width*height*4])
+	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
 		log.Printf("[SkinBridge] encode skin %s failed: %v", id, err)
@@ -62,7 +79,7 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 
 func TextureProperty(profileID uuid.UUID, profileName, skinURL string) (name, value string) {
 	payload := texturePayload{
-		Timestamp:   0,
+		Timestamp:   time.Now().UnixMilli(),
 		ProfileID:   strings.ReplaceAll(profileID.String(), "-", ""),
 		ProfileName: profileName,
 		Textures:    textureMap{Skin: textureURL{URL: skinURL}},

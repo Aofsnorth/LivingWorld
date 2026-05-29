@@ -10,12 +10,9 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-var (
-	airStateID     = block.StateID(block.ToStateID[block.Air{}])
-	bedrockStateID = block.StateID(block.ToStateID[block.Bedrock{}])
-	dirtStateID    = block.StateID(block.ToStateID[block.Dirt{}])
-	grassStateID   = block.StateID(block.ToStateID[block.GrassBlock{}])
-)
+// airStateID is the global state ID of air (0). LivingWorld's canonical world
+// block IDs ARE Java global state IDs, so no per-block translation is needed.
+var airStateID = block.StateID(block.ToStateID[block.Air{}])
 
 // ExportConvertToLevelChunk is exported for testing.
 func ExportConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
@@ -58,17 +55,8 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 						continue
 					}
 
-					var stateID block.StateID
-					switch b.ID() {
-					case 1:
-						stateID = bedrockStateID
-					case 2:
-						stateID = dirtStateID
-					case 3:
-						stateID = grassStateID
-					default:
-						stateID = airStateID
-					}
+					// Canonical world IDs are Java global state IDs: use directly.
+					stateID := block.StateID(b.ID())
 
 					if stateID != airStateID {
 						idx := (ly << 8) | (lz << 4) | lx

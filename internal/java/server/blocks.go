@@ -1,6 +1,7 @@
 package server
 
 import (
+	"livingworld/plugin"
 	"livingworld/internal/world"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -23,6 +24,19 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 	// survival break timer completes. Breaking on start made survival mining
 	// instant. Until server-authoritative hardness exists, only accept finish.
 	if status == 2 { // finish digging
+		current := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
+		ev := &plugin.BlockBreakEvent{
+			BaseEvent:  plugin.BaseEvent{Type_: plugin.EventBlockBreak},
+			PlayerName: s.Username(),
+			X:          pos.X, Y: pos.Y, Z: pos.Z,
+			BlockID: current.ID(),
+		}
+		if plugin.Manager().EmitCancellable(ev) {
+			// A plugin vetoed the break: re-affirm the block to the client so its
+			// optimistic removal is rolled back.
+			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(current.ID())))
+			return
+		}
 		s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, pos.X, pos.Y, pos.Z, world.BlockAir{})
 	}
 }
@@ -80,8 +94,7 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	case 5:
 		x++
 	}
-	blockID := javaStateIDToLivingWorldBlockID(int32(stateID))
-	s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, x, y, z, world.PlaceholderBlock{IDValue: blockID})
+	s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, x, y, z, world.BlockByID(int32(stateID)))
 }
 
 func (s *PlayerSession) getBlockStateForPlacement() block.StateID {

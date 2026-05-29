@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"livingworld/internal/player"
-	"livingworld/internal/plugin"
+	"livingworld/plugin"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	gmnet "github.com/Tnze/go-mc/net"
@@ -38,6 +38,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	plugin.Manager().Emit(&plugin.PlayerJoinEvent{
 		BaseEvent:  plugin.BaseEvent{Type_: plugin.EventPlayerJoin},
 		PlayerName: name,
+		UUID:       id.String(),
 	})
 
 	log.Printf("[Java] Calling sendInitialPlayPackets for %s", name)
@@ -59,9 +60,10 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	// In offline mode, the client doesn't send textures. Fall back to Mojang
 	// API lookup by username so the player's official skin can still be shown
 	// to Bedrock viewers.
+	var value, signature string
 	if skinURL == "" {
 		log.Printf("[Java] No textures property from client for %s, trying Mojang API", name)
-		skinURL, model = skin.FetchMojangSkin(name)
+		skinURL, model, value, signature = skin.FetchMojangSkin(name)
 	}
 
 	var skinData []byte
@@ -83,11 +85,29 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	pl.Rotation.Pitch, pl.Rotation.Yaw = session.Pitch, session.Yaw
 	pl.OnGround = true
 	pl.ProfileProperties = javaProfileProperties(properties)
+	if len(pl.ProfileProperties) == 0 && value != "" {
+		pl.ProfileProperties = []player.ProfileProperty{{
+			Name:      "textures",
+			Value:     value,
+			Signature: signature,
+		}}
+	}
 	if len(skinData) > 0 {
 		pl.Skin = player.NewSkinData("java_"+id.String(), model, skinData)
 	}
 	j.pm.AddPlayer(pl)
 	defer j.pm.RemovePlayer(id)
+
+	// Register this session so server/plugin code can message or kick the player.
+	j.pm.SetController(id, session)
+	defer j.pm.RemoveController(id)
+	
+	// Send the player info to themselves so they see their own skin in inventory/third-person.
+	_ = session.sendPlayerInfoAdd(pl.Snapshot())
+
+	// Send initial metadata to themselves (including skin parts)
+	_ = session.version.UpdateForeignMetadata(session, pl.Snapshot())
+
 	session.spawnExistingForeignPlayers()
 
 	done := make(chan struct{})

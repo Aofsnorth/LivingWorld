@@ -12,8 +12,9 @@ const (
 )
 
 // BlockUpdateEvent is emitted after a block changes in the shared world model.
-// BlockID is LivingWorld's canonical block ID (0=air, 1=bedrock, 2=dirt,
-// 3=grass, 4=stone for now).
+// BlockID is LivingWorld's canonical block ID, which equals the vanilla Java
+// global block-state ID (see registry.go). Java uses it directly; Bedrock maps
+// it through the block name.
 type BlockUpdateEvent struct {
 	Source  BlockUpdateSource
 	X, Y, Z int

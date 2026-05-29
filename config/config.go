@@ -23,6 +23,14 @@ type WorldConfig struct {
 	Type  string `yaml:"type"` // superflat
 	Seed  int64  `yaml:"seed"`
 	Spawn SpawnConfig `yaml:"spawn"`
+
+	// Persistence controls saving the world to disk. Directory is the base path
+	// under which each world gets its own subfolder; AutosaveSeconds is the
+	// periodic save interval (0 disables autosave but a final save still runs on
+	// shutdown).
+	Persistence     bool   `yaml:"persistence"`
+	Directory       string `yaml:"directory"`
+	AutosaveSeconds int    `yaml:"autosaveSeconds"`
 }
 
 type SpawnConfig struct {
@@ -56,9 +64,12 @@ func Default() *Config {
 		MOTD:       "A Minecraft Server",
 		PluginsDir: "./plugins",
 		World: WorldConfig{
-			Type: "superflat",
-			Seed: 12345,
-			Spawn: SpawnConfig{X: 0, Y: 4, Z: 0, Yaw: 0, Pitch: 0},
+			Type:            "superflat",
+			Seed:            12345,
+			Spawn:           SpawnConfig{X: 0, Y: 4, Z: 0, Yaw: 0, Pitch: 0},
+			Persistence:     true,
+			Directory:       "worlds",
+			AutosaveSeconds: 300,
 		},
 		Java: JavaConfig{
 			Bind:               "0.0.0.0",

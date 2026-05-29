@@ -4,43 +4,15 @@ import (
 	"livingworld/internal/world"
 
 	"github.com/Tnze/go-mc/data/packetid"
-	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-func livingWorldBlockIDToJavaStateID(id int32) int32 {
-	switch id {
-	case 0:
-		return int32(block.ToStateID[block.Air{}])
-	case 1:
-		return int32(block.ToStateID[block.Bedrock{}])
-	case 2:
-		return int32(block.ToStateID[block.Dirt{}])
-	case 3:
-		return int32(block.ToStateID[block.GrassBlock{}])
-	case 4:
-		return int32(block.ToStateID[block.Stone{}])
-	default:
-		return int32(block.ToStateID[block.Air{}])
-	}
-}
+// LivingWorld canonical block IDs ARE Java global state IDs, so translation in
+// both directions is the identity function. These wrappers are kept for call-site
+// clarity and so the mapping has an obvious single point of change.
+func livingWorldBlockIDToJavaStateID(id int32) int32 { return id }
 
-func javaStateIDToLivingWorldBlockID(stateID int32) int32 {
-	switch block.StateID(stateID) {
-	case block.ToStateID[block.Air{}]:
-		return 0
-	case block.ToStateID[block.Bedrock{}]:
-		return 1
-	case block.ToStateID[block.Dirt{}]:
-		return 2
-	case block.ToStateID[block.GrassBlock{}]:
-		return 3
-	case block.ToStateID[block.Stone{}]:
-		return 4
-	default:
-		return 4
-	}
-}
+func javaStateIDToLivingWorldBlockID(stateID int32) int32 { return stateID }
 
 func (j *javaBridge) startBlockEventLoop() {
 	ch := j.wm.SubscribeBlockUpdates("java-bridge", 256)

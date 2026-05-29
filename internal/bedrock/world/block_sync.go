@@ -1,43 +1,36 @@
 package world
 
 import (
+	lwworld "livingworld/internal/world"
+
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 )
 
-func LivingWorldBlockIDToBedrockRID(id int32) uint32 {
-	switch id {
-	case 0:
-		return BlockRID("minecraft:air")
-	case 1:
-		return BlockRID("minecraft:bedrock")
-	case 2:
-		return BlockRID("minecraft:dirt")
-	case 3:
-		return BlockRID("minecraft:grass_block", map[string]any{"minecraft:snowy_bit": false})
-	case 4:
-		return BlockRID("minecraft:stone")
-	default:
-		return BlockRID("minecraft:air")
-	}
+// bedrockPropOverrides supplies the Bedrock block-state properties required for
+// blocks that will not resolve from their name alone (Bedrock hashes name+props).
+// Most blocks resolve by name; only the property-sensitive ones need an entry.
+// Java->Bedrock property fidelity for stateful blocks (stairs, slabs, logs...) is
+// a known limitation and can be expanded here as needed.
+var bedrockPropOverrides = map[string]map[string]any{
+	"minecraft:grass_block": {"minecraft:snowy_bit": false},
 }
 
+// LivingWorldBlockIDToBedrockRID maps a canonical world block ID (= Java global
+// state ID) to a Bedrock runtime ID via the block's namespaced name.
+func LivingWorldBlockIDToBedrockRID(id int32) uint32 {
+	name := lwworld.StateName(id)
+	if props, ok := bedrockPropOverrides[name]; ok {
+		return BlockRID(name, props)
+	}
+	return BlockRID(name)
+}
+
+// BedrockRIDToLivingWorldBlockID maps a Bedrock runtime ID back to a canonical
+// world block ID by resolving its namespaced name in the global palette.
 func BedrockRIDToLivingWorldBlockID(rid uint32) int32 {
 	name, _, ok := dfchunk.RuntimeIDToState(rid)
 	if !ok {
-		return 0
+		return lwworld.AirID
 	}
-	switch name {
-	case "minecraft:air":
-		return 0
-	case "minecraft:bedrock":
-		return 1
-	case "minecraft:dirt":
-		return 2
-	case "minecraft:grass_block":
-		return 3
-	case "minecraft:stone":
-		return 4
-	default:
-		return 4
-	}
+	return lwworld.StateID(name)
 }

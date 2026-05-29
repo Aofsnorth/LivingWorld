@@ -130,7 +130,7 @@ func (h *Handler775) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) erro
 	return nil
 }
 
-const javaPlayerInfoAddPlayerBit = 0x01
+const javaPlayerInfoAddPlayerBit = 0x01 | 0x04 | 0x08
 
 func (h *Handler775) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error {
 	var buf bytes.Buffer
@@ -157,6 +157,17 @@ func (h *Handler775) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 			_, _ = pk.Boolean(false).WriteTo(&buf)
 		}
 	}
+	
+	// Bit 2: UPDATE_GAME_MODE
+	var gameMode int32 = 0 // Survival
+	if p.Creative {
+		gameMode = 1 // Creative
+	}
+	_, _ = pk.VarInt(gameMode).WriteTo(&buf)
+
+	// Bit 3: UPDATE_LISTED
+	_, _ = pk.Boolean(true).WriteTo(&buf)
+
 	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoUpdate), Data: buf.Bytes()})
 }
 
@@ -189,9 +200,16 @@ func (h *Handler775) SwingForeignAvatar(s Session, p player.PlayerSnapshot) erro
 }
 
 func (h *Handler775) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error {
-	if p.EntityRuntimeID == uint64(s.EntityID()) {
-		return nil
-	}
+	return s.SendPacket(pk.Packet{
+		ID:   int32(packetid.ClientboundGameSetEntityData),
+		Data: encodePlayerMetadata(p),
+	})
+}
+
+// encodePlayerMetadata builds the body of a ClientboundSetEntityData packet for a
+// player avatar following the MC 26.1 (protocol 775) entity-data layout. Kept as a
+// pure function (no Session) so the wire layout can be unit-tested.
+func encodePlayerMetadata(p player.PlayerSnapshot) []byte {
 	entityID := int32(p.EntityRuntimeID)
 	var buf bytes.Buffer
 	_, _ = pk.VarInt(entityID).WriteTo(&buf)
@@ -214,13 +232,17 @@ func (h *Handler775) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) e
 	_, _ = pk.VarInt(MetaTypePose).WriteTo(&buf)
 	_, _ = pk.VarInt(pose).WriteTo(&buf)
 
+	// Index 16: Displayed Skin Parts (Byte). In MC 26.1 the Avatar class shifted
+	// this down from the old index 17 (which is now the absorption Float — sending
+	// a Byte there crashes the client with "Invalid entity data item type").
+	_, _ = pk.Byte(MetaIndexSkinParts).WriteTo(&buf)
+	_, _ = pk.VarInt(MetaTypeByte).WriteTo(&buf)
+	_, _ = pk.Byte(p.SkinParts).WriteTo(&buf)
+
 	// Terminate metadata
 	_, _ = pk.Byte(-1).WriteTo(&buf)
 
-	return s.SendPacket(pk.Packet{
-		ID:   int32(packetid.ClientboundGameSetEntityData),
-		Data: buf.Bytes(),
-	})
+	return buf.Bytes()
 }
 
 func (h *Handler775) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPos world.Position, exists bool) error {
@@ -309,6 +331,19 @@ func (h *Handler775) HandlePacket(s Session, p pk.Packet) {
 	case packetid.ServerboundGamePlayerLoaded:
 	case packetid.ServerboundGameChunkBatchReceived:
 	case packetid.ServerboundGameClientInformation:
+		var (
+			locale        pk.String
+			viewDist      pk.Byte
+			chatMode      pk.VarInt
+			chatColors    pk.Boolean
+			skinParts     pk.Byte
+			mainHand      pk.VarInt
+			textFiltering pk.Boolean
+			allowListings pk.Boolean
+		)
+		if err := p.Scan(&locale, &viewDist, &chatMode, &chatColors, &skinParts, &mainHand, &textFiltering, &allowListings); err == nil {
+			s.PlayerManager().UpdateSkinParts(s.UUID(), byte(skinParts))
+		}
 	case packetid.ServerboundGamePingRequest:
 	case packetid.ServerboundGamePong:
 	case packetid.ServerboundGameClientTickEnd:

@@ -11,6 +11,9 @@ world:
     z: 0
     yaw: 0
     pitch: 0
+  persistence: true      # save edited chunks to disk
+  directory: worlds      # base folder; each world saves under <directory>/<name>
+  autosaveSeconds: 300   # periodic autosave; 0 = only save on shutdown
 
 java:
   bind: 0.0.0.0

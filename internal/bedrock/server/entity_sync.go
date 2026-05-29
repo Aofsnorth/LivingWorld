@@ -116,6 +116,7 @@ func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 }
 
 func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p player.PlayerSnapshot) {
+	sk := skin.SkinFromClientData(target.clientData)
 	entry := protocol.PlayerListEntry{
 		UUID:           target.id,
 		EntityUniqueID: int64(target.runtimeID),
@@ -123,7 +124,7 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 		XUID:           target.identity.XUID,
 		PlatformChatID: "",
 		BuildPlatform:  int32(target.clientData.DeviceOS),
-		Skin:           skin.SkinFromClientData(target.clientData),
+		Skin:           sk,
 	}
 	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionAdd, Entries: []protocol.PlayerListEntry{entry}})
 	viewer.write(&packet.AddPlayer{
@@ -144,6 +145,7 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 		DeviceID:         string(target.clientData.DeviceID),
 		BuildPlatform:    int32(target.clientData.DeviceOS),
 	})
+	viewer.write(&packet.PlayerSkin{UUID: target.id, Skin: sk})
 	log.Printf("[Bedrock] spawned Bedrock player %s for Bedrock viewer %s", target.username, viewer.username)
 }
 

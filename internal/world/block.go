@@ -1,56 +1,35 @@
 package world
 
+// Block is a placed block. Its ID is the canonical world block ID, which equals
+// the vanilla Java global block-state ID (see registry.go). Meta is retained for
+// interface compatibility with older call sites and is unused for state blocks.
 type Block interface {
 	ID() int32
 	Meta() int16
 }
 
+// BlockAir is the empty block (global state 0).
 type BlockAir struct{}
 
-func (BlockAir) ID() int32   { return 0 }
+func (BlockAir) ID() int32   { return AirID }
 func (BlockAir) Meta() int16 { return 0 }
 
-type PlaceholderBlock struct {
-	IDValue int32
-}
+// StateBlock is any non-air block, identified by its global block-state ID.
+type StateBlock struct{ State int32 }
 
-func (b PlaceholderBlock) ID() int32   { return b.IDValue }
-func (b PlaceholderBlock) Meta() int16 { return 0 }
+func (b StateBlock) ID() int32   { return b.State }
+func (b StateBlock) Meta() int16 { return 0 }
 
+// BlockByID returns the Block for a canonical world block ID.
 func BlockByID(id int32) Block {
-	if blk := GlobalBlockRegistry.Get(id); blk.ID() != 0 || id == 0 {
-		return blk
+	if id == AirID {
+		return BlockAir{}
 	}
-	return PlaceholderBlock{IDValue: id}
+	return StateBlock{State: id}
 }
 
-type BlockRegistry struct {
-	blocks map[int32]Block
-}
-
-func NewBlockRegistry() *BlockRegistry {
-	return &BlockRegistry{
-		blocks: make(map[int32]Block),
-	}
-}
-
-func (r *BlockRegistry) Register(id int32, block Block) {
-	r.blocks[id] = block
-}
-
-func (r *BlockRegistry) Get(id int32) Block {
-	if b, ok := r.blocks[id]; ok {
-		return b
-	}
-	return BlockAir{}
-}
-
-var GlobalBlockRegistry = NewBlockRegistry()
-
-func init() {
-	GlobalBlockRegistry.Register(0, BlockAir{})
-	GlobalBlockRegistry.Register(1, PlaceholderBlock{IDValue: 1})
-	GlobalBlockRegistry.Register(2, PlaceholderBlock{IDValue: 2})
-	GlobalBlockRegistry.Register(3, PlaceholderBlock{IDValue: 3})
-	GlobalBlockRegistry.Register(4, PlaceholderBlock{IDValue: 4})
+// BlockByName returns the Block for a namespaced name (e.g. "minecraft:stone").
+// Unknown names yield air.
+func BlockByName(name string) Block {
+	return BlockByID(StateID(name))
 }
