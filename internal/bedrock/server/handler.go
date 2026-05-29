@@ -5,11 +5,11 @@ import (
 	"net"
 	"time"
 
+	"livingworld/internal/bedrock/inventory"
+	"livingworld/internal/bedrock/skin"
+	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/player"
 	lwworld "livingworld/internal/world"
-	bedrockworld "livingworld/internal/bedrock/world"
-	"livingworld/internal/bedrock/skin"
-	"livingworld/internal/bedrock/inventory"
 
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/go-gl/mathgl/mgl32"
@@ -110,7 +110,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, chunkCache)
 
 	teleportPlayer(mcConn, spawnClientPos, spawn.Pitch, spawn.Yaw)
-	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime, playerName)
+	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime)
 	s.sendLocalPlayerActorData(mcConn)
 	_ = bedrockworld.SendSetTime(mcConn, 6000)
 	s.spawnExistingForeignPlayers(bs)
@@ -138,7 +138,7 @@ func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
 	})
 }
 
-func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64, name string) {
+func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64) {
 	// Reassert survival gamemode.
 	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: packet.GameTypeSurvival})
 
@@ -229,7 +229,7 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 		// Do not hard-freeze the local Bedrock player for now; just ignore the
 		// impossible sample and reassert survival abilities. Hard correction here
 		// previously made movement feel broken/floaty.
-		s.sendBedrockSurvivalState(bs.conn, bedrockLocalRuntime, bs.username)
+		s.sendBedrockSurvivalState(bs.conn, bedrockLocalRuntime)
 		return
 	}
 	if publish {
@@ -246,7 +246,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 			r = s.cfg.Bedrock.ViewDistance
 		}
 		s.bootstrapWorld(conn, r, chunkCache)
-		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime, bs.username)
+		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 
 	case *packet.SubChunkRequest:
 		s.converter.HandleSubChunkRequest(conn, p, chunkCache)
@@ -263,7 +263,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 		// it as the primary movement source and ignore duplicate MovePlayer bursts.
 		bs.lastAuthInputAt = time.Now()
 		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, p.InputData.Load(packet.InputFlagVerticalCollision))
-		
+
 		// Update sneaking state
 		sneaking := p.InputData.Load(packet.InputFlagSneaking)
 		s.pm.UpdateSneak(bs.id, sneaking)
@@ -292,7 +292,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 		// The settings UI may let the client request ability/gamemode-like
 		// changes. This server is authoritative survival, so always reject by
 		// re-sending survival abilities.
-		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime, bs.username)
+		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 
 	case *packet.PlayerAction:
 		switch p.ActionType {
@@ -304,7 +304,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 			s.breakBedrockBlock(p.BlockPosition)
 		case protocol.PlayerActionStartFlying, protocol.PlayerActionStopFlying:
 			// Client attempted to toggle flight through settings/controls. Re-assert survival.
-			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime, bs.username)
+			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 		}
 
 	case *packet.ItemStackRequest:
