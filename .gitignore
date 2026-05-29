@@ -1,0 +1,30 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+server.exe
+
+# Go workspace and test configurations
+go.work
+go.work.sum
+*.test
+*.out
+*.log
+
+# IDEs and editors
+.vscode/
+.idea/
+.claude/
+.cursor/
+.idx/
+.kilo/
+.mcp.json
+
+# Server runtime data / generated files
+diag/*
+!diag/.gitkeep
+plugins/
+world/

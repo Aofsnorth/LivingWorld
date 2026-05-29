@@ -1,0 +1,216 @@
+[
+  {"name": "minecraft:axolotl/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:base_color", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:cat/collar", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:cat/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:cow/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:damage", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:damage_resistant", "pattern": "embed", "embedType": "pk.String"},
+  {"name": "minecraft:dyed_color", "pattern": "embed", "embedType": "pk.Int"},
+  {"name": "minecraft:enchantable", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:firework_explosion", "pattern": "embed", "embedType": "ItemFireworkExplosion"},
+  {"name": "minecraft:fox/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:frog/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:horse/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:item_model", "pattern": "embed", "embedType": "pk.String"},
+  {"name": "minecraft:llama/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:map_color", "pattern": "embed", "embedType": "pk.Int"},
+  {"name": "minecraft:map_id", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:max_damage", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:max_stack_size", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:minimum_attack_charge", "pattern": "embed", "embedType": "pk.Float"},
+  {"name": "minecraft:mooshroom/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:note_block_sound", "pattern": "embed", "embedType": "pk.String"},
+  {"name": "minecraft:ominous_bottle_amplifier", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:parrot/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:pig/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:potion_duration_scale", "pattern": "embed", "embedType": "pk.Float"},
+  {"name": "minecraft:provides_banner_patterns", "pattern": "embed", "embedType": "pk.String"},
+  {"name": "minecraft:rabbit/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:repair_cost", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:salmon/size", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:sheep/color", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:shulker/color", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:tooltip_style", "pattern": "embed", "embedType": "pk.String"},
+  {"name": "minecraft:tropical_fish/base_color", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:tropical_fish/pattern", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:tropical_fish/pattern_color", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:villager/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:wolf/collar", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:wolf/sound_variant", "pattern": "embed", "embedType": "pk.VarInt"},
+  {"name": "minecraft:wolf/variant", "pattern": "embed", "embedType": "pk.VarInt"},
+
+  {"name": "minecraft:bucket_entity_data", "pattern": "embed_nbt"},
+  {"name": "minecraft:custom_data", "pattern": "embed_nbt"},
+  {"name": "minecraft:map_decorations", "pattern": "embed_nbt"},
+
+  {"name": "minecraft:chicken/variant", "pattern": "eitherholder"},
+  {"name": "minecraft:damage_type", "pattern": "eitherholder"},
+  {"name": "minecraft:zombie_nautilus/variant", "pattern": "eitherholder"},
+
+  {"name": "minecraft:creative_slot_lock", "pattern": "empty"},
+  {"name": "minecraft:glider", "pattern": "empty"},
+  {"name": "minecraft:intangible_projectile", "pattern": "empty"},
+  {"name": "minecraft:unbreakable", "pattern": "empty"},
+
+  {"name": "minecraft:break_sound", "pattern": "delegate", "fieldName": "Sound", "fieldType": "SoundEvent", "serMethod": "direct"},
+  {"name": "minecraft:container_loot", "pattern": "delegate", "fieldName": "Data", "fieldType": "dynbt.Value", "serMethod": "nbtfield"},
+  {"name": "minecraft:custom_name", "pattern": "delegate", "fieldName": "Name", "fieldType": "chat.Message", "serMethod": "direct"},
+  {"name": "minecraft:debug_stick_state", "pattern": "delegate", "fieldName": "Data", "fieldType": "block.State", "serMethod": "nbt"},
+  {"name": "minecraft:enchantment_glint_override", "pattern": "delegate", "fieldName": "HasGlint", "fieldType": "pk.Boolean", "serMethod": "direct"},
+  {"name": "minecraft:item_name", "pattern": "delegate", "fieldName": "Name", "fieldType": "chat.Message", "serMethod": "direct"},
+  {"name": "minecraft:lock", "pattern": "delegate", "fieldName": "Data", "fieldType": "dynbt.Value", "serMethod": "nbtfield"},
+  {"name": "minecraft:recipes", "pattern": "delegate", "fieldName": "Data", "fieldType": "dynbt.Value", "serMethod": "nbt"},
+  {"name": "minecraft:repairable", "pattern": "delegate", "fieldName": "Items", "fieldType": "IDSet", "serMethod": "direct"},
+  {"name": "minecraft:use_remainder", "pattern": "delegate", "fieldName": "Remainder", "fieldType": "SlotData", "serMethod": "direct"},
+
+  {"name": "minecraft:map_post_processing", "pattern": "named_int", "baseType": "int32"},
+  {"name": "minecraft:rarity", "pattern": "named_int", "baseType": "int32"},
+
+  {"name": "minecraft:banner_patterns", "pattern": "array", "fieldName": "Layers", "elementType": "BannerPatternLayer"},
+  {"name": "minecraft:bees", "pattern": "array", "fieldName": "Bees", "elementType": "BeeData"},
+  {"name": "minecraft:block_state", "pattern": "array", "fieldName": "Properties", "elementType": "BlockStateProperty"},
+  {"name": "minecraft:bundle_contents", "pattern": "array", "fieldName": "Contents", "elementType": "SlotData"},
+  {"name": "minecraft:can_break", "pattern": "array", "fieldName": "Predicates", "elementType": "ItemBlockPredicate"},
+  {"name": "minecraft:can_place_on", "pattern": "array", "fieldName": "Predicates", "elementType": "ItemBlockPredicate"},
+  {"name": "minecraft:charged_projectiles", "pattern": "array", "fieldName": "Projectiles", "elementType": "SlotData"},
+  {"name": "minecraft:container", "pattern": "array", "fieldName": "Contents", "elementType": "SlotData"},
+  {"name": "minecraft:death_protection", "pattern": "array", "fieldName": "Effects", "elementType": "ItemConsumeEffect"},
+  {"name": "minecraft:enchantments", "pattern": "array", "fieldName": "Enchantments", "elementType": "EnchantmentEntry"},
+  {"name": "minecraft:lore", "pattern": "array", "fieldName": "Lines", "elementType": "chat.Message"},
+  {"name": "minecraft:pot_decorations", "pattern": "array", "fieldName": "Decorations", "elementType": "pk.VarInt"},
+  {"name": "minecraft:stored_enchantments", "pattern": "array", "fieldName": "Enchantments", "elementType": "EnchantmentEntry"},
+  {"name": "minecraft:suspicious_stew_effects", "pattern": "array", "fieldName": "Effects", "elementType": "StewEffect"},
+  {"name": "minecraft:writable_book_content", "pattern": "array", "fieldName": "Pages", "elementType": "Page"},
+
+  {"name": "minecraft:attack_range", "pattern": "tuple", "fields": [
+    {"name": "MinRange", "type": "pk.Float"},
+    {"name": "MaxRange", "type": "pk.Float"},
+    {"name": "MinCreativeRange", "type": "pk.Float"},
+    {"name": "MaxCreativeRange", "type": "pk.Float"},
+    {"name": "HitboxMargin", "type": "pk.Float"},
+    {"name": "MobFactor", "type": "pk.Float"}
+  ]},
+  {"name": "minecraft:block_entity_data", "pattern": "tuple", "fields": [
+    {"name": "Type", "type": "pk.VarInt"},
+    {"name": "Data", "type": "pk.NBTField[dynbt.Value]"}
+  ]},
+  {"name": "minecraft:blocks_attacks", "pattern": "tuple", "fields": [
+    {"name": "BlockDelaySeconds", "type": "pk.Float"},
+    {"name": "DisableCooldownScale", "type": "pk.Float"},
+    {"name": "DamageReductions", "type": "pk.Array[DamageReduction]"},
+    {"name": "ItemDamage", "type": "ItemDamageFunction"},
+    {"name": "BypassedBy", "type": "pk.Option[pk.String]"},
+    {"name": "BlockSound", "type": "pk.Option[SoundEvent]"},
+    {"name": "DisableSound", "type": "pk.Option[SoundEvent]"}
+  ]},
+  {"name": "minecraft:consumable", "pattern": "tuple", "fields": [
+    {"name": "ConsumeSeconds", "type": "pk.Float"},
+    {"name": "Animation", "type": "pk.VarInt"},
+    {"name": "Sound", "type": "SoundEvent"},
+    {"name": "MakesParticles", "type": "pk.Boolean"},
+    {"name": "Effects", "type": "pk.Array[ItemConsumeEffect]"}
+  ]},
+  {"name": "minecraft:custom_model_data", "pattern": "tuple", "fields": [
+    {"name": "Floats", "type": "pk.Array[pk.Float]"},
+    {"name": "Flags", "type": "pk.Array[pk.Boolean]"},
+    {"name": "Strings", "type": "pk.Array[pk.String]"},
+    {"name": "Colors", "type": "pk.Array[pk.Int]"}
+  ]},
+  {"name": "minecraft:entity_data", "pattern": "tuple", "fields": [
+    {"name": "Type", "type": "pk.VarInt"},
+    {"name": "Data", "type": "pk.NBTField[dynbt.Value]"}
+  ]},
+  {"name": "minecraft:equippable", "pattern": "tuple", "fields": [
+    {"name": "Slot", "type": "pk.VarInt"},
+    {"name": "Sound", "type": "SoundEvent"},
+    {"name": "Model", "type": "pk.Option[pk.String]"},
+    {"name": "CameraOverlay", "type": "pk.Option[pk.String]"},
+    {"name": "AllowedEntities", "type": "pk.Option[IDSet]"},
+    {"name": "Dispensable", "type": "pk.Boolean"},
+    {"name": "Swappable", "type": "pk.Boolean"},
+    {"name": "Damageable", "type": "pk.Boolean"},
+    {"name": "EquipOnInteract", "type": "pk.Boolean"},
+    {"name": "Shearable", "type": "pk.Boolean"},
+    {"name": "ShearingSound", "type": "SoundEvent"}
+  ]},
+  {"name": "minecraft:fireworks", "pattern": "tuple", "fields": [
+    {"name": "FlightDuration", "type": "pk.VarInt"},
+    {"name": "Explosions", "type": "pk.Array[ItemFireworkExplosion]"}
+  ]},
+  {"name": "minecraft:food", "pattern": "tuple", "fields": [
+    {"name": "Nutrition", "type": "pk.VarInt"},
+    {"name": "Saturation", "type": "pk.Float"},
+    {"name": "CanAlwaysEat", "type": "pk.Boolean"}
+  ]},
+  {"name": "minecraft:kinetic_weapon", "pattern": "tuple", "fields": [
+    {"name": "ContactCooldownTicks", "type": "pk.VarInt"},
+    {"name": "DelayTicks", "type": "pk.VarInt"},
+    {"name": "DismountConditions", "type": "pk.Option[KineticWeaponCondition]"},
+    {"name": "KnockbackConditions", "type": "pk.Option[KineticWeaponCondition]"},
+    {"name": "DamageConditions", "type": "pk.Option[KineticWeaponCondition]"},
+    {"name": "ForwardMovement", "type": "pk.Float"},
+    {"name": "DamageMultiplier", "type": "pk.Float"},
+    {"name": "Sound", "type": "pk.Option[SoundEvent]"},
+    {"name": "HitSound", "type": "pk.Option[SoundEvent]"}
+  ]},
+  {"name": "minecraft:lodestone_tracker", "pattern": "tuple", "fields": [
+    {"name": "GlobalPosition", "type": "pk.Option[GlobalPos]"},
+    {"name": "Tracked", "type": "pk.Boolean"}
+  ]},
+  {"name": "minecraft:piercing_weapon", "pattern": "tuple", "fields": [
+    {"name": "DealsKnockback", "type": "pk.Boolean"},
+    {"name": "Dismounts", "type": "pk.Boolean"},
+    {"name": "Sound", "type": "pk.Option[SoundEvent]"},
+    {"name": "HitSound", "type": "pk.Option[SoundEvent]"}
+  ]},
+  {"name": "minecraft:potion_contents", "pattern": "tuple", "fields": [
+    {"name": "PotionID", "type": "pk.Option[pk.VarInt]"},
+    {"name": "CustomColor", "type": "pk.Option[pk.Int]"},
+    {"name": "CustomEffects", "type": "pk.Array[ItemPotionEffect]"},
+    {"name": "CustomName", "type": "pk.Option[pk.String]"}
+  ]},
+  {"name": "minecraft:swing_animation", "pattern": "tuple", "fields": [
+    {"name": "Type", "type": "pk.VarInt"},
+    {"name": "Duration", "type": "pk.VarInt"}
+  ]},
+  {"name": "minecraft:tool", "pattern": "tuple", "fields": [
+    {"name": "Rules", "type": "pk.Array[ToolRule]"},
+    {"name": "DefaultMiningSpeed", "type": "pk.Float"},
+    {"name": "DamagePerBlock", "type": "pk.VarInt"},
+    {"name": "CanDestroyBlocksInCreative", "type": "pk.Boolean"}
+  ]},
+  {"name": "minecraft:tooltip_display", "pattern": "tuple", "fields": [
+    {"name": "HideTooltip", "type": "pk.Boolean"},
+    {"name": "HiddenComponents", "type": "pk.Array[pk.VarInt]"}
+  ]},
+  {"name": "minecraft:use_cooldown", "pattern": "tuple", "fields": [
+    {"name": "Seconds", "type": "pk.Float"},
+    {"name": "CooldownGroup", "type": "pk.Option[pk.String]"}
+  ]},
+  {"name": "minecraft:use_effects", "pattern": "tuple", "fields": [
+    {"name": "CanSprint", "type": "pk.Boolean"},
+    {"name": "InteractVibrations", "type": "pk.Boolean"},
+    {"name": "SpeedMultiplier", "type": "pk.Float"}
+  ]},
+  {"name": "minecraft:weapon", "pattern": "tuple", "fields": [
+    {"name": "ItemDamagePerAttack", "type": "pk.VarInt"},
+    {"name": "DisableBlockingForSeconds", "type": "pk.Float"}
+  ]},
+  {"name": "minecraft:written_book_content", "pattern": "tuple", "fields": [
+    {"name": "RawTitle", "type": "pk.String"},
+    {"name": "FilteredTitle", "type": "pk.Option[pk.String]"},
+    {"name": "Author", "type": "pk.String"},
+    {"name": "Generation", "type": "pk.VarInt"},
+    {"name": "Pages", "type": "pk.Array[WrittenPage]"},
+    {"name": "Resolved", "type": "pk.Boolean"}
+  ]},
+
+  {"name": "minecraft:attribute_modifiers", "pattern": "custom"},
+  {"name": "minecraft:instrument", "pattern": "custom"},
+  {"name": "minecraft:jukebox_playable", "pattern": "custom"},
+  {"name": "minecraft:painting/variant", "pattern": "custom"},
+  {"name": "minecraft:profile", "pattern": "custom"},
+  {"name": "minecraft:provides_trim_material", "pattern": "custom"},
+  {"name": "minecraft:trim", "pattern": "custom"}
+]

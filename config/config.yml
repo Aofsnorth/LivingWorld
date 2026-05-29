@@ -1,0 +1,28 @@
+serverName: LivingWorld Server
+motd: LivingWorld Server
+pluginsDir: ./plugins
+
+world:
+  type: superflat
+  seed: 12345
+  spawn:
+    x: 0
+    y: 4
+    z: 0
+    yaw: 0
+    pitch: 0
+
+java:
+  bind: 0.0.0.0
+  port: 25565
+  onlineMode: false
+  maxPlayers: 2
+  viewDistance: 10
+  simulationDistance: 10
+
+bedrock:
+  bind: 0.0.0.0
+  port: 19132
+  authDisabled: true
+  maxPlayers: 2
+  viewDistance: 8
