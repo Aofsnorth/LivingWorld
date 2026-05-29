@@ -83,14 +83,48 @@ func (m *Manager) BroadcastChat(message string) {
 func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float32, onGround bool) {
 	m.mu.Lock()
 	p := m.players[id]
+	isTeleport := false
 	if p != nil {
+		dx := x - p.Position.X
+		dy := y - p.Position.Y
+		dz := z - p.Position.Z
+		distSq := dx*dx + dy*dy + dz*dz
+		// If movement is larger than 4 blocks (~16 squared), treat it as a teleport.
+		if distSq > 16.0 {
+			isTeleport = true
+		}
 		p.Position = world.Position{X: x, Y: y, Z: z}
 		p.Rotation = world.Rotation{Pitch: pitch, Yaw: yaw}
 		p.OnGround = onGround
 	}
 	m.mu.Unlock()
 	if p != nil {
-		m.publish(Event{Type: EventMove, Player: p.Snapshot()})
+		m.publish(Event{Type: EventMove, Player: p.Snapshot(), Teleport: isTeleport})
+	}
+}
+
+func (m *Manager) UpdateSneak(id uuid.UUID, sneaking bool) {
+	m.mu.Lock()
+	p := m.players[id]
+	changed := false
+	if p != nil {
+		if p.Sneaking != sneaking {
+			p.Sneaking = sneaking
+			changed = true
+		}
+	}
+	m.mu.Unlock()
+	if changed && p != nil {
+		m.publish(Event{Type: EventSneak, Player: p.Snapshot()})
+	}
+}
+
+func (m *Manager) PublishSwing(id uuid.UUID) {
+	m.mu.RLock()
+	p := m.players[id]
+	m.mu.RUnlock()
+	if p != nil {
+		m.publish(Event{Type: EventSwing, Player: p.Snapshot()})
 	}
 }
 
@@ -131,11 +165,14 @@ const (
 	EventJoin  EventType = "join"
 	EventMove  EventType = "move"
 	EventLeave EventType = "leave"
+	EventSwing EventType = "swing"
+	EventSneak EventType = "sneak"
 )
 
 type Event struct {
-	Type   EventType
-	Player PlayerSnapshot
+	Type     EventType
+	Player   PlayerSnapshot
+	Teleport bool
 }
 
 type ProfileProperty struct {
@@ -159,8 +196,10 @@ type PlayerSnapshot struct {
 	Position          world.Position
 	Rotation          world.Rotation
 	OnGround          bool
+	Sneaking          bool
 	ProfileProperties []ProfileProperty
 	BedrockSkinURL    string
+	Skin              *SkinData
 }
 
 type Player struct {
@@ -173,6 +212,7 @@ type Player struct {
 	Position          world.Position
 	Rotation          world.Rotation
 	OnGround          bool
+	Sneaking          bool
 	Health            float32
 	Food              int
 	Saturation        float32
@@ -209,8 +249,10 @@ func (p *Player) Snapshot() PlayerSnapshot {
 		Position:          p.Position,
 		Rotation:          p.Rotation,
 		OnGround:          p.OnGround,
+		Sneaking:          p.Sneaking,
 		ProfileProperties: append([]ProfileProperty(nil), p.ProfileProperties...),
 		BedrockSkinURL:    p.BedrockSkinURL,
+		Skin:              p.Skin,
 	}
 }
 

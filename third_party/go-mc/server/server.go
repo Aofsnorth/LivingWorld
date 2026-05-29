@@ -67,6 +67,11 @@ func (s *Server) Listen(addr string) error {
 	}
 }
 
+// IsSupportedProtocol allows dynamic customization of supported protocol versions.
+var IsSupportedProtocol = func(protocol int32) bool {
+	return protocol == ProtocolVersion
+}
+
 func (s *Server) AcceptConn(conn *net.Conn) {
 	defer conn.Close()
 	protocol, intention, err := s.handshake(conn)
@@ -75,7 +80,7 @@ func (s *Server) AcceptConn(conn *net.Conn) {
 	}
 
 	// Reject if client protocol doesn't match server protocol
-	if intention == 2 && protocol != int32(ProtocolVersion) {
+	if intention == 2 && !IsSupportedProtocol(protocol) {
 		// Send disconnect for protocol mismatch
 		_ = conn.WritePacket(pk.Marshal(
 			packetid.ClientboundLoginLoginDisconnect,
