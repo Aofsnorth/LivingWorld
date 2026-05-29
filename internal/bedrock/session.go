@@ -82,10 +82,14 @@ func bedrockMetadata(name string) protocol.EntityMetadata {
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasCollision)
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagShowName)
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagAlwaysShowName)
+	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
 	meta[protocol.EntityDataKeyName] = name
 	meta[protocol.EntityDataKeyScale] = float32(1)
 	meta[protocol.EntityDataKeyWidth] = float32(0.6)
 	meta[protocol.EntityDataKeyHeight] = float32(1.8)
+	// Full air so remote player entities never render drowning bubble particles.
+	meta[protocol.EntityDataKeyAirSupply] = int16(300)
+	meta[protocol.EntityDataKeyAirSupplyMax] = int16(300)
 	return meta
 }
 

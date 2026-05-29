@@ -207,8 +207,8 @@ MIT License — see [LICENSE](LICENSE) file for details.
 
 ## ⚠️ Current Limitations
 
-- **Java Protocol**: Currently targets 1.20.2 (protocol 764). Java 1.21+ requires library updates.
-- **Bedrock Protocol**: Targets 1.21 (protocol 975). Some features may vary by subversion.
+- **Java Protocol**: Currently targets 26.1 (protocol 755). Java 26.2+ requires library updates.
+- **Bedrock Protocol**: Targets 26.21 (protocol 975). Some features may vary by subversion.
 - **World Generation**: Only superflat is fully implemented.
 - **Inventory**: Basic inventory support; complex interactions not yet implemented.
 - **Auth**: Bedrock auth is disabled by default for offline play.

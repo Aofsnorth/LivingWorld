@@ -63,22 +63,19 @@ func (s *Server) movePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) 
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	mode := byte(packet.MoveModeNormal)
-	if p.Edition == player.EditionJava {
-		// Java positions arrive less frequently and are already server-absolute.
-		// Teleporting remote Java players avoids Bedrock desync where the player
-		// body/skin disappears after the first movement update.
-		mode = packet.MoveModeTeleport
+	// MoveActorAbsolute reliably updates a remote entity's rendered body AND head
+	// rotation (Rotation packs {pitch, yaw, headYaw}); this is what dragonfly and
+	// Geyser use for non-self entities. MovePlayer/MoveModeTeleport only corrects
+	// position and left the Java player facing the wrong way on Bedrock.
+	flags := byte(packet.MoveFlagTeleport)
+	if p.OnGround {
+		flags |= packet.MoveFlagOnGround
 	}
-	viewer.write(&packet.MovePlayer{
+	viewer.write(&packet.MoveActorAbsolute{
 		EntityRuntimeID: p.EntityRuntimeID,
 		Position:        bedrockPosForSnapshot(p),
-		Pitch:           p.Rotation.Pitch,
-		Yaw:             p.Rotation.Yaw,
-		HeadYaw:         p.Rotation.Yaw,
-		Mode:            mode,
-		OnGround:        p.OnGround,
-		TeleportCause:   packet.TeleportCauseCommand,
+		Rotation:        mgl32.Vec3{p.Rotation.Pitch, p.Rotation.Yaw, p.Rotation.Yaw},
+		Flags:           flags,
 	})
 }
 

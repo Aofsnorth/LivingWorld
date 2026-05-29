@@ -63,8 +63,11 @@ func (s *Server) handleConn(conn net.Conn) {
 			{Name: "doDaylightCycle", Value: false},
 			{Name: "showcoordinates", Value: true},
 		},
-		ServerBlockStateChecksum:     0,
-		PlayerMovementSettings:       protocol.PlayerMovementSettings{},
+		ServerBlockStateChecksum: 0,
+		PlayerMovementSettings: protocol.PlayerMovementSettings{
+			RewindHistorySize:                0,
+			ServerAuthoritativeBlockBreaking: false,
+		},
 		ChunkRadius:                  int32(s.cfg.Bedrock.ViewDistance),
 		PlayerPermissions:            1, // member, not operator: prevents settings/commands gamemode changes.
 		BaseGameVersion:              protocol.CurrentVersion,
@@ -105,6 +108,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	teleportPlayer(mcConn, spawnClientPos, spawn.Pitch, spawn.Yaw)
 	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime, playerName)
+	s.sendLocalPlayerActorData(mcConn)
 	_ = sendSetTime(mcConn, 6000)
 	s.spawnExistingForeignPlayers(bs)
 
@@ -138,6 +142,23 @@ func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64
 	// already establishes survival; this packet reasserts the gamemode without
 	// touching physics abilities.
 	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: packet.GameTypeSurvival})
+}
+
+// sendLocalPlayerActorData initializes the local player's actor data so the
+// client renders a correct HUD. Without it the air-supply component defaults to
+// 0 and the client shows the drowning (air-bubble) bar on dry land. 300 ticks
+// (15s) = full air, plus the breathing flag, matching dragonfly's reference.
+func (s *Server) sendLocalPlayerActorData(conn *minecraft.Conn) {
+	meta := protocol.NewEntityMetadata()
+	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasGravity)
+	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasCollision)
+	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
+	meta[protocol.EntityDataKeyAirSupply] = int16(300)
+	meta[protocol.EntityDataKeyAirSupplyMax] = int16(300)
+	_ = conn.WritePacket(&packet.SetActorData{
+		EntityRuntimeID: bedrockLocalRuntime,
+		EntityMetadata:  meta,
+	})
 }
 
 func adjacentBlockPos(pos protocol.BlockPos, face int32) protocol.BlockPos {
