@@ -33,6 +33,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	}
 	log.Printf("[Java] Using protocol version: %d (ProtocolVersion=%d)", j.protocol, gmserver.ProtocolVersion)
 	j.startPlayerEventLoop()
+	j.startBlockEventLoop()
 	ping := gmserver.NewPingInfo("LivingWorld Java", j.protocol, chat.Message{Text: cfg.MOTD}, nil)
 	playerList := gmserver.NewPlayerList(cfg.Java.MaxPlayers)
 	registries, registrySizes := javaregistry.Build()

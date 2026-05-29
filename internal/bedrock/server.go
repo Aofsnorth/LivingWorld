@@ -7,6 +7,7 @@ import (
 
 	"livingworld/config"
 	"livingworld/internal/player"
+	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 
 	"github.com/sandertv/gophertunnel/minecraft"
@@ -19,6 +20,7 @@ type Server struct {
 	cfg       *config.Config
 	pm        *player.Manager
 	wm        *world.Manager
+	skins     *skinbridge.Service
 	converter *chunkConverter
 	listener  *minecraft.Listener
 	wg        sync.WaitGroup
@@ -30,7 +32,7 @@ type Server struct {
 	playerEvents <-chan player.Event
 }
 
-func NewServer(cfg *config.Config, pm *player.Manager, wm *world.Manager) *Server {
+func NewServer(cfg *config.Config, pm *player.Manager, wm *world.Manager, skins *skinbridge.Service) *Server {
 	return &Server{
 		port:      cfg.Bedrock.Port,
 		addr:      cfg.Bedrock.Bind,
@@ -39,6 +41,7 @@ func NewServer(cfg *config.Config, pm *player.Manager, wm *world.Manager) *Serve
 		wm:        wm,
 		converter: newChunkConverter(),
 		sessions:  make(map[string]*bedrockSession),
+		skins:     skins,
 	}
 }
 
@@ -69,6 +72,7 @@ func (s *Server) Start() error {
 		protocol.CurrentVersion, protocol.CurrentProtocol)
 	logBlockPaletteVersion()
 	s.startPlayerEventLoop()
+	s.startBlockEventLoop()
 
 	s.wg.Add(1)
 	go s.acceptLoop()
@@ -106,5 +110,6 @@ func (s *Server) Stop() {
 		s.listener.Close()
 	}
 	s.pm.Unsubscribe("bedrock-server")
+	s.wm.UnsubscribeBlockUpdates("bedrock-server")
 	s.wg.Wait()
 }

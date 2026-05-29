@@ -138,6 +138,12 @@ type Event struct {
 	Player PlayerSnapshot
 }
 
+type ProfileProperty struct {
+	Name      string
+	Value     string
+	Signature string
+}
+
 type Edition string
 
 const (
@@ -146,33 +152,37 @@ const (
 )
 
 type PlayerSnapshot struct {
-	UUID            uuid.UUID
-	Username        string
-	Edition         Edition
-	EntityRuntimeID uint64
-	Position        world.Position
-	Rotation        world.Rotation
-	OnGround        bool
+	UUID              uuid.UUID
+	Username          string
+	Edition           Edition
+	EntityRuntimeID   uint64
+	Position          world.Position
+	Rotation          world.Rotation
+	OnGround          bool
+	ProfileProperties []ProfileProperty
+	BedrockSkinURL    string
 }
 
 type Player struct {
-	UUID            uuid.UUID
-	Username        string
-	Edition         Edition
-	XUID            uint64
-	EntityRuntimeID uint64
-	World           *world.World
-	Position        world.Position
-	Rotation        world.Rotation
-	OnGround        bool
-	Health          float32
-	Food            int
-	Saturation      float32
-	Inventory       *Inventory
-	Creative        bool
-	Op              bool
-	Flying          bool
-	Skin            *SkinData
+	UUID              uuid.UUID
+	Username          string
+	Edition           Edition
+	XUID              uint64
+	EntityRuntimeID   uint64
+	World             *world.World
+	Position          world.Position
+	Rotation          world.Rotation
+	OnGround          bool
+	Health            float32
+	Food              int
+	Saturation        float32
+	Inventory         *Inventory
+	Creative          bool
+	Op                bool
+	Flying            bool
+	Skin              *SkinData
+	ProfileProperties []ProfileProperty
+	BedrockSkinURL    string
 }
 
 func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {
@@ -192,13 +202,15 @@ func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {
 
 func (p *Player) Snapshot() PlayerSnapshot {
 	return PlayerSnapshot{
-		UUID:            p.UUID,
-		Username:        p.Username,
-		Edition:         p.Edition,
-		EntityRuntimeID: p.EntityRuntimeID,
-		Position:        p.Position,
-		Rotation:        p.Rotation,
-		OnGround:        p.OnGround,
+		UUID:              p.UUID,
+		Username:          p.Username,
+		Edition:           p.Edition,
+		EntityRuntimeID:   p.EntityRuntimeID,
+		Position:          p.Position,
+		Rotation:          p.Rotation,
+		OnGround:          p.OnGround,
+		ProfileProperties: append([]ProfileProperty(nil), p.ProfileProperties...),
+		BedrockSkinURL:    p.BedrockSkinURL,
 	}
 }
 

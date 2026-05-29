@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, _ []user.Property, clientProtocol int32, conn *gmnet.Conn) {
+func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, properties []user.Property, clientProtocol int32, conn *gmnet.Conn) {
 	defer conn.Close()
 
 	log.Printf("[Java] Player joining: %s (UUID: %s), protocol=%d", name, id, clientProtocol)
@@ -40,6 +40,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	pl.Position.X, pl.Position.Y, pl.Position.Z = session.X, session.Y, session.Z
 	pl.Rotation.Pitch, pl.Rotation.Yaw = session.Pitch, session.Yaw
 	pl.OnGround = true
+	pl.ProfileProperties = javaProfileProperties(properties)
 	j.pm.AddPlayer(pl)
 	defer j.pm.RemovePlayer(id)
 	session.spawnExistingForeignPlayers()

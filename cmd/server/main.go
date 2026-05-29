@@ -10,8 +10,9 @@ import (
 	"livingworld/config"
 	"livingworld/internal/bedrock"
 	"livingworld/internal/java"
-	"livingworld/internal/plugin"
 	"livingworld/internal/player"
+	"livingworld/internal/plugin"
+	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 	worldgen "livingworld/internal/world/generator"
 )
@@ -43,8 +44,10 @@ func main() {
 		worldManager.GetDefaultWorld().SetGenerator(worldgen.NewSuperflat())
 	}
 	playerManager := player.NewManager()
+	skinBridge := skinbridge.New()
+	skinBridge.Start()
 
-	server := NewServer(cfg, worldManager, playerManager)
+	server := NewServer(cfg, worldManager, playerManager, skinBridge)
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
@@ -71,15 +74,17 @@ type Server struct {
 	playerManager *player.Manager
 	javaServer    *java.Server
 	bedrockServer *bedrock.Server
+	skinBridge    *skinbridge.Service
 }
 
-func NewServer(cfg *config.Config, wm *world.Manager, pm *player.Manager) *Server {
+func NewServer(cfg *config.Config, wm *world.Manager, pm *player.Manager, skins *skinbridge.Service) *Server {
 	return &Server{
 		cfg:           cfg,
 		worldManager:  wm,
 		playerManager: pm,
 		javaServer:    java.NewServer(cfg, pm, wm),
-		bedrockServer: bedrock.NewServer(cfg, pm, wm),
+		bedrockServer: bedrock.NewServer(cfg, pm, wm, skins),
+		skinBridge:    skins,
 	}
 }
 

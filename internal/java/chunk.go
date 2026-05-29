@@ -113,4 +113,3 @@ func BuildLevelChunkWithLightPacket(x, z int32, lChunk *level.Chunk) pk.Packet {
 		lChunk,
 	)
 }
-

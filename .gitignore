@@ -27,4 +27,4 @@ go.work.sum
 diag/*
 !diag/.gitkeep
 plugins/
-world/
+whoami/

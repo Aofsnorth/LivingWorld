@@ -1,6 +1,7 @@
 package java
 
 import (
+	"bytes"
 	"log"
 	"math"
 
@@ -11,6 +12,8 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
+const javaPlayerInfoAddPlayerBit = 0x01
+
 func (j *javaBridge) startPlayerEventLoop() {
 	if j.playerEvents != nil {
 		return
@@ -18,9 +21,6 @@ func (j *javaBridge) startPlayerEventLoop() {
 	j.playerEvents = j.pm.Subscribe("java-bridge", 256)
 	go func() {
 		for ev := range j.playerEvents {
-			if ev.Player.Edition != player.EditionBedrock {
-				continue
-			}
 			switch ev.Type {
 			case player.EventJoin:
 				j.sessions.ForEach(func(s *PlayerSession) { s.spawnForeignAvatar(ev.Player) })
@@ -35,7 +35,7 @@ func (j *javaBridge) startPlayerEventLoop() {
 
 func (s *PlayerSession) spawnExistingForeignPlayers() {
 	for _, p := range s.Bridge.pm.GetAllPlayers() {
-		if p.Edition == player.EditionBedrock && p.UUID != s.UUID {
+		if p.UUID != s.UUID {
 			s.spawnForeignAvatar(p.Snapshot())
 		}
 	}
@@ -49,28 +49,58 @@ func (s *PlayerSession) spawnForeignAvatar(p player.PlayerSnapshot) {
 	pos := p.Position
 	rot := p.Rotation
 
-	// Minimal Java visibility: spawn Bedrock players as a zombie avatar.
-	// This avoids the strict PlayerInfo/skin pipeline while still making the
-	// cross-protocol player visible and movable. Later this can be upgraded to a
-	// true minecraft:player spawn with profile/skin data.
+	if err := s.sendPlayerInfoAdd(p); err != nil {
+		log.Printf("[Java] failed to send PlayerInfoUpdate for %s: %v", p.Username, err)
+		return
+	}
+
 	err := s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameAddEntity,
 		pk.VarInt(entityID),
 		pk.UUID(p.UUID),
-		pk.VarInt(entity.Zombie.ID),
+		pk.VarInt(entity.Player.ID),
 		pk.Double(pos.X), pk.Double(pos.Y), pk.Double(pos.Z),
-		// Minecraft 26.1 AddEntity format: movement Vec3.LP_STREAM_CODEC
-		// is encoded immediately after position, before rotations. Zero
-		// movement is encoded by LpVec3 as a single byte 0.
-		pk.Byte(0),
+		pk.Byte(0), // Vec3.LP_STREAM_CODEC zero movement.
 		pk.Angle(degToAngle(rot.Pitch)),
 		pk.Angle(degToAngle(rot.Yaw)),
 		pk.Angle(degToAngle(rot.Yaw)),
 		pk.VarInt(0),
 	))
 	if err != nil {
-		log.Printf("[Java] failed to spawn Bedrock avatar %s: %v", p.Username, err)
+		log.Printf("[Java] failed to spawn player entity %s: %v", p.Username, err)
+		return
 	}
+}
+
+func (s *PlayerSession) sendPlayerInfoAdd(p player.PlayerSnapshot) error {
+	var buf bytes.Buffer
+	// ClientboundPlayerInfoUpdatePacket 26.1:
+	// actions EnumSet<Action> -> fixed bitset for 8 actions = one byte.
+	// entries list -> VarInt length, then UUID, then ADD_PLAYER payload.
+	_, _ = pk.Byte(javaPlayerInfoAddPlayerBit).WriteTo(&buf)
+	_, _ = pk.VarInt(1).WriteTo(&buf)
+	_, _ = pk.UUID(p.UUID).WriteTo(&buf)
+	_, _ = pk.String(p.Username).WriteTo(&buf) // ByteBufCodecs.PLAYER_NAME
+	props := p.ProfileProperties
+	// Unsigned Bedrock skin texture properties are not accepted reliably by all
+	// Java clients. Keep the profile property codec exact and only pass through
+	// real Java properties for now to avoid disconnects.
+	if p.Edition == player.EditionBedrock {
+		props = nil
+	}
+	_, _ = pk.VarInt(len(props)).WriteTo(&buf)
+	for _, prop := range props {
+		_, _ = pk.String(prop.Name).WriteTo(&buf)
+		_, _ = pk.String(prop.Value).WriteTo(&buf)
+		// 26.1 GAME_PROFILE_PROPERTIES uses optional signature.
+		if prop.Signature != "" {
+			_, _ = pk.Boolean(true).WriteTo(&buf)
+			_, _ = pk.String(prop.Signature).WriteTo(&buf)
+		} else {
+			_, _ = pk.Boolean(false).WriteTo(&buf)
+		}
+	}
+	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoUpdate), Data: buf.Bytes()})
 }
 
 func (s *PlayerSession) moveForeignAvatar(p player.PlayerSnapshot) {
@@ -86,9 +116,13 @@ func (s *PlayerSession) moveForeignAvatar(p player.PlayerSnapshot) {
 		pk.Double(pos.X), pk.Double(pos.Y), pk.Double(pos.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0),
 		pk.Float(rot.Yaw), pk.Float(rot.Pitch),
-		// Relative.SET_STREAM_CODEC encoded as packed int. 0 = absolute teleport.
 		pk.Int(0),
 		pk.Boolean(p.OnGround),
+	))
+	_ = s.SendPacket(pk.Marshal(
+		packetid.ClientboundGameRotateHead,
+		pk.VarInt(entityID),
+		pk.Angle(degToAngle(rot.Yaw)),
 	))
 }
 
@@ -100,6 +134,14 @@ func (s *PlayerSession) removeForeignAvatar(p player.PlayerSnapshot) {
 		packetid.ClientboundGameRemoveEntities,
 		pk.Ary[pk.VarInt]{Ary: []pk.VarInt{pk.VarInt(p.EntityRuntimeID)}},
 	))
+	_ = s.sendPlayerInfoRemove(p)
+}
+
+func (s *PlayerSession) sendPlayerInfoRemove(p player.PlayerSnapshot) error {
+	var buf bytes.Buffer
+	_, _ = pk.VarInt(1).WriteTo(&buf)
+	_, _ = pk.UUID(p.UUID).WriteTo(&buf)
+	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoRemove), Data: buf.Bytes()})
 }
 
 func degToAngle(deg float32) pk.Byte {

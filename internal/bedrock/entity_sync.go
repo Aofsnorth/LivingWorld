@@ -56,18 +56,29 @@ func (s *Server) spawnPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 		}
 		return
 	}
-	viewer.spawnJavaAvatar(p)
+	viewer.spawnJavaPlayer(p)
 }
 
 func (s *Server) movePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	viewer.write(&packet.MoveActorAbsolute{
+	mode := byte(packet.MoveModeNormal)
+	if p.Edition == player.EditionJava {
+		// Java positions arrive less frequently and are already server-absolute.
+		// Teleporting remote Java players avoids Bedrock desync where the player
+		// body/skin disappears after the first movement update.
+		mode = packet.MoveModeTeleport
+	}
+	viewer.write(&packet.MovePlayer{
 		EntityRuntimeID: p.EntityRuntimeID,
-		Flags:           packet.MoveFlagOnGround,
-		Position:        bedrockPosFromFeet(p.Position.X, p.Position.Y, p.Position.Z),
-		Rotation:        mgl32.Vec3{p.Rotation.Pitch, p.Rotation.Yaw, p.Rotation.Yaw},
+		Position:        bedrockPosForSnapshot(p),
+		Pitch:           p.Rotation.Pitch,
+		Yaw:             p.Rotation.Yaw,
+		HeadYaw:         p.Rotation.Yaw,
+		Mode:            mode,
+		OnGround:        p.OnGround,
+		TeleportCause:   packet.TeleportCauseCommand,
 	})
 }
 
@@ -75,9 +86,7 @@ func (s *Server) removePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	if p.Edition == player.EditionBedrock {
-		viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionRemove, Entries: []protocol.PlayerListEntry{{UUID: p.UUID}}})
-	}
+	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionRemove, Entries: []protocol.PlayerListEntry{{UUID: p.UUID}}})
 	viewer.write(&packet.RemoveActor{EntityUniqueID: int64(p.EntityRuntimeID)})
 }
 
@@ -97,12 +106,12 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 		Username:         target.username,
 		EntityRuntimeID:  target.runtimeID,
 		PlatformChatID:   "",
-		Position:         bedrockPosFromFeet(p.Position.X, p.Position.Y, p.Position.Z),
+		Position:         bedrockPosForSnapshot(p),
 		Velocity:         mgl32.Vec3{},
 		Pitch:            p.Rotation.Pitch,
 		Yaw:              p.Rotation.Yaw,
 		HeadYaw:          p.Rotation.Yaw,
-		GameType:         0, // survival
+		GameType:         0,
 		EntityMetadata:   bedrockMetadata(target.username),
 		EntityProperties: protocol.EntityProperties{},
 		AbilityData:      bedrockSurvivalAbilityData(target.runtimeID),
@@ -113,24 +122,41 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 	log.Printf("[Bedrock] spawned Bedrock player %s for Bedrock viewer %s", target.username, viewer.username)
 }
 
-func (viewer *bedrockSession) spawnJavaAvatar(p player.PlayerSnapshot) {
-	// Java skins/profiles require a separate Java->Bedrock skin translation
-	// pipeline. Until that exists, Java players remain an explicit avatar actor
-	// for Bedrock viewers, while Bedrock<->Bedrock uses real player models.
-	viewer.write(&packet.AddActor{
-		EntityUniqueID:   int64(p.EntityRuntimeID),
+func (viewer *bedrockSession) spawnJavaPlayer(p player.PlayerSnapshot) {
+	entry := protocol.PlayerListEntry{
+		UUID:           p.UUID,
+		EntityUniqueID: int64(p.EntityRuntimeID),
+		Username:       p.Username,
+		XUID:           "",
+		PlatformChatID: "",
+		BuildPlatform:  7,
+		Skin:           javaFallbackSkinForViewer(viewer),
+	}
+	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionAdd, Entries: []protocol.PlayerListEntry{entry}})
+	viewer.write(&packet.AddPlayer{
+		UUID:             p.UUID,
+		Username:         p.Username,
 		EntityRuntimeID:  p.EntityRuntimeID,
-		EntityType:       "minecraft:zombie",
-		Position:         bedrockPosFromFeet(p.Position.X, p.Position.Y, p.Position.Z),
+		PlatformChatID:   "",
+		Position:         bedrockPosForSnapshot(p),
 		Velocity:         mgl32.Vec3{},
 		Pitch:            p.Rotation.Pitch,
 		Yaw:              p.Rotation.Yaw,
 		HeadYaw:          p.Rotation.Yaw,
-		BodyYaw:          p.Rotation.Yaw,
-		EntityMetadata:   bedrockMetadata(p.Username + " [Java]"),
+		GameType:         0,
+		EntityMetadata:   bedrockMetadata(p.Username),
 		EntityProperties: protocol.EntityProperties{},
-		Attributes:       nil,
+		AbilityData:      bedrockSurvivalAbilityData(p.EntityRuntimeID),
 		EntityLinks:      nil,
+		DeviceID:         "java",
+		BuildPlatform:    7,
 	})
-	log.Printf("[Bedrock] spawned Java avatar %s for Bedrock viewer %s", p.Username, viewer.username)
+	log.Printf("[Bedrock] spawned Java player %s for Bedrock viewer %s", p.Username, viewer.username)
+}
+
+func bedrockPosForSnapshot(p player.PlayerSnapshot) mgl32.Vec3 {
+	if p.Edition == player.EditionJava {
+		return bedrockPosFromJavaFeet(p.Position.X, p.Position.Y, p.Position.Z)
+	}
+	return bedrockPosFromFeet(p.Position.X, p.Position.Y, p.Position.Z)
 }
