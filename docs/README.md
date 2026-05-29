@@ -20,8 +20,8 @@ LivingWorld is a custom Minecraft server implementation written in Go that nativ
 ## 📋 Requirements
 
 - **Go 1.26.1+** (required)
-- **Minecraft Java Edition** — version 1.20.2+ (protocol 764+)
-- **Minecraft Bedrock Edition** — version 1.21+ (protocol 975+)
+- **Minecraft Java Edition** — version 26.1 (protocol 755)
+- **Minecraft Bedrock Edition** — version 26.21 (protocol 975)
 
 ## 🚀 Quick Start
 
