@@ -53,6 +53,9 @@ type Server struct {
 	skins   *skinbridge.Service
 	java    *java.Server
 	bedrock *bedrock.Server
+
+	ops       *OpsList
+	whitelist *Whitelist
 }
 
 // New builds a server from cfg. Pass nil to use DefaultConfig. The server does
@@ -86,6 +89,11 @@ func New(cfg *Config) *Server {
 		java:    java.NewServer(cfg, players, worlds),
 		bedrock: bedrock.NewServer(cfg, players, worlds, skins),
 	}
+	// Ops are seeded from cfg (Config.Ops drives the login op-check); the
+	// whitelist starts empty and disabled. Main replaces these with
+	// file-backed instances when launched from the command line.
+	s.ops = newOps(cfg.Ops...)
+	s.whitelist = newWhitelist()
 	// Make this server the capability surface handed to plugins.
 	plugin.Manager().SetHost(s)
 	return s
@@ -154,6 +162,14 @@ func (s *Server) Worlds() *world.Manager { return s.worlds }
 
 // PlayerManager returns the underlying player manager for advanced use.
 func (s *Server) PlayerManager() *player.Manager { return s.players }
+
+// Ops returns the operator list (admins) for runtime management.
+func (s *Server) Ops() *OpsList { return s.ops }
+
+// Whitelist returns the join whitelist. Enforcement at login is performed by
+// the protocol layer (it should reject players for which Allowed is false);
+// toggle it with Whitelist().SetEnabled.
+func (s *Server) Whitelist() *Whitelist { return s.whitelist }
 
 // --- plugin.Host implementation ---
 

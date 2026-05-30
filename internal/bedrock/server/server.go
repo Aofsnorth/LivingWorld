@@ -76,6 +76,7 @@ func (s *Server) Start() error {
 	s.startPlayerEventLoop()
 	s.startTimeLoop()
 	s.startDropLoop()
+	s.registerPickupHandler()
 
 	s.wg.Add(1)
 	go s.acceptLoop()

@@ -69,20 +69,22 @@ func (h *Handler775) SpawnItemEntity(s Session, entityID int32, itemName string,
 		return nil // unknown item: skip rather than send a bad stack
 	}
 
-	// AddEntity layout mirrors the working player-avatar spawn (SpawnForeignAvatar):
-	// id, uuid, type, x/y/z, pitch(Angle), yaw(Angle), headYaw(Angle), data(VarInt),
-	// then velocity vx/vy/vz (Short). Items spawn at rest.
+	// AddEntity layout must EXACTLY match the working player-avatar spawn
+	// (SpawnForeignAvatar in protocol_775.go:110-121). In 26.1 (protocol 775)
+	// there are NO velocity shorts — the packet ends after the data VarInt.
+	// The leading Byte(0) before the three Angles is part of the 26.1 format
+	// (verified: player avatars work with this exact shape).
 	if err := s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameAddEntity,
 		pk.VarInt(entityID),
 		pk.UUID(itemEntityUUID(entityID)),
 		pk.VarInt(entity.Item.ID), // 71 = minecraft:item
 		pk.Double(x), pk.Double(y), pk.Double(z),
-		pk.Angle(0), // pitch
-		pk.Angle(0), // yaw
-		pk.Angle(0), // head yaw (unused for items)
+		pk.Byte(0),   // data byte (matches player avatar)
+		pk.Angle(0),  // pitch
+		pk.Angle(0),  // yaw
+		pk.Angle(0),  // head yaw
 		pk.VarInt(0), // object data
-		pk.Short(0), pk.Short(0), pk.Short(0), // velocity x/y/z
 	)); err != nil {
 		return err
 	}

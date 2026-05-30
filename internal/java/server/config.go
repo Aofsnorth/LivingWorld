@@ -22,12 +22,13 @@ type javaConfig struct {
 type javaListPing struct {
 	ping       *gmserver.PingInfo
 	playerList *gmserver.PlayerList
+	sessions   *SessionManager
 }
 
 func (j *javaListPing) Name() string                           { return j.ping.Name() }
 func (j *javaListPing) Protocol(v int32) int                   { return j.ping.Protocol(v) }
 func (j *javaListPing) MaxPlayer() int                         { return j.playerList.MaxPlayer() }
-func (j *javaListPing) OnlinePlayer() int                      { return j.playerList.OnlinePlayer() }
+func (j *javaListPing) OnlinePlayer() int                      { return j.sessions.Count() }
 func (j *javaListPing) PlayerSamples() []gmserver.PlayerSample { return j.playerList.PlayerSamples() }
 func (j *javaListPing) Description() *chat.Message             { return j.ping.Description() }
 func (j *javaListPing) FavIcon() string                        { return j.ping.FavIcon() }

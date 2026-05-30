@@ -47,7 +47,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	registries, registrySizes := javaregistry.Build()
 	j.server = &gmserver.Server{
 		Logger:          log.Default(),
-		ListPingHandler: &javaListPing{ping: ping, playerList: playerList},
+		ListPingHandler: &javaListPing{ping: ping, playerList: playerList, sessions: j.sessions},
 		LoginHandler: &gmserver.MojangLoginHandler{
 			OnlineMode:   cfg.Java.OnlineMode,
 			Threshold:    -1,

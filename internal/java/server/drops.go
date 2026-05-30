@@ -9,8 +9,8 @@ import (
 
 // pickup tuning
 const (
-	javaPickupRadius   = 1.4 // blocks; horizontal+vertical distance to collect
-	javaPickupDelayTks = 10  // store ticks (~0.5s at 20Hz) before a drop is collectable
+	javaPickupRadius   = 1.5 // blocks; 3D distance to collect
+	javaPickupDelayTks = 40  // store ticks (2s at 20Hz) before a drop is collectable
 	javaPickupHz       = 20
 )
 
@@ -100,4 +100,6 @@ func (j *javaBridge) collectDrop(collector *player.Player, d drops.Drop) {
 	if cs := j.sessions.Get(collector.UUID); cs != nil {
 		cs.syncInventory()
 	}
+	// Notify Bedrock server about pickup for Bedrock players (animation + inventory sync).
+	j.wm.NotifyItemPickup(collector.UUID, d.EntityID, collector.EntityRuntimeID)
 }

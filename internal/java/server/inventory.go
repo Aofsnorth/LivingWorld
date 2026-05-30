@@ -52,6 +52,16 @@ func (s *PlayerSession) sendInventory() {
 // ClientboundGameContainerSetContent (window 0). Called after a pickup so the new
 // item appears. Layout: VarInt windowID, VarInt stateId, VarInt count, count×Slot,
 // then the carried (cursor) Slot.
+//
+// IMPORTANT: Java window 0 has a special layout (crafting result + grid + armor +
+// main + hotbar + offhand). The internal inventory is a flat 46-slot array, so we
+// must remap indices when sending to the client:
+//   Client slot 0      = crafting result (always empty, not stored)
+//   Client slot 1-4    = crafting grid 2×2 (not stored)
+//   Client slot 5-8    = armor slots (not stored yet)
+//   Client slot 9-35   = main inventory (internal 9-35)
+//   Client slot 36-44  = hotbar (internal 0-8)
+//   Client slot 45     = offhand (internal 40)
 func (s *PlayerSession) syncInventory() {
 	pl := s.Bridge.pm.GetPlayer(s.UUID())
 	if pl == nil || pl.Inventory == nil {
@@ -59,12 +69,43 @@ func (s *PlayerSession) syncInventory() {
 	}
 	items := pl.Inventory.Items
 	var buf bytes.Buffer
-	pk.VarInt(0).WriteTo(&buf) // window 0 = player inventory
-	pk.VarInt(0).WriteTo(&buf) // state id
-	pk.VarInt(int32(len(items))).WriteTo(&buf)
-	for i := range items {
-		writeSlot(&buf, items[i])
+	pk.VarInt(0).WriteTo(&buf)  // window 0 = player inventory
+	pk.VarInt(0).WriteTo(&buf)  // state id
+	pk.VarInt(46).WriteTo(&buf) // 46 slots total in window 0
+
+	// Slot 0: crafting result (always empty)
+	writeSlot(&buf, player.ItemStack{})
+	// Slot 1-4: crafting grid 2×2 (always empty for now)
+	for i := 0; i < 4; i++ {
+		writeSlot(&buf, player.ItemStack{})
 	}
+	// Slot 5-8: armor (helmet, chest, legs, boots) — not stored yet, send empty
+	for i := 0; i < 4; i++ {
+		writeSlot(&buf, player.ItemStack{})
+	}
+	// Slot 9-35: main inventory (internal 9-35)
+	for i := 9; i <= 35; i++ {
+		if i < len(items) {
+			writeSlot(&buf, items[i])
+		} else {
+			writeSlot(&buf, player.ItemStack{})
+		}
+	}
+	// Slot 36-44: hotbar (internal 0-8)
+	for i := 0; i < 9; i++ {
+		if i < len(items) {
+			writeSlot(&buf, items[i])
+		} else {
+			writeSlot(&buf, player.ItemStack{})
+		}
+	}
+	// Slot 45: offhand (internal 40)
+	if 40 < len(items) {
+		writeSlot(&buf, items[40])
+	} else {
+		writeSlot(&buf, player.ItemStack{})
+	}
+
 	writeSlot(&buf, player.ItemStack{}) // carried item = empty
 	_ = s.SendPacket(pk.Packet{
 		ID:   int32(packetid.ClientboundGameContainerSetContent),

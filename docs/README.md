@@ -227,4 +227,4 @@ Vanilla Java clients only load skins from `.minecraft.net` / `.mojang.com`, so
 
 ## 🔮 Roadmap
 
-See [ROADMAP.md](ROADMAP.md).
+See [ROADMAP.md](ROADMAP.md) for the current phase and milestones, and [PACKAGES.md](PACKAGES.md) for a per-package reference (workstream lanes + status).

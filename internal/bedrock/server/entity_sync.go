@@ -4,6 +4,8 @@ import (
 	"log"
 
 	"livingworld/internal/player"
+	"livingworld/internal/entity"
+	"livingworld/internal/registry"
 	"livingworld/internal/bedrock/skin"
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/item"
@@ -236,4 +238,25 @@ func bedrockPosForSnapshot(p player.PlayerSnapshot) mgl32.Vec3 {
 		return bedrockPosFromJavaFeet(p.Position.X, p.Position.Y, p.Position.Z)
 	}
 	return bedrockPosFromFeet(p.Position.X, p.Position.Y, p.Position.Z)
+}
+
+// canonicalPlayer maps the edge player.PlayerSnapshot onto the canonical,
+// edition-agnostic entity.Player (registry.Entity base). This is the A4<->A2
+// entity_sync seam: both lanes converge on this one shared type so AI,
+// anticheat and the dfcompat adapter consume the canonical model instead of a
+// per-edge snapshot. Agent-2 migrates the broadcast path onto this at its own
+// pace; edition wire downcast (f64->f32 pos/rotation) stays edge-side here.
+func canonicalPlayer(p player.PlayerSnapshot) entity.Player {
+	return entity.Player{
+		Entity: registry.Entity{
+			UUID: p.UUID,
+			Type: entity.PlayerType,
+			Pos:  registry.Vec3{X: p.Position.X, Y: p.Position.Y, Z: p.Position.Z},
+		},
+		Name:     p.Username,
+		Yaw:      float64(p.Rotation.Yaw),
+		Pitch:    float64(p.Rotation.Pitch),
+		OnGround: p.OnGround,
+		Sneaking: p.Sneaking,
+	}
 }

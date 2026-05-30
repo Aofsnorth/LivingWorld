@@ -1,121 +1,74 @@
 # LivingWorld Roadmap
 
-**Planned features and improvements for LivingWorld.**
+**Where the project is and what's next.** Architecture: [specs/DESIGN.md](specs/DESIGN.md) · scope: [specs/REQUIREMENTS.md](specs/REQUIREMENTS.md) · live board: [../COORDINATION.md](../COORDINATION.md).
 
-## Version 0.1.0 — Basic Crossplay (In Progress)
+**Baseline:** `LivingWorld 26 (A)` = Java **protocol 775** (patched `third_party/go-mc`) × Bedrock **protocol 975** (`gophertunnel v1.56.2`). Patches sharing a wire protocol group under one LWVersion (R10).
 
-### Features
-- [x] Java Edition 1.20.2 support
-- [x] Bedrock Edition 1.21 support
-- [x] Shared world for both editions
-- [x] Basic player movement sync
-- [x] Block place/break sync
-- [x] Superflat world generation
-- [x] Plugin API (basic events)
+---
 
-### Known Gaps
-- [ ] Java 1.21+ support (protocol 766+)
-- [ ] Full inventory synchronization
-- [ ] Entity synchronization (mobs, dropped items)
-- [ ] Chat synchronization between editions
+## Current phase — Integration (greenfield lanes ✅ → wiring 🔄)
 
-## Version 0.2.0 — Complete Protocol Support
+The project is built by **10 parallel workstreams** (see DESIGN §3.1). The greenfield foundation landed and `go build ./...` is green; work is now integrating those lanes into the shared `internal/world`/`internal/player` core.
 
-### Features
-- [ ] Java 1.21 protocol support
-- [ ] Java 1.21.3 protocol support
-- [ ] Automatic protocol negotiation
-- [ ] Protocol version fallback messages
+### ✅ Landed
+- **Crossplay core** — one shared world for Java (775) + Bedrock (975); movement, block place/break, drop physics, equipment sync.
+- **Foundation** — `internal/registry`: canonical `BlockState`/`Pos`/`Vec3`/`ItemStack`/`Entity` + Java↔Bedrock id maps.
+- **Block/item registries** — full vanilla 26.1 palette (~29.8k block states, ~1.5k items) via bundled go-mc data.
+- **Worldgen primitives** — `worldgen/noise` (seedable Perlin/fBm), `worldgen/biome` (climate select), `worldgen/terrain` (surface + caves) — deterministic per seed.
+- **Entity + combat** — `internal/entity` Manager + `entity/pathfind` (A*); `internal/combat` armor/resistance/knockback/criticals.
+- **Anticheat engine** — weighted violation model + decay + staged actions; Speed/Reach/Timer/Autoclicker/KillAura checks.
+- **Plugin API** — typed cancellable events, panic-isolated dispatch, `plugin.yml` manifest + dependency-ordered loader, `plugin/dfcompat` dragonfly bridge.
+- **World persistence** — region/Anvil-style `r.<rx>.<rz>.lwr` files (32×32, gzip, atomic), autosave + final save on shutdown.
 
-### Technical
-- [ ] Patched `go-mc` with latest protocols
-- [ ] Updated `gophertunnel` integration
-- [ ] Protocol detection system
+### 🔄 In progress (integration points)
+- Worldgen → `*world.Chunk` glue (resolve names via `world.StateID`).
+- Canonical entity ↔ edge `entity_sync` delta encoding.
+- Rich plugin `Host.World()`/`Entities()`/`Commands()` surface.
+- `world.Hardness`/`BreakTicks` → anticheat FastBreak/Nuker checks.
+- Canonical `Player` → `dfcompat` player adapter.
 
-## Version 0.3.0 — World Features
+---
 
-### Features
-- [ ] Nether dimension
-- [ ] End dimension
-- [ ] Portal system between dimensions
-- [ ] Biome generation (overworld)
-- [ ] Cave generation
-- [ ] Ore generation
+## Next milestones
 
-### Technical
-- [ ] Multi-world support
-- [ ] World persistence (save/load)
-- [ ] Chunk batching for performance
+### M1 — Network package (R1, R10, R12)
+- [ ] Carve `internal/network`: version-keyed `codec` (packet model, encode/decode) + multiprotocol `xlate`.
+- [ ] `internal/version`: `LWVersion` registry + protocol negotiation + capability flags.
+- [ ] Migrate `bedrock/*` / `java/*` edges behind the protocol bridge.
+- [ ] `cmd/versioncheck`: poll Mojang manifest/changelog against the LWVersion matrix.
 
-## Version 0.4.0 — Enhanced Gameplay
+### M2 — Persistence package (R3.4–3.6, R6.3)
+- [ ] Extract `internal/persistence` from `internal/world` (`persistence.go`/`region.go`).
+- [ ] Pluggable `Storage` interface — Anvil/region default, optional LevelDB backend (Decision a).
+- [ ] Per-player data save/load (inventory, position, gamemode, XP).
+- [ ] Corrupt-chunk quarantine + recovery; world lock.
 
-### Features
-- [ ] Full inventory synchronization
-- [ ] Crafting synchronization
-- [ ] Enchantment system
-- [ ] Brewing and potions
-- [ ] Trading with villagers
+### M3 — World & gameplay parity (R3, R4)
+- [ ] Worldgen pipeline → real chunks; vanilla-parity + config-selected generators (Decision b).
+- [ ] Nether/End dimensions + portals; lighting propagation.
+- [ ] Full inventory/container sync, crafting/smelting/enchanting, block entities, redstone, fluids.
 
-### Technical
-- [ ] Item stack synchronization
-- [ ] NBT data handling
-- [ ] Custom item support
+### M4 — Entities & combat completion (R5)
+- [ ] Mob AI goals/targeting on `pathfind`, spawning rules, breeding, trading.
+- [ ] Projectiles, XP orbs, vehicles; entity metadata sync both editions.
+- [ ] Status effects, shields; finish anticheat world/aim families (Fly/NoFall/Scaffold/AntiKB).
 
-## Version 0.5.0 — Entity System
+### M5 — Server/ops & flavors (R9, R14)
+- [ ] `server/` public API hardening + ops/config layer; Vanilla vs Custom flavors share one code path.
+- [ ] Metrics, profiling (auth-gated), crash diagnostics under `diag/`; graceful start/stop, RCON/console, Docker.
 
-### Features
-- [ ] Mob spawning and AI
-- [ ] Entity interpolation for smooth movement
-- [ ] Projectile physics
-- [ ] Vehicle support (boats, horses, minecarts)
-- [ ] Item entity sync (dropped items)
+### M6 — Multiprotocol plugin (R12)
+- [ ] `xlate` translator chains: Java 1.21 → 775, Bedrock 1.21.x → 975.
+- [ ] Configurable min/max range + per-version toggles; graceful feature degradation.
 
-### Technical
-- [ ] Entity ID allocation
-- [ ] Entity metadata protocol
-- [ ] Movement prediction
+### M7 — Quality gates for 1.0 (R15)
+- [ ] CI matrix: build · vet · `govulncheck` · per-LWVersion connect tests.
+- [ ] Cross-edition parity harness; anticheat false-positive regression corpus.
+- [ ] ≥100-bot mixed-edition load soak ≥19 TPS; coverage trending >80%.
 
-## Version 0.6.0 — Advanced Plugin API
+---
 
-### Features
-- [ ] Command system
-- [ ] Permission system
-- [ ] Economy system
-- [ ] Scheduler/tasks
-- [ ] Configuration files per plugin
-
-### Technical
-- [ ] Plugin reload without restart
-- [ ] Plugin dependencies
-- [ ] Soft-depend system
-
-## Version 1.0.0 — Production Ready
-
-### Features
-- [ ] All core Minecraft features
-- [ ] Performance optimized
-- [ ] Comprehensive documentation
-- [ ] Production deployment guide
-
-### Quality
-- [ ] Unit test coverage >80%
-- [ ] Integration tests
-- [ ] Stress testing
-- [ ] Security audit
-
-## Future Ideas
-
-### Long-term
-- [ ] BungeeCord/Velocity plugin compatibility
-- [ ] Plugin repository/manager
-- [ ] Web admin panel
-- [ ] Metrics and monitoring
-- [ ] Cloud deployment support
-- [ ] macOS Bedrock support (via LAN)
-
-### Community Requested
-- [ ] Mini-games support
-- [ ] Custom world generation API
-- [ ] Resource pack support
-- [ ] Behavior pack support
-- [ ] Realms integration
+## Future ideas
+- Embedded plugin scripting runtime + scaffold/hot-reload (Decision c).
+- BungeeCord/Velocity-style cross-server; plugin repository/manager.
+- Web admin panel; resource/behavior-pack support; Realms-style hosting.
