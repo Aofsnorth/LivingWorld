@@ -5,6 +5,8 @@ import (
 
 	"livingworld/internal/player"
 	"livingworld/internal/bedrock/skin"
+	"livingworld/internal/bedrock/inventory"
+	"livingworld/internal/item"
 
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
@@ -36,6 +38,8 @@ func (s *Server) startPlayerEventLoop() {
 					s.swingPlayerFor(viewer, ev.Player)
 				case player.EventSneak:
 					s.updateSneakFor(viewer, ev.Player)
+				case player.EventEquipment:
+					s.updateEquipmentFor(viewer, ev.Player)
 				}
 			})
 		}
@@ -112,6 +116,50 @@ func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	viewer.write(&packet.Animate{
 		ActionType:      packet.AnimateActionSwingArm,
 		EntityRuntimeID: p.EntityRuntimeID,
+	})
+}
+
+func (s *Server) updateEquipmentFor(viewer *bedrockSession, p player.PlayerSnapshot) {
+	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
+		return
+	}
+	// Get held item from player inventory
+	pl := s.pm.GetPlayer(p.UUID)
+	if pl == nil || pl.Inventory == nil {
+		return
+	}
+	heldItem := pl.Inventory.GetHeldItem()
+	if heldItem == nil || heldItem.ID == 0 {
+		// Empty hand
+		viewer.write(&packet.MobEquipment{
+			EntityRuntimeID: p.EntityRuntimeID,
+			NewItem:         protocol.ItemInstance{},
+			InventorySlot:   byte(pl.HeldItemSlot),
+			HotBarSlot:      byte(pl.HeldItemSlot),
+		})
+		return
+	}
+
+	// Resolve item ID to Bedrock runtime ID
+	it, ok := item.ByID(heldItem.ID)
+	if !ok {
+		return
+	}
+	rid, ok := inventory.RuntimeIDByName(it.Name)
+	if !ok {
+		return
+	}
+
+	viewer.write(&packet.MobEquipment{
+		EntityRuntimeID: p.EntityRuntimeID,
+		NewItem: protocol.ItemInstance{
+			Stack: protocol.ItemStack{
+				ItemType: protocol.ItemType{NetworkID: rid},
+				Count:    uint16(heldItem.Count),
+			},
+		},
+		InventorySlot: byte(pl.HeldItemSlot),
+		HotBarSlot:    byte(pl.HeldItemSlot),
 	})
 }
 

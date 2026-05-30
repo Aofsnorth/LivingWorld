@@ -84,6 +84,7 @@ type VersionHandler interface {
 	SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 	SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error
 	UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error
+	UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error
 	HandlePacket(s Session, p pk.Packet)
 
 	// Dropped item entities.

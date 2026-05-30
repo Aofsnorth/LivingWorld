@@ -3,8 +3,11 @@ package server
 import (
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/drops"
+	"livingworld/internal/item"
+	"livingworld/internal/player"
 
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -29,12 +32,19 @@ func (s *Server) startDropLoop() {
 				Count:    uint16(d.Count),
 			},
 		}
+		// Use velocity from Drop struct (vanilla physics)
+		vel := mgl32.Vec3{
+			float32(d.VX),
+			float32(d.VY),
+			float32(d.VZ),
+		}
 		s.forEachSession(func(bs *bedrockSession) {
 			bs.write(&packet.AddItemActor{
 				EntityUniqueID:  d.EntityID,
 				EntityRuntimeID: uint64(d.EntityID),
 				Item:            inst,
 				Position:        mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
+				Velocity:        vel,
 			})
 		})
 	})
@@ -46,6 +56,64 @@ func (s *Server) startDropLoop() {
 	})
 }
 
+// registerPickupHandler registers a callback with the world manager to handle
+// item pickups for Bedrock players (animation + inventory sync).
+func (s *Server) registerPickupHandler() {
+	s.wm.OnItemPickup(func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
+		uid, _ := uuid.FromBytes(playerUUID[:])
+		pl := s.pm.GetPlayer(uid)
+		if pl == nil || pl.Edition != player.EditionBedrock {
+			return // not a Bedrock player
+		}
+
+		// Send TakeItemActor animation to all Bedrock viewers.
+		s.forEachSession(func(bs *bedrockSession) {
+			bs.write(&packet.TakeItemActor{
+				ItemEntityRuntimeID: uint64(dropEntityID),
+				TakerEntityRuntimeID: playerEntityID,
+			})
+		})
+
+		// Sync inventory for the Bedrock player who picked up the item.
+		if bs, ok := s.getSession(uid); ok {
+			s.syncBedrockInventory(bs, pl)
+		}
+	})
+}
+
+// syncBedrockInventory sends the player's current inventory to their Bedrock client.
+func (s *Server) syncBedrockInventory(bs *bedrockSession, pl *player.Player) {
+	if pl.Inventory == nil {
+		return
+	}
+	items := pl.Inventory.Items
+	content := make([]protocol.ItemInstance, 36)
+	for i := 0; i < 36 && i < len(items); i++ {
+		if items[i].ID == 0 || items[i].Count == 0 {
+			continue
+		}
+		// Convert Java item ID to item name, then to Bedrock runtime ID.
+		it, ok := item.ByID(items[i].ID)
+		if !ok {
+			continue
+		}
+		rid, ok := inventory.RuntimeIDByName(it.Name)
+		if !ok {
+			continue
+		}
+		content[i] = protocol.ItemInstance{
+			Stack: protocol.ItemStack{
+				ItemType: protocol.ItemType{NetworkID: rid},
+				Count:    uint16(items[i].Count),
+			},
+		}
+	}
+	bs.write(&packet.InventoryContent{
+		WindowID: protocol.WindowIDInventory,
+		Content:  content,
+	})
+}
+
 // spawnExistingDropsFor sends every active drop to a freshly-joined Bedrock
 // viewer so items already on the ground are visible.
 func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
@@ -53,6 +121,11 @@ func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
 		rid, ok := inventory.RuntimeIDByName(d.Item)
 		if !ok {
 			continue
+		}
+		vel := mgl32.Vec3{
+			float32((d.EntityID%100-50)) * 0.002,
+			0.2,
+			float32((d.EntityID%73-36)) * 0.002,
 		}
 		bs.write(&packet.AddItemActor{
 			EntityUniqueID:  d.EntityID,
@@ -62,6 +135,7 @@ func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
 				Count:    uint16(d.Count),
 			}},
 			Position: mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
+			Velocity: vel,
 		})
 	}
 }

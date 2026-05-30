@@ -3,6 +3,7 @@ package server
 import (
 	"livingworld/plugin"
 	"livingworld/internal/world"
+	"livingworld/internal/item"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/level/block"
@@ -20,16 +21,29 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 		return
 	}
 
-	// Java sends start digging first, then finish digging when the client-side
-	// survival break timer completes. Breaking on start made survival mining
-	// instant. Until server-authoritative hardness exists, only accept finish.
-	if status == 2 { // finish digging
+	// Track crack state for cross-edition animation
+	switch status {
+	case 0: // start digging
+		hadPrev, prevX, prevY, prevZ := s.Bridge.wm.CrackManager().StartBreaking(s.UUID(), pos.X, pos.Y, pos.Z)
+		if hadPrev {
+			// Player switched to a new block - stop crack on old block
+			// TODO: Send stop crack to Bedrock clients
+			_ = prevX
+			_ = prevY
+			_ = prevZ
+		}
+		// TODO: Broadcast start crack to Bedrock clients
+	case 1: // cancel digging
+		s.Bridge.wm.CrackManager().StopBreaking(s.UUID())
+		// TODO: Broadcast stop crack to Bedrock clients
+	case 2: // finish digging
+		s.Bridge.wm.CrackManager().StopBreaking(s.UUID())
 		current := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
 		ev := &plugin.BlockBreakEvent{
 			BaseEvent:  plugin.BaseEvent{Type_: plugin.EventBlockBreak},
 			PlayerName: s.Username(),
 			X:          pos.X, Y: pos.Y, Z: pos.Z,
-			BlockID: current.ID(),
+			BlockID:    current.ID(),
 		}
 		if plugin.Manager().EmitCancellable(ev) {
 			// A plugin vetoed the break: re-affirm the block to the client so its
@@ -98,10 +112,51 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 		x++
 	}
 	s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, x, y, z, world.BlockByID(int32(stateID)))
+
+	// Decrement held item count (survival item consumption)
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl != nil && pl.Inventory != nil && s.SelectedSlot >= 0 && s.SelectedSlot < 9 && int(s.SelectedSlot) < len(pl.Inventory.Items) {
+		if pl.Inventory.Items[s.SelectedSlot].Count > 0 {
+			pl.Inventory.Items[s.SelectedSlot].Count--
+			s.syncInventory()
+		}
+	}
 }
 
 func (s *PlayerSession) getBlockStateForPlacement() block.StateID {
-	return 0
+	// Resolve held item dari inventory player
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl == nil || pl.Inventory == nil {
+		return 0
+	}
+
+	// SelectedSlot adalah hotbar index (0-8)
+	if s.SelectedSlot < 0 || s.SelectedSlot >= 9 {
+		return 0
+	}
+
+	// Inventory.Items[0-8] adalah hotbar
+	if int(s.SelectedSlot) >= len(pl.Inventory.Items) {
+		return 0
+	}
+
+	heldItem := pl.Inventory.Items[s.SelectedSlot]
+	if heldItem.ID == 0 || heldItem.Count == 0 {
+		return 0
+	}
+
+	// Resolve item ID → name → block state ID
+	it, ok := item.ByID(heldItem.ID)
+	if !ok {
+		return 0
+	}
+
+	stateID, placeable := item.BlockStateID(it.Name)
+	if !placeable {
+		return 0
+	}
+
+	return block.StateID(stateID)
 }
 
 func (s *PlayerSession) HandleSwing(p pk.Packet) {

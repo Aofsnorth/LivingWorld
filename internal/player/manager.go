@@ -167,7 +167,7 @@ func (m *Manager) AddPlayer(p *Player) {
 	m.players[p.UUID] = p
 	m.mu.Unlock()
 	m.publish(Event{Type: EventJoin, Player: p.Snapshot()})
-	m.Broadcast(p.Username + " joined the game")
+	m.Broadcast("§e" + p.Username + " joined the game")
 }
 
 func (m *Manager) RemovePlayer(id uuid.UUID) {
@@ -177,7 +177,7 @@ func (m *Manager) RemovePlayer(id uuid.UUID) {
 	m.mu.Unlock()
 	if p != nil {
 		m.publish(Event{Type: EventLeave, Player: p.Snapshot()})
-		m.Broadcast(p.Username + " left the game")
+		m.Broadcast("§e" + p.Username + " left the game")
 	}
 }
 
@@ -310,6 +310,34 @@ func (m *Manager) PublishSwing(id uuid.UUID) {
 	}
 }
 
+// UpdateHeldSlot updates a player's held hotbar slot and publishes equipment change event.
+func (m *Manager) UpdateHeldSlot(id uuid.UUID, slot int) {
+	m.mu.Lock()
+	p := m.players[id]
+	changed := false
+	if p != nil && p.HeldItemSlot != slot && slot >= 0 && slot < HotbarSize {
+		p.HeldItemSlot = slot
+		if p.Inventory != nil {
+			p.Inventory.HeldSlot = slot
+		}
+		changed = true
+	}
+	m.mu.Unlock()
+	if changed && p != nil {
+		m.publish(Event{Type: EventEquipment, Player: p.Snapshot()})
+	}
+}
+
+// PublishEquipmentChange broadcasts equipment change (for pickup, inventory changes).
+func (m *Manager) PublishEquipmentChange(id uuid.UUID) {
+	m.mu.RLock()
+	p := m.players[id]
+	m.mu.RUnlock()
+	if p != nil {
+		m.publish(Event{Type: EventEquipment, Player: p.Snapshot()})
+	}
+}
+
 func (m *Manager) Subscribe(id string, buffer int) <-chan Event {
 	if buffer <= 0 {
 		buffer = 64
@@ -344,12 +372,13 @@ func (m *Manager) publish(ev Event) {
 type EventType string
 
 const (
-	EventJoin  EventType = "join"
-	EventMove  EventType = "move"
-	EventLeave EventType = "leave"
-	EventSwing EventType = "swing"
-	EventSneak EventType = "sneak"
-	EventSkin  EventType = "skin"
+	EventJoin      EventType = "join"
+	EventMove      EventType = "move"
+	EventLeave     EventType = "leave"
+	EventSwing     EventType = "swing"
+	EventSneak     EventType = "sneak"
+	EventSkin      EventType = "skin"
+	EventEquipment EventType = "equipment"
 )
 
 type Event struct {
@@ -409,6 +438,9 @@ type Player struct {
 	ProfileProperties []ProfileProperty
 	BedrockSkinURL    string
 	SkinParts         byte
+
+	// HeldItemSlot tracks currently held hotbar slot for equipment broadcasting
+	HeldItemSlot int
 }
 
 func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {

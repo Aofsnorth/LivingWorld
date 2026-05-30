@@ -207,6 +207,39 @@ func (h *Handler775) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) e
 	})
 }
 
+func (h *Handler775) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error {
+	// Get held item from player
+	pl := s.PlayerManager().GetPlayer(p.UUID)
+	if pl == nil || pl.Inventory == nil {
+		return nil
+	}
+	heldItem := pl.Inventory.GetHeldItem()
+
+	// Build equipment packet: ClientboundGameSetEquipment
+	// Format: VarInt entityID + equipment entries (slot Byte + ItemStack)
+	var buf bytes.Buffer
+	_, _ = pk.VarInt(p.EntityRuntimeID).WriteTo(&buf)
+
+	// Slot 0 = main hand
+	_, _ = pk.Byte(0).WriteTo(&buf)
+
+	// ItemStack: count VarInt + itemID VarInt + components (nAdd VarInt + nRemove VarInt)
+	if heldItem == nil || heldItem.ID == 0 {
+		// Empty hand
+		_, _ = pk.VarInt(0).WriteTo(&buf) // count = 0 (empty)
+	} else {
+		_, _ = pk.VarInt(heldItem.Count).WriteTo(&buf)     // count
+		_, _ = pk.VarInt(heldItem.ID).WriteTo(&buf)        // itemID
+		_, _ = pk.VarInt(0).WriteTo(&buf)                  // components: 0 add
+		_, _ = pk.VarInt(0).WriteTo(&buf)                  // components: 0 remove
+	}
+
+	return s.SendPacket(pk.Packet{
+		ID:   int32(packetid.ClientboundGameSetEquipment),
+		Data: buf.Bytes(),
+	})
+}
+
 // encodePlayerMetadata builds the body of a ClientboundSetEntityData packet for a
 // player avatar following the MC 26.1 (protocol 775) entity-data layout. Kept as a
 // pure function (no Session) so the wire layout can be unit-tested.

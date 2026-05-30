@@ -56,3 +56,15 @@ func RuntimeIDByName(name string) (int32, bool) {
 	}
 	return e.RuntimeID, true
 }
+
+// NameByRuntimeID resolves a Bedrock network runtime id to its item name
+// ("minecraft:cobblestone"). Returns "", false if the runtime id is not found.
+// Used for Bedrock block placement (HeldItem.Stack.ItemType.NetworkID → name).
+func NameByRuntimeID(rid int32) (string, bool) {
+	for name, e := range vanillaItems {
+		if e.RuntimeID == rid {
+			return name, true
+		}
+	}
+	return "", false
+}

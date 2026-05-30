@@ -216,14 +216,22 @@ type Manager struct {
 	dropMu       sync.Mutex // guards dropRNG (math/rand is not concurrency-safe)
 	autosaveStop chan struct{}
 	timeStop     chan struct{}
+
+	// pickupCallback is called when a player picks up an item, for Bedrock inventory sync.
+	pickupCallback func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64)
+	pickupMu       sync.RWMutex
+
+	// crackManager tracks active block-breaking states for cross-edition crack animation.
+	crackManager *CrackManager
 }
 
 func NewManager() *Manager {
 	m := &Manager{
-		worlds:      make(map[string]*World),
-		blockEvents: NewBlockEventBus(),
-		drops:       drops.New(),
-		dropRNG:     rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
+		worlds:       make(map[string]*World),
+		blockEvents:  NewBlockEventBus(),
+		drops:        drops.New(),
+		dropRNG:      rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
+		crackManager: NewCrackManager(),
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld
@@ -233,6 +241,24 @@ func NewManager() *Manager {
 // Drops returns the shared item-drop store. Each protocol bridge subscribes to
 // it (OnSpawn/OnDespawn) to render and pick up dropped items.
 func (m *Manager) Drops() *drops.Store { return m.drops }
+
+// OnItemPickup registers a callback invoked when a player picks up an item.
+// Used by the Bedrock server to send pickup animation + inventory sync.
+func (m *Manager) OnItemPickup(fn func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64)) {
+	m.pickupMu.Lock()
+	m.pickupCallback = fn
+	m.pickupMu.Unlock()
+}
+
+// NotifyItemPickup calls the registered pickup callback if one exists.
+func (m *Manager) NotifyItemPickup(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
+	m.pickupMu.RLock()
+	cb := m.pickupCallback
+	m.pickupMu.RUnlock()
+	if cb != nil {
+		cb(playerUUID, dropEntityID, playerEntityID)
+	}
+}
 
 // DropBlockLoot rolls the vanilla bare-hand loot for the block that was at
 // (x,y,z) and spawns the resulting item entities into the drop store, centred on
@@ -270,6 +296,11 @@ func (m *Manager) RemoveWorld(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.worlds, name)
+}
+
+// CrackManager returns the shared crack state tracker for cross-edition animation.
+func (m *Manager) CrackManager() *CrackManager {
+	return m.crackManager
 }
 
 func (m *Manager) GetAllWorlds() []*World {

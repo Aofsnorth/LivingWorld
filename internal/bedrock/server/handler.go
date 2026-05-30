@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/png"
 	"log"
 	"net"
 	"strings"
@@ -11,9 +14,10 @@ import (
 	"livingworld/internal/bedrock/skin"
 	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/command"
+	"livingworld/internal/item"
 	"livingworld/internal/player"
 	"livingworld/internal/skinbridge"
-	lwworld "livingworld/internal/world"
+	"livingworld/internal/world"
 	"livingworld/plugin"
 
 	"github.com/go-gl/mathgl/mgl32"
@@ -24,8 +28,8 @@ import (
 )
 
 const (
-	bedrockGroundY      = int16(lwworld.SuperflatGroundY)
-	bedrockSpawnFeetY   = float32(lwworld.SuperflatSpawnY)
+	bedrockGroundY      = int16(world.SuperflatGroundY)
+	bedrockSpawnFeetY   = float32(world.SuperflatSpawnY)
 	bedrockLocalRuntime = uint64(1)
 )
 
@@ -46,7 +50,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	log.Printf("[Bedrock] Player joining: %s", playerName)
 
 	spawn := s.cfg.World.Spawn
-	spawnBlockY := int32(lwworld.SuperflatSpawnY)
+	spawnBlockY := int32(world.SuperflatSpawnY)
 	spawnFeet := mgl32.Vec3{float32(spawn.X) + 0.5, bedrockSpawnFeetY, float32(spawn.Z) + 0.5}
 	spawnClientPos := bedrockLocalClientPosFromFeet(float64(spawnFeet[0]), float64(spawnFeet[1]), float64(spawnFeet[2]))
 
@@ -110,21 +114,22 @@ func (s *Server) handleConn(conn net.Conn) {
 	pl.OnGround = true
 	if s.skins != nil {
 		sk := skin.SkinFromClientData(bs.clientData)
+		// Register the skin to the local skinbridge HTTP server first (instant) so
+		// the player can join immediately. This gives an unsigned texture property
+		// pointing to http://127.0.0.1:PORT/skins/{uuid}.png — authlib-injector
+		// clients accept it, but vanilla Java clients reject unsigned non-whitelisted
+		// domains and render the player as a black silhouette.
 		pl.BedrockSkinURL = s.skins.RegisterRGBA(playerID, int(sk.SkinImageWidth), int(sk.SkinImageHeight), sk.SkinData)
 
-		go func(pID uuid.UUID, pName string, url string) {
-			key := strings.TrimPrefix(url, s.skins.GetAddr()+"/skins/")
-			pngData := s.skins.GetSkin(key)
-			if len(pngData) > 0 {
-				val, sig, err := skinbridge.UploadToMineSkin(pngData, s.cfg.Java.MineSkinAPIKey)
-				if err != nil {
-					log.Printf("[Bedrock] MineSkin upload failed for %s: %v", pName, err)
-					return
-				}
-				log.Printf("[Bedrock] MineSkin upload success for %s", pName)
-				s.pm.UpdateProfileProperty(pID, "textures", val, sig)
-			}
-		}(playerID, playerName, pl.BedrockSkinURL)
+		// Upload to MineSkin asynchronously (2-5s) to get a SIGNED texture property
+		// on a Mojang-whitelisted domain (textures.minecraft.net). Once the upload
+		// completes, UpdateProfileProperty triggers EventSkin → Java clients despawn
+		// and respawn the avatar with the new signed property, and the skin becomes
+		// visible. MineSkin downscales to 64×64, so HD skins lose resolution, but
+		// cross-play with vanilla Java clients requires this trade-off.
+		if s.cfg.Java.MineSkinAPIKey != "" {
+			go s.uploadBedrockSkinToMineSkin(playerID, playerName, sk.SkinData, int(sk.SkinImageWidth), int(sk.SkinImageHeight))
+		}
 	}
 	s.pm.AddPlayer(pl)
 	defer s.pm.RemovePlayer(playerID)
@@ -273,7 +278,7 @@ func (s *Server) breakBedrockBlock(pos protocol.BlockPos) {
 	// Roll vanilla loot and spawn item entities before the block becomes air.
 	s.wm.DropBlockLoot(current.ID(), int(pos[0]), int(pos[1]), int(pos[2]))
 
-	s.wm.SetBlockAndPublish(lwworld.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]), lwworld.BlockAir{})
+	s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]), world.BlockAir{})
 }
 
 // broadcastBlockBreakEffect plays the destroy-block particles + sound on every
@@ -291,6 +296,33 @@ func (s *Server) broadcastBlockBreakEffect(x, y, z int32, brokenBlockID int32) {
 	})
 }
 
+// bedrockCrackBreakSeconds is the assumed mining duration used to compute the
+// crack-progress increment. LivingWorld has no per-block hardness service yet,
+// so the actual break is client-timed; this only paces the visual crack overlay.
+// The crack is cleared naturally when the block turns to air (on finish) or by
+// an explicit StopBlockCracking (on abort), so a slightly-off rate is harmless.
+const bedrockCrackBreakSeconds = 0.75
+
+// broadcastBlockCracking drives the progressive crack overlay on every Bedrock
+// viewer. eventType is LevelEventStartBlockCracking (begin animating) or
+// LevelEventStopBlockCracking (clear it). EventData on start is the per-tick
+// crack increment (65535 = fully cracked); on stop it is 0. The crack LevelEvent
+// addresses the block by its corner position, not its center.
+func (s *Server) broadcastBlockCracking(pos protocol.BlockPos, eventType int32) {
+	corner := mgl32.Vec3{float32(pos[0]), float32(pos[1]), float32(pos[2])}
+	var data int32
+	if eventType == packet.LevelEventStartBlockCracking {
+		data = int32(65535 / (bedrockCrackBreakSeconds * 20))
+	}
+	s.forEachSession(func(bs *bedrockSession) {
+		bs.write(&packet.LevelEvent{
+			EventType: eventType,
+			Position:  corner,
+			EventData: data,
+		})
+	})
+}
+
 func isBedrockBreakAction(action int32) bool {
 	switch action {
 	case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
@@ -298,6 +330,38 @@ func isBedrockBreakAction(action int32) bool {
 	default:
 		return false
 	}
+}
+
+// uploadBedrockSkinToMineSkin uploads a Bedrock player's skin to MineSkin (async)
+// to get a signed texture property on a Mojang-whitelisted domain. Once complete,
+// UpdateProfileProperty triggers EventSkin → Java clients despawn+respawn the
+// avatar with the new property, making the skin visible to vanilla Java clients.
+func (s *Server) uploadBedrockSkinToMineSkin(playerID uuid.UUID, playerName string, rgba []byte, w, h int) {
+	// Convert RGBA to PNG for MineSkin upload
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if len(rgba) >= w*h*4 {
+		copy(img.Pix, rgba[:w*h*4])
+	} else {
+		log.Printf("[Bedrock→MineSkin] %s: invalid RGBA size %d for %dx%d", playerName, len(rgba), w, h)
+		return
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		log.Printf("[Bedrock→MineSkin] %s: PNG encode failed: %v", playerName, err)
+		return
+	}
+
+	log.Printf("[Bedrock→MineSkin] %s: uploading %dx%d skin (%d KB)...", playerName, w, h, buf.Len()/1024)
+	value, signature, err := skinbridge.UploadToMineSkin(buf.Bytes(), s.cfg.Java.MineSkinAPIKey)
+	if err != nil {
+		log.Printf("[Bedrock→MineSkin] %s: upload failed: %v", playerName, err)
+		return
+	}
+	log.Printf("[Bedrock→MineSkin] %s: upload success, updating profile property (signed=%t)", playerName, signature != "")
+
+	// Update the player's profile property with the signed MineSkin result.
+	// This triggers EventSkin → Java clients despawn+respawn with the new skin.
+	s.pm.UpdateProfileProperty(playerID, "textures", value, signature)
 }
 
 func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pitch, yaw float32, onGround bool) {
@@ -315,10 +379,10 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 		s.pm.UpdatePosition(bs.id, x, y, z, pitch, yaw, onGround)
 
 		// Dynamically load new chunks if the player crossed a chunk boundary.
-		// Use floor division (lwworld.ChunkCoord) not int32(x)>>4, which is wrong
+		// Use floor division (world.ChunkCoord) not int32(x)>>4, which is wrong
 		// for negative coords and left far -X/-Z chunks unloaded until entered.
-		chunkX := lwworld.ChunkCoord(x)
-		chunkZ := lwworld.ChunkCoord(z)
+		chunkX := world.ChunkCoord(x)
+		chunkZ := world.ChunkCoord(z)
 		if chunkX != bs.lastChunkX || chunkZ != bs.lastChunkZ {
 			bs.lastChunkX = chunkX
 			bs.lastChunkZ = chunkZ
@@ -359,7 +423,23 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		s.pm.UpdateSneak(bs.id, sneaking)
 
 		for _, action := range p.BlockActions {
-			if isBedrockBreakAction(action.Action) {
+			switch action.Action {
+			case protocol.PlayerActionStartBreak:
+				// Track crack state and stop previous block if switching
+				hadPrev, prevX, prevY, prevZ := s.wm.CrackManager().StartBreaking(bs.id, int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2]))
+				if hadPrev {
+					// Player switched to a new block - stop crack on old block
+					s.broadcastBlockCracking(protocol.BlockPos{int32(prevX), int32(prevY), int32(prevZ)}, packet.LevelEventStopBlockCracking)
+				}
+				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking)
+				// TODO: Broadcast to Java clients (ClientboundGameBlockBreakAck)
+			case protocol.PlayerActionContinueDestroyBlock:
+				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking)
+			case protocol.PlayerActionAbortBreak:
+				s.wm.CrackManager().StopBreaking(bs.id)
+				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStopBlockCracking)
+			case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
+				s.wm.CrackManager().StopBreaking(bs.id)
 				s.breakBedrockBlock(action.BlockPos)
 			}
 		}
@@ -370,6 +450,28 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			case *protocol.UseItemTransactionData:
 				switch data.ActionType {
 				case protocol.UseItemActionClickBlock:
+					// Bedrock block placement: resolve held item → block state → place
+					if data.HeldItem.Stack.ItemType.NetworkID != 0 {
+						itemName, ok := inventory.NameByRuntimeID(data.HeldItem.Stack.ItemType.NetworkID)
+						if ok {
+							stateID, placeable := item.BlockStateID(itemName)
+							if placeable {
+								targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
+								s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(stateID))
+
+								// Decrement held item count (survival item consumption)
+								pl := s.pm.GetPlayer(bs.id)
+								if pl != nil && pl.Inventory != nil && pl.Inventory.HeldSlot >= 0 && pl.Inventory.HeldSlot < len(pl.Inventory.Items) {
+									if pl.Inventory.Items[pl.Inventory.HeldSlot].Count > 0 {
+										pl.Inventory.Items[pl.Inventory.HeldSlot].Count--
+										s.syncBedrockInventory(bs, pl)
+									}
+								}
+								return
+							}
+						}
+					}
+					// Fallback: resync jika item tidak placeable atau tidak ditemukan
 					s.resyncBedrockBlock(conn, data.BlockPosition)
 					s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
 				case protocol.UseItemActionBreakBlock:
@@ -390,10 +492,13 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			s.pm.UpdateSneak(bs.id, true)
 		case protocol.PlayerActionStopSneak:
 			s.pm.UpdateSneak(bs.id, false)
+		case protocol.PlayerActionStartBreak:
+			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking)
+		case protocol.PlayerActionAbortBreak:
+			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStopBlockCracking)
 		case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock:
 			s.breakBedrockBlock(p.BlockPosition)
 		case protocol.PlayerActionStartFlying, protocol.PlayerActionStopFlying:
-			// Client attempted to toggle flight through settings/controls. Re-assert survival.
 			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 		}
 

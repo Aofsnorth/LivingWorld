@@ -18,9 +18,12 @@ type Drop struct {
 	Item     string // namespaced item name, e.g. "minecraft:cobblestone"
 	Count    int
 	X, Y, Z  float64
+	// Velocity for vanilla physics (blocks/tick)
+	VX, VY, VZ float64
 	// SpawnTick is the store tick at which the drop appeared; used for a pickup
 	// delay (so the breaker doesn't instantly re-collect) and despawn timeout.
 	SpawnTick int64
+	OnGround  bool
 }
 
 // Store holds all active drops and notifies listeners on spawn/despawn.
@@ -57,14 +60,23 @@ func (s *Store) OnDespawn(fn func(id int64)) {
 
 // Spawn adds a drop at a position and notifies listeners. Returns the new drop.
 func (s *Store) Spawn(item string, count int, x, y, z float64) Drop {
+	id := s.nextID.Add(1)
+	// Vanilla random scatter for initial velocity
+	randX := (float64(id%200) - 100) / 666.0 // ±0.15 blocks/tick
+	randZ := (float64(id%173) - 86) / 666.0
+
 	d := Drop{
-		EntityID:  s.nextID.Add(1),
+		EntityID:  id,
 		Item:      item,
 		Count:     count,
 		X:         x,
 		Y:         y,
 		Z:         z,
+		VX:        randX,
+		VY:        0.2, // upward pop
+		VZ:        randZ,
 		SpawnTick: s.tick.Load(),
+		OnGround:  false,
 	}
 	s.mu.Lock()
 	s.drops[d.EntityID] = &d
