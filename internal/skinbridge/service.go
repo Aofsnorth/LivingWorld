@@ -47,13 +47,12 @@ func (s *Service) GetAddr() string {
 	return s.addr
 }
 
-
 func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) string {
 	if s == nil || s.addr == "" || width <= 0 || height <= 0 || len(rgba) < width*height*4 {
 		return ""
 	}
 	var img *image.NRGBA
-	
+
 	isPadded64 := false
 	if width == 128 && height == 128 {
 		isPadded64 = true
@@ -74,6 +73,8 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 	}
 
 	if isPadded64 {
+		// A 64×64 skin the Bedrock client padded into a 128 canvas: crop back to
+		// the real 64×64 content (lossless).
 		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
 		for y := 0; y < 64; y++ {
 			for x := 0; x < 64; x++ {
@@ -85,36 +86,13 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 				img.Pix[dstIdx+3] = rgba[srcIdx+3]
 			}
 		}
-	} else if width > 64 || height > 64 {
-		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
-		scaleX := width / 64
-		scaleY := height / 64
-		if scaleX == 0 { scaleX = 1 }
-		if scaleY == 0 { scaleY = 1 }
-		for y := 0; y < 64; y++ {
-			for x := 0; x < 64; x++ {
-				// Use nearest-neighbor sampling to preserve pixel-art sharpness.
-				// Averaging pixels makes the skin look blurry/compressed.
-				sx := x * scaleX
-				sy := y * scaleY
-				
-				var r, g, b, a byte
-				if sx < width && sy < height {
-					srcIdx := (sy*width + sx) * 4
-					r = rgba[srcIdx]
-					g = rgba[srcIdx+1]
-					b = rgba[srcIdx+2]
-					a = rgba[srcIdx+3]
-				}
-
-				dstIdx := (y*64 + x) * 4
-				img.Pix[dstIdx] = r
-				img.Pix[dstIdx+1] = g
-				img.Pix[dstIdx+2] = b
-				img.Pix[dstIdx+3] = a
-			}
-		}
 	} else {
+		// Pass the skin through at its FULL native resolution. Java supports HD
+		// (128×128) skins natively, so a genuine HD Bedrock skin must NOT be
+		// downscaled to 64×64 — decimating it threw away 3 of every 4 pixels and
+		// produced the "burik"/blocky look. PNG is lossless, so this preserves the
+		// skin exactly. Valid Minecraft skins are 64×64, legacy 64×32, or HD
+		// 128×128; any of these copy through unchanged.
 		img = image.NewNRGBA(image.Rect(0, 0, width, height))
 		copy(img.Pix, rgba[:width*height*4])
 	}

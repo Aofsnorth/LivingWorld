@@ -98,10 +98,14 @@ func (m *Manager) push(id uuid.UUID, vx, vy, vz float64) {
 
 // Player-push tuning. Values are in blocks; velocity is blocks/tick.
 const (
-	pushTickHz     = 10  // pushes/second
-	pushRadius     = 0.6 // horizontal center distance under which players push apart
-	pushVertical   = 1.8 // only push when vertical spans overlap (player height)
-	pushStrength   = 0.05
+	pushTickHz   = 10  // pushes/second
+	pushRadius   = 0.6 // horizontal center distance under which players push apart
+	pushVertical = 1.0 // push only when vertical gap is below this (roughly stacked
+	// at the same level). Players standing ON another's head/shoulders have a gap
+	// near full body height and must be excluded — otherwise the per-tick push
+	// (which overwrites the whole velocity vector, Y included) keeps resetting the
+	// climber's gravity to 0 and they descend in slow motion / hover.
+	pushStrength   = 0.08
 	pushMaxPerTick = 0.4 // clamp so deeply-overlapped players don't launch
 )
 

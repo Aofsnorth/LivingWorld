@@ -63,19 +63,19 @@ type bedrockSession struct {
 
 func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *minecraft.Conn, pm *player.Manager) *bedrockSession {
 	return &bedrockSession{
-		id:         id,
-		username:   username,
-		runtimeID:  runtimeID,
-		conn:       conn,
-		pm:         pm,
-		identity:   conn.IdentityData(),
-		clientData: conn.ClientData(),
-		chunkCache: bedrockworld.NewChunkCache(),
+		id:           id,
+		username:     username,
+		runtimeID:    runtimeID,
+		conn:         conn,
+		pm:           pm,
+		identity:     conn.IdentityData(),
+		clientData:   conn.ClientData(),
+		chunkCache:   bedrockworld.NewChunkCache(),
 		LoadedChunks: make(map[protocol.ChunkPos]bool),
-		lastPubX:   -999999, // Trigger update immediately on first move
-		lastPubZ:   -999999,
-		lastChunkX: -999999,
-		lastChunkZ: -999999,
+		lastPubX:     -999999, // Trigger update immediately on first move
+		lastPubZ:     -999999,
+		lastChunkX:   -999999,
+		lastChunkZ:   -999999,
 		viewDistance: 0,
 	}
 }
@@ -103,11 +103,13 @@ func (s *bedrockSession) Kick(reason string) {
 // player knows itself as bedrockLocalRuntime (1), NOT bs.runtimeID (the id other
 // viewers see) — targeting the wrong id silently no-ops.
 func (s *bedrockSession) Push(vx, vy, vz float64) {
-	// Bedrock ground friction is extremely high compared to Java.
-	// We amplify the horizontal knockback so the client actually gets moved by
-	// the SetActorMotion packet without requiring an artificial vertical bump.
-	vx *= 1.5
-	vz *= 1.5
+	// Bedrock ground friction is extremely high compared to Java, so a Bedrock
+	// player shoved by a Java player feels "heavy" / barely moves. Amplify the
+	// horizontal knockback strongly so SetActorMotion actually displaces the
+	// client. No vertical bump — vy stays as given (0 from the push loop) so we
+	// never fight the client's own gravity.
+	vx *= 3.0
+	vz *= 3.0
 
 	s.write(&packet.SetActorMotion{
 		EntityRuntimeID: bedrockLocalRuntime,
@@ -226,7 +228,12 @@ func bedrockSharedFeetFromLocalClient(pos mgl32.Vec3) (x, y, z float64) {
 }
 
 func bedrockPosFromFeet(x, y, z float64) mgl32.Vec3 {
-	return mgl32.Vec3{float32(x), float32(y), float32(z)}
+	// A remote player entity rendered for a Bedrock viewer needs the same visual
+	// Y offset the local Bedrock client uses for its own render position —
+	// regardless of the source edition. Without it the entity is drawn one
+	// eye-height too low and appears sunk into the ground. This applies equally
+	// to Bedrock-origin players (see bedrockPosFromJavaFeet for the Java case).
+	return mgl32.Vec3{float32(x), float32(y + bedrockLocalEyeHeight), float32(z)}
 }
 
 func bedrockPosFromJavaFeet(x, y, z float64) mgl32.Vec3 {

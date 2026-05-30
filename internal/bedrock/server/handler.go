@@ -111,7 +111,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if s.skins != nil {
 		sk := skin.SkinFromClientData(bs.clientData)
 		pl.BedrockSkinURL = s.skins.RegisterRGBA(playerID, int(sk.SkinImageWidth), int(sk.SkinImageHeight), sk.SkinData)
-		
+
 		go func(pID uuid.UUID, pName string, url string) {
 			key := strings.TrimPrefix(url, s.skins.GetAddr()+"/skins/")
 			pngData := s.skins.GetSkin(key)
@@ -148,6 +148,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	sendInitialInventories(mcConn)
 	_ = bedrockworld.SendSetTime(mcConn, int32(s.wm.GetDefaultWorld().GetDayTime()))
 	s.spawnExistingForeignPlayers(bs)
+	s.spawnExistingDropsFor(bs)
 
 	for {
 		pk, err := mcConn.ReadPacket()
@@ -261,7 +262,33 @@ func (s *Server) breakBedrockBlock(pos protocol.BlockPos) {
 	if current.ID() == 0 || current.ID() == 1 {
 		return
 	}
+
+	// Send the break animation + sound to every Bedrock viewer BEFORE the block
+	// becomes air. LevelEventParticlesDestroyBlock (2001) makes the client play
+	// the block's own break particles AND its break sound; EventData is the
+	// Bedrock runtime ID of the block being destroyed. Without this the block
+	// just blinked out of existence on Bedrock (no crack, no particles, no sound).
+	s.broadcastBlockBreakEffect(int32(pos[0]), int32(pos[1]), int32(pos[2]), current.ID())
+
+	// Roll vanilla loot and spawn item entities before the block becomes air.
+	s.wm.DropBlockLoot(current.ID(), int(pos[0]), int(pos[1]), int(pos[2]))
+
 	s.wm.SetBlockAndPublish(lwworld.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]), lwworld.BlockAir{})
+}
+
+// broadcastBlockBreakEffect plays the destroy-block particles + sound on every
+// Bedrock client at the given block position, for the block with world ID
+// brokenBlockID.
+func (s *Server) broadcastBlockBreakEffect(x, y, z int32, brokenBlockID int32) {
+	rid := bedrockworld.LivingWorldBlockIDToBedrockRID(brokenBlockID)
+	center := mgl32.Vec3{float32(x) + 0.5, float32(y) + 0.5, float32(z) + 0.5}
+	s.forEachSession(func(bs *bedrockSession) {
+		bs.write(&packet.LevelEvent{
+			EventType: packet.LevelEventParticlesDestroyBlock,
+			Position:  center,
+			EventData: int32(rid),
+		})
+	})
 }
 
 func isBedrockBreakAction(action int32) bool {
@@ -287,12 +314,11 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 	if publish {
 		s.pm.UpdatePosition(bs.id, x, y, z, pitch, yaw, onGround)
 
-		cx := int32(x)
-		cz := int32(z)
-
-		// Dynamically load new chunks if the player crossed a chunk boundary
-		chunkX := cx >> 4
-		chunkZ := cz >> 4
+		// Dynamically load new chunks if the player crossed a chunk boundary.
+		// Use floor division (lwworld.ChunkCoord) not int32(x)>>4, which is wrong
+		// for negative coords and left far -X/-Z chunks unloaded until entered.
+		chunkX := lwworld.ChunkCoord(x)
+		chunkZ := lwworld.ChunkCoord(z)
 		if chunkX != bs.lastChunkX || chunkZ != bs.lastChunkZ {
 			bs.lastChunkX = chunkX
 			bs.lastChunkZ = chunkZ

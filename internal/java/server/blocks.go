@@ -37,6 +37,9 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(current.ID())))
 			return
 		}
+		// Roll vanilla loot for the broken block and spawn item entities BEFORE the
+		// block becomes air (the loot lookup needs the block's id).
+		s.Bridge.wm.DropBlockLoot(current.ID(), pos.X, pos.Y, pos.Z)
 		s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, pos.X, pos.Y, pos.Z, world.BlockAir{})
 	}
 }

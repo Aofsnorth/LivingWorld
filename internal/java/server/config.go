@@ -40,8 +40,6 @@ func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
-	log.Printf("[Java] AcceptConfig: starting config phase")
-
 	// Announce the vanilla "core" data pack BEFORE sending registries. In 26.1
 	// the client only initialises its built-in resource provider (knownPacks)
 	// when it receives a SelectKnownPacks packet; otherwise registry entries we
@@ -58,7 +56,6 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		_, _ = pk.String("minecraft").WriteTo(&buf) // namespace
 		_, _ = pk.String("core").WriteTo(&buf)      // id
 		_, _ = pk.String("26.1").WriteTo(&buf)      // version
-		log.Printf("[Java] AcceptConfig: sending SelectKnownPacks (minecraft:core)")
 		if err := conn.WritePacket(pk.Packet{
 			ID:   int32(packetid.ClientboundConfigSelectKnownPacks),
 			Data: buf.Bytes(),
@@ -76,7 +73,6 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 	sort.Strings(keys)
 	for _, id := range keys {
 		reg := c.registries.Registry(id)
-		log.Printf("[Java] AcceptConfig: sending registry %s", id)
 		if err := conn.WritePacket(pk.Marshal(
 			packetid.ClientboundConfigRegistryData,
 			pk.Identifier(id),
@@ -94,7 +90,6 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		_, _ = pk.Boolean(true).WriteTo(&buf)                     // has data
 		_, _ = buf.Write([]byte{0x0a, 0x00})                      // empty NBT compound
 
-		log.Printf("[Java] AcceptConfig: sending registry minecraft:world_clock")
 		if err := conn.WritePacket(pk.Marshal(
 			packetid.ClientboundConfigRegistryData,
 			pk.Identifier("minecraft:world_clock"),
@@ -123,7 +118,6 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 			_, _ = pk.Identifier(id).WriteTo(&buf)
 			_, _ = pk.Boolean(false).WriteTo(&buf) // hasData=false → use built-in
 		}
-		log.Printf("[Java] AcceptConfig: sending registry minecraft:timeline (%d data-less entries)", len(timelineIDs))
 		if err := conn.WritePacket(pk.Marshal(
 			packetid.ClientboundConfigRegistryData,
 			pk.Identifier("minecraft:timeline"),
@@ -191,15 +185,12 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		log.Printf("[Java] AcceptConfig: error sending UpdateTags: %v", err)
 		return err
 	}
-	log.Printf("[Java] AcceptConfig: sent UpdateTags")
 
 	// Send FinishConfiguration to transition client to play state
-	log.Printf("[Java] AcceptConfig: sending FinishConfiguration packet")
 	if err := conn.WritePacket(pk.Marshal(packetid.ClientboundConfigFinishConfiguration)); err != nil {
 		log.Printf("[Java] AcceptConfig: error sending FinishConfiguration: %v", err)
 		return err
 	}
-	log.Printf("[Java] AcceptConfig: FinishConfiguration sent (ID=%d), waiting for client response", packetid.ClientboundConfigFinishConfiguration)
 
 	for {
 		var p pk.Packet
@@ -207,10 +198,8 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 			log.Printf("[Java] AcceptConfig: error reading packet: %v", err)
 			return err
 		}
-		log.Printf("[Java] AcceptConfig: received raw packet ID=%d (0x%x), data_len=%d", p.ID, p.ID, len(p.Data))
 		switch packetid.ServerboundPacketID(p.ID) {
 		case packetid.ServerboundConfigFinishConfiguration:
-			log.Printf("[Java] AcceptConfig: client sent FinishConfiguration (ID=%d), config complete", packetid.ServerboundConfigFinishConfiguration)
 			return nil // Config complete, proceed to Play state
 		case packetid.ServerboundConfigKeepAlive:
 			// Respond with same ID to keep connection alive

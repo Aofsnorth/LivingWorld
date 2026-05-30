@@ -35,38 +35,38 @@ type PlayerSession struct {
 	// compute fall damage on landing (Java damage is server-authoritative).
 	FallDistance float64
 
-	Health     float32
-	Food       int32
-	Saturation float32
-	GameModeVal   int32
+	Health      float32
+	Food        int32
+	Saturation  float32
+	GameModeVal int32
 
 	SelectedSlot int32
 	LoadedChunks map[world.ChunkPos]bool
 	lastSentPos  map[uuid.UUID]world.Position
 
-	chunkQueue   chan struct{}
-	mu sync.Mutex
-	Ready bool
+	chunkQueue chan struct{}
+	mu         sync.Mutex
+	Ready      bool
 }
 
 func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *javaBridge) *PlayerSession {
 	spawn := bridge.cfg.World.Spawn
 	return &PlayerSession{
-		EntityIDVal:     nextEntityID.Add(1),
-		UUIDVal:         id,
-		UsernameVal:     username,
-		Conn_:           conn,
-		Bridge:          bridge,
-		X:               spawn.X,
-		Y:               spawn.Y,
-		Z:               spawn.Z,
-		Health:          MaxHealth,
-		Food:            MaxFood,
-		Saturation:      MaxSaturation,
-		GameModeVal:     0, // survival — required for hunger drain and fall damage
-		LoadedChunks:    make(map[world.ChunkPos]bool),
-		lastSentPos:     make(map[uuid.UUID]world.Position),
-		chunkQueue:      make(chan struct{}, 1),
+		EntityIDVal:  nextEntityID.Add(1),
+		UUIDVal:      id,
+		UsernameVal:  username,
+		Conn_:        conn,
+		Bridge:       bridge,
+		X:            spawn.X,
+		Y:            spawn.Y,
+		Z:            spawn.Z,
+		Health:       MaxHealth,
+		Food:         MaxFood,
+		Saturation:   MaxSaturation,
+		GameModeVal:  0, // survival — required for hunger drain and fall damage
+		LoadedChunks: make(map[world.ChunkPos]bool),
+		lastSentPos:  make(map[uuid.UUID]world.Position),
+		chunkQueue:   make(chan struct{}, 1),
 	}
 }
 
@@ -132,11 +132,11 @@ func (s *PlayerSession) WriteRaw(data []byte) error {
 }
 
 func (s *PlayerSession) ChunkX() int32 {
-	return int32(s.X) >> 4
+	return world.ChunkCoord(s.X)
 }
 
 func (s *PlayerSession) ChunkZ() int32 {
-	return int32(s.Z) >> 4
+	return world.ChunkCoord(s.Z)
 }
 
 type SessionManager struct {

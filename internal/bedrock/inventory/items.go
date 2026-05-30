@@ -45,3 +45,14 @@ func VanillaItemEntries() []protocol.ItemEntry {
 	}
 	return entries
 }
+
+// RuntimeIDByName resolves an item name ("minecraft:cobblestone") to its Bedrock
+// network runtime id. Returns 0, false if the item is not in the vanilla
+// registry. Used to build item stacks for dropped item entities.
+func RuntimeIDByName(name string) (int32, bool) {
+	e, ok := vanillaItems[name]
+	if !ok {
+		return 0, false
+	}
+	return e.RuntimeID, true
+}

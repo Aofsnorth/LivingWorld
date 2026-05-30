@@ -85,6 +85,11 @@ type VersionHandler interface {
 	SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error
 	UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error
 	HandlePacket(s Session, p pk.Packet)
+
+	// Dropped item entities.
+	SpawnItemEntity(s Session, entityID int32, itemName string, count int, x, y, z float64) error
+	RemoveItemEntity(s Session, entityID int32) error
+	TakeItemEntity(s Session, itemEntityID, collectorEntityID int32, count int) error
 }
 
 var registeredHandlers = make(map[int]VersionHandler)

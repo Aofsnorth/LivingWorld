@@ -45,15 +45,13 @@ func (s *Server) updateBedrockChunks(bs *bedrockSession, cx, cz int32) {
 		radius = int32(s.cfg.Bedrock.ViewDistance)
 	}
 
-	// Update the network chunk publisher center to the player's new position
-	px, py, pz := int32(bs.lastX), int32(bs.lastY), int32(bs.lastZ)
-	// If lastX is 0 (spawning), fallback to spawn block coordinates
-	if px == 0 && pz == 0 {
-		px = int32(s.cfg.World.Spawn.X)
-		py = int32(lwworld.SuperflatSpawnY)
-		pz = int32(s.cfg.World.Spawn.Z)
-	}
-	pos := protocol.BlockPos{px, py, pz}
+	// Re-center the network chunk publisher on the player's CURRENT chunk. The
+	// publisher radius gates what the client will render, so it must track the
+	// player; derive it from the floor-correct chunk coords (cx,cz) we were given
+	// rather than int32(lastX), whose truncation + the old spawn-(0,0) fallback
+	// kept the publisher pinned near spawn and culled far chunks the client had
+	// already received. Center on the chunk's block midpoint.
+	pos := protocol.BlockPos{cx*16 + 8, int32(bs.lastY), cz*16 + 8}
 	_ = bs.conn.WritePacket(&packet.NetworkChunkPublisherUpdate{
 		Position: pos,
 		Radius:   uint32(radius * 16),

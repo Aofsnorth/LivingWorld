@@ -2,10 +2,14 @@ package world
 
 import (
 	"log"
+	"math/rand"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"livingworld/internal/drops"
+	"livingworld/internal/loot"
 )
 
 type ChunkPos struct {
@@ -207,6 +211,9 @@ type Manager struct {
 	worlds       map[string]*World
 	defaultWorld *World
 	blockEvents  *BlockEventBus
+	drops        *drops.Store
+	dropRNG      *rand.Rand
+	dropMu       sync.Mutex // guards dropRNG (math/rand is not concurrency-safe)
 	autosaveStop chan struct{}
 	timeStop     chan struct{}
 }
@@ -215,10 +222,30 @@ func NewManager() *Manager {
 	m := &Manager{
 		worlds:      make(map[string]*World),
 		blockEvents: NewBlockEventBus(),
+		drops:       drops.New(),
+		dropRNG:     rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld
 	return m
+}
+
+// Drops returns the shared item-drop store. Each protocol bridge subscribes to
+// it (OnSpawn/OnDespawn) to render and pick up dropped items.
+func (m *Manager) Drops() *drops.Store { return m.drops }
+
+// DropBlockLoot rolls the vanilla bare-hand loot for the block that was at
+// (x,y,z) and spawns the resulting item entities into the drop store, centred on
+// the block. blockID is the canonical world block id that was broken. Call this
+// BEFORE replacing the block with air.
+func (m *Manager) DropBlockLoot(blockID int32, x, y, z int) {
+	name := StateName(blockID)
+	m.dropMu.Lock()
+	stacks := loot.Rolls(name, m.dropRNG)
+	m.dropMu.Unlock()
+	for _, st := range stacks {
+		m.drops.Spawn(st.Item, st.Count, float64(x)+0.5, float64(y)+0.25, float64(z)+0.5)
+	}
 }
 
 func (m *Manager) GetWorld(name string) *World {
@@ -339,27 +366,18 @@ func (m *Manager) StartTimeLoop(advance bool) {
 	m.timeStop = stop
 	m.mu.Unlock()
 
-	log.Printf("[World] StartTimeLoop: starting (advance=%v)", advance)
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond) // 20 TPS
 		defer ticker.Stop()
-		tickCount := 0
 		for {
 			select {
 			case <-stop:
-				log.Printf("[World] StartTimeLoop: stopped")
 				return
 			case <-ticker.C:
 				for _, w := range m.GetAllWorlds() {
 					w.SetTime(w.GetTime() + 1)
 					if advance {
 						w.SetDayTime((w.GetDayTime() + 1) % 24000)
-					}
-				}
-				tickCount++
-				if tickCount%400 == 0 { // log setiap 20 detik (400 tick)
-					for _, w := range m.GetAllWorlds() {
-						log.Printf("[World] %s: age=%d dayTime=%d", w.name, w.GetTime(), w.GetDayTime())
 					}
 				}
 			}

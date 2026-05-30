@@ -9,6 +9,26 @@ const (
 	MinWorldHeight   = -64
 )
 
+// ChunkCoord converts a world block/position coordinate to its chunk coordinate
+// using true floor division (Minecraft semantics), NOT Go's truncate-toward-zero
+// int conversion. `int32(x) >> 4` is WRONG for negative coordinates: a player at
+// x=-0.5 truncates to int32 0 → chunk 0, but the real chunk is -1. Since spawn is
+// at (0,0), walking into -X/-Z mis-computes the player's chunk, so the view-radius
+// is centred on the wrong chunk and far chunks never stream in until the player
+// physically walks into a chunk the broken math finally agrees on. Floor division
+// fixes both the boundary-cross trigger and the radius centre.
+//
+// We floor the block coordinate first, then arithmetic-shift by 4. Arithmetic
+// right shift already floors toward -∞ for ints, so the only correction needed is
+// turning the float→int truncation into a floor.
+func ChunkCoord(worldCoord float64) int32 {
+	block := int32(worldCoord) // truncates toward zero
+	if worldCoord < 0 && float64(block) != worldCoord {
+		block-- // floor: a fractional negative block belongs to the lower block
+	}
+	return block >> 4 // arithmetic shift floors toward -∞ (e.g. -1>>4 = -1)
+}
+
 type Chunk struct {
 	sections  []ChunkSection
 	heightMap []int32
