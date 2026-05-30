@@ -16,7 +16,6 @@ import (
 	lwworld "livingworld/internal/world"
 	"livingworld/plugin"
 
-	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft"
@@ -141,8 +140,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	_ = mcConn.WritePacket(&packet.SetCommandsEnabled{Enabled: pl.Op})
 	s.sendAvailableCommands(mcConn)
 
-	chunkCache := make(map[protocol.ChunkPos]*dfchunk.Chunk)
-	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, chunkCache)
+	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, bs)
 
 	teleportPlayer(mcConn, spawnClientPos, spawn.Pitch, spawn.Yaw)
 	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime)
@@ -157,7 +155,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Printf("[Bedrock] Client disconnected %s: %v", addr, err)
 			return
 		}
-		s.handlePacket(bs, pk, chunkCache)
+		s.handlePacket(bs, pk, bs.chunkCache)
 	}
 }
 
@@ -288,10 +286,22 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 	}
 	if publish {
 		s.pm.UpdatePosition(bs.id, x, y, z, pitch, yaw, onGround)
+
+		cx := int32(x)
+		cz := int32(z)
+
+		// Dynamically load new chunks if the player crossed a chunk boundary
+		chunkX := cx >> 4
+		chunkZ := cz >> 4
+		if chunkX != bs.lastChunkX || chunkZ != bs.lastChunkZ {
+			bs.lastChunkX = chunkX
+			bs.lastChunkZ = chunkZ
+			s.updateBedrockChunks(bs, chunkX, chunkZ)
+		}
 	}
 }
 
-func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache map[protocol.ChunkPos]*dfchunk.Chunk) {
+func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *bedrockworld.ChunkCache) {
 	conn := bs.conn
 	switch p := pk.(type) {
 	case *packet.RequestChunkRadius:
@@ -299,11 +309,11 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 		if r <= 0 || r > s.cfg.Bedrock.ViewDistance {
 			r = s.cfg.Bedrock.ViewDistance
 		}
-		s.bootstrapWorld(conn, r, chunkCache)
+		s.bootstrapWorld(conn, r, bs)
 		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 
 	case *packet.SubChunkRequest:
-		s.converter.HandleSubChunkRequest(conn, p, chunkCache)
+		s.converter.HandleSubChunkRequest(conn, p, s.wm.GetDefaultWorld(), chunkCache)
 
 	case *packet.MovePlayer:
 		// If PlayerAuthInput is active, don't process a second movement source in

@@ -3,6 +3,7 @@ package world
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	lwworld "livingworld/internal/world"
 
@@ -13,6 +14,19 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
+
+// ChunkCache is a thread-safe cache wrapper for Bedrock chunks to prevent concurrent
+// access issues between player connection loops and block update loops.
+type ChunkCache struct {
+	Mu    sync.RWMutex
+	Cache map[protocol.ChunkPos]*dfchunk.Chunk
+}
+
+func NewChunkCache() *ChunkCache {
+	return &ChunkCache{
+		Cache: make(map[protocol.ChunkPos]*dfchunk.Chunk),
+	}
+}
 
 // ChunkConverter handles converting internal world chunks to Bedrock format.
 type ChunkConverter struct{}
@@ -65,6 +79,74 @@ func LogBlockPaletteVersion() {
 	}
 }
 
+// SendChunk loads, converts, caches, and sends a single chunk to the Bedrock player.
+func (c *ChunkConverter) SendChunk(
+	conn *minecraft.Conn, w *lwworld.World, cx, cz int,
+	chunkCache *ChunkCache,
+) {
+	rng := dfworld.Overworld.Range()
+	airRID := BlockRID("minecraft:air")
+	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
+	maxY := int(rng.Max()) // 319; world blocks live at Y >= 0
+	subChunkCount := uint32((rng.Height() >> 4) + 1)
+
+	pos := protocol.ChunkPos{int32(cx), int32(cz)}
+
+	chunkCache.Mu.Lock()
+	ch, ok := chunkCache.Cache[pos]
+	chunkCache.Mu.Unlock()
+
+	if !ok {
+		wchunk := w.LoadChunk(cx, cz)
+		ch = dfchunk.New(airRID, rng)
+
+		for x := 0; x < 16; x++ {
+			for z := 0; z < 16; z++ {
+				for y := 0; y <= maxY; y++ {
+					id := wchunk.GetBlock(x, y, z).ID()
+					if id == 0 {
+						continue
+					}
+					ch.SetBlock(uint8(x), int16(y), uint8(z), 0, LivingWorldBlockIDToBedrockRID(id))
+				}
+			}
+		}
+		for y := int16(rng.Min()); y <= int16(rng.Max()); y += 4 {
+			for x := uint8(0); x < 16; x += 4 {
+				for z := uint8(0); z < 16; z += 4 {
+					ch.SetBiome(x, y, z, plainsBiomeID)
+				}
+			}
+		}
+
+		chunkCache.Mu.Lock()
+		chunkCache.Cache[pos] = ch
+		chunkCache.Mu.Unlock()
+	}
+
+	chunkCache.Mu.RLock()
+	data := dfchunk.Encode(ch, dfchunk.NetworkEncoding)
+	chunkCache.Mu.RUnlock()
+
+	buf := newInlinePayloadBuffer()
+	for _, sub := range data.SubChunks {
+		_, _ = buf.Write(sub)
+	}
+	_, _ = buf.Write(data.Biomes)
+	buf.WriteByte(0) // border block count = 0
+
+	err := conn.WritePacket(&packet.LevelChunk{
+		Position:      pos,
+		Dimension:     0,
+		SubChunkCount: subChunkCount,
+		CacheEnabled:  false,
+		RawPayload:    buf.Bytes(),
+	})
+	if err != nil {
+		log.Printf("[Bedrock] Failed to send chunk (%d,%d): %v", cx, cz, err)
+	}
+}
+
 // SendInitialChunks converts the shared world's chunks (generated terrain plus
 // any persisted player edits) into Bedrock LevelChunk packets and sends them
 // inline. Reading the real world is what makes block edits and persistence show
@@ -72,22 +154,52 @@ func LogBlockPaletteVersion() {
 // path can serve the same data.
 func (c *ChunkConverter) SendInitialChunks(
 	conn *minecraft.Conn, w *lwworld.World, centerChunkX, centerChunkZ, radius int,
-	chunkCache map[protocol.ChunkPos]*dfchunk.Chunk,
+	chunkCache *ChunkCache,
 ) {
-	rng := dfworld.Overworld.Range()
-	airRID := BlockRID("minecraft:air")
-	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
-
-	// Total sub-chunks for the overworld range (-64..319 → 24 sub-chunks).
-	subChunkCount := uint32((rng.Height() >> 4) + 1)
-	maxY := int(rng.Max()) // 319; world blocks live at Y >= 0
-
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			cx, cz := centerChunkX+dx, centerChunkZ+dz
-			wchunk := w.LoadChunk(cx, cz)
-			ch := dfchunk.New(airRID, rng)
+			c.SendChunk(conn, w, cx, cz, chunkCache)
+		}
+	}
 
+	log.Printf("[Bedrock] Sent %d chunks (inline from world)", (2*radius+1)*(2*radius+1))
+}
+
+// HandleSubChunkRequest processes SubChunkRequest packets for the modern
+// sub-chunk request path. It converts world chunks on demand if not already cached.
+func (c *ChunkConverter) HandleSubChunkRequest(
+	conn *minecraft.Conn, pk *packet.SubChunkRequest, w *lwworld.World,
+	chunkCache *ChunkCache,
+) {
+	rng := dfworld.Overworld.Range()
+	center := pk.Position
+	airRID := BlockRID("minecraft:air")
+	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
+	maxY := int(rng.Max())
+
+	entries := make([]protocol.SubChunkEntry, 0, len(pk.Offsets))
+	for _, offset := range pk.Offsets {
+		absX := center.X() + int32(offset[0])
+		absZ := center.Z() + int32(offset[2])
+		absYInd := center.Y() + int32(offset[1])
+
+		subChunkCount := int32((rng.Height() >> 4) + 1)
+		if absYInd < 0 || absYInd >= subChunkCount {
+			entries = append(entries, protocol.SubChunkEntry{
+				Offset: offset,
+				Result: protocol.SubChunkResultIndexOutOfBounds,
+			})
+			continue
+		}
+
+		chunkPos := protocol.ChunkPos{absX, absZ}
+		chunkCache.Mu.RLock()
+		ch, ok := chunkCache.Cache[chunkPos]
+		chunkCache.Mu.RUnlock()
+		if !ok {
+			wchunk := w.LoadChunk(int(absX), int(absZ))
+			ch = dfchunk.New(airRID, rng)
 			for x := 0; x < 16; x++ {
 				for z := 0; z < 16; z++ {
 					for y := 0; y <= maxY; y++ {
@@ -106,74 +218,15 @@ func (c *ChunkConverter) SendInitialChunks(
 					}
 				}
 			}
-
-			// Cache for the SubChunkRequest system (if the client uses it).
-			pos := protocol.ChunkPos{int32(cx), int32(cz)}
-			chunkCache[pos] = ch
-
-			// --- Build the inline payload (all sub-chunks + biomes + border) ---
-			data := dfchunk.Encode(ch, dfchunk.NetworkEncoding)
-			buf := newInlinePayloadBuffer()
-			for _, sub := range data.SubChunks {
-				_, _ = buf.Write(sub)
-			}
-			_, _ = buf.Write(data.Biomes)
-			buf.WriteByte(0) // border block count = 0
-
-			err := conn.WritePacket(&packet.LevelChunk{
-				Position:      pos,
-				Dimension:     0,
-				SubChunkCount: subChunkCount,
-				CacheEnabled:  false,
-				RawPayload:    buf.Bytes(),
-			})
-			if err != nil {
-				log.Printf("[Bedrock] Failed to send chunk (%d,%d): %v", cx, cz, err)
-			}
-		}
-	}
-
-	log.Printf("[Bedrock] Sent %d chunks (inline from world), subChunks=%d",
-		(2*radius+1)*(2*radius+1), subChunkCount)
-}
-
-// HandleSubChunkRequest processes SubChunkRequest packets for the modern
-// sub-chunk request path.  Currently unused when inline mode is active, but
-// kept ready for future use.
-func (c *ChunkConverter) HandleSubChunkRequest(
-	conn *minecraft.Conn, pk *packet.SubChunkRequest,
-	chunkCache map[protocol.ChunkPos]*dfchunk.Chunk,
-) {
-	rng := dfworld.Overworld.Range()
-	center := pk.Position
-
-	entries := make([]protocol.SubChunkEntry, 0, len(pk.Offsets))
-	for _, offset := range pk.Offsets {
-		absX := center.X() + int32(offset[0])
-		absZ := center.Z() + int32(offset[2])
-		absYInd := center.Y() + int32(offset[1])
-
-		subChunkCount := int32((rng.Height() >> 4) + 1)
-		if absYInd < 0 || absYInd >= subChunkCount {
-			entries = append(entries, protocol.SubChunkEntry{
-				Offset: offset,
-				Result: protocol.SubChunkResultIndexOutOfBounds,
-			})
-			continue
+			chunkCache.Mu.Lock()
+			chunkCache.Cache[chunkPos] = ch
+			chunkCache.Mu.Unlock()
 		}
 
-		chunkPos := protocol.ChunkPos{absX, absZ}
-		ch, ok := chunkCache[chunkPos]
-		if !ok {
-			entries = append(entries, protocol.SubChunkEntry{
-				Offset: offset,
-				Result: protocol.SubChunkResultChunkNotFound,
-			})
-			continue
-		}
-
+		chunkCache.Mu.RLock()
 		sub := ch.Sub()[absYInd]
 		if sub.Empty() {
+			chunkCache.Mu.RUnlock()
 			entries = append(entries, protocol.SubChunkEntry{
 				Offset:        offset,
 				Result:        protocol.SubChunkResultSuccessAllAir,
@@ -183,6 +236,7 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		}
 
 		rawData := dfchunk.EncodeSubChunk(ch, dfchunk.NetworkEncoding, int(absYInd))
+		chunkCache.Mu.RUnlock()
 		entries = append(entries, protocol.SubChunkEntry{
 			Offset:              offset,
 			Result:              protocol.SubChunkResultSuccess,

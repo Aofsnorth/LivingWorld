@@ -59,11 +59,45 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 		scaleY := height / 64
 		if scaleX == 0 { scaleX = 1 }
 		if scaleY == 0 { scaleY = 1 }
-		for y := 0; y < 64 && y*scaleY < height; y++ {
-			for x := 0; x < 64 && x*scaleX < width; x++ {
-				srcIdx := ((y*scaleY)*width + (x*scaleX)) * 4
+		for y := 0; y < 64; y++ {
+			for x := 0; x < 64; x++ {
+				var rSum, gSum, bSum, aSum int
+				var activePixels int
+				for dy := 0; dy < scaleY; dy++ {
+					sy := y*scaleY + dy
+					if sy >= height {
+						continue
+					}
+					for dx := 0; dx < scaleX; dx++ {
+						sx := x*scaleX + dx
+						if sx >= width {
+							continue
+						}
+						srcIdx := (sy*width + sx) * 4
+						r := int(rgba[srcIdx])
+						g := int(rgba[srcIdx+1])
+						b := int(rgba[srcIdx+2])
+						a := int(rgba[srcIdx+3])
+
+						rSum += r * a
+						gSum += g * a
+						bSum += b * a
+						aSum += a
+						activePixels++
+					}
+				}
 				dstIdx := (y*64 + x) * 4
-				copy(img.Pix[dstIdx:dstIdx+4], rgba[srcIdx:srcIdx+4])
+				if aSum > 0 {
+					img.Pix[dstIdx] = byte(rSum / aSum)
+					img.Pix[dstIdx+1] = byte(gSum / aSum)
+					img.Pix[dstIdx+2] = byte(bSum / aSum)
+					img.Pix[dstIdx+3] = byte(aSum / activePixels)
+				} else {
+					img.Pix[dstIdx] = 0
+					img.Pix[dstIdx+1] = 0
+					img.Pix[dstIdx+2] = 0
+					img.Pix[dstIdx+3] = 0
+				}
 			}
 		}
 	} else {

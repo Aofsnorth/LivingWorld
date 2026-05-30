@@ -26,5 +26,18 @@ func (s *Server) broadcastBlockUpdate(ev world.BlockUpdateEvent) {
 			Flags:             packet.BlockUpdateNetwork | packet.BlockUpdateNeighbours,
 			Layer:             0,
 		})
+
+		// Also update the cached chunk block if it exists in the session's cache.
+		cx := int32(ev.X) >> 4
+		cz := int32(ev.Z) >> 4
+		pos := protocol.ChunkPos{cx, cz}
+		bs.chunkCache.Mu.Lock()
+		if ch, ok := bs.chunkCache.Cache[pos]; ok {
+			lx := uint8(ev.X & 15)
+			ly := int16(ev.Y)
+			lz := uint8(ev.Z & 15)
+			ch.SetBlock(lx, ly, lz, 0, rid)
+		}
+		bs.chunkCache.Mu.Unlock()
 	})
 }

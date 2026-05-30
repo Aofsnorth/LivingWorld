@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/player"
 
 	"github.com/go-gl/mathgl/mgl32"
@@ -35,6 +36,24 @@ type bedrockSession struct {
 	lastAuthInputAt     time.Time
 	lastX, lastY, lastZ float64
 
+	// chunkCache is the thread-safe Bedrock chunk cache for this connection session.
+	chunkCache *bedrockworld.ChunkCache
+
+	// LoadedChunks tracks which chunks have already been sent to the client.
+	LoadedChunks map[protocol.ChunkPos]bool
+	chunkMu      sync.Mutex
+
+	// lastPubX/lastPubZ track the last position where NetworkChunkPublisherUpdate was sent.
+	lastPubX int32
+	lastPubZ int32
+
+	// lastChunkX/lastChunkZ track the player's last chunk coordinates for loading chunks dynamically.
+	lastChunkX int32
+	lastChunkZ int32
+
+	// viewDistance tracks the player's active view distance Negotiated with the client.
+	viewDistance int32
+
 	// invOpened tracks whether the player's own inventory ContainerOpen has been
 	// sent. Re-sending ContainerOpen while already open crashes the client.
 	invOpened bool
@@ -43,7 +62,22 @@ type bedrockSession struct {
 }
 
 func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *minecraft.Conn, pm *player.Manager) *bedrockSession {
-	return &bedrockSession{id: id, username: username, runtimeID: runtimeID, conn: conn, pm: pm, identity: conn.IdentityData(), clientData: conn.ClientData()}
+	return &bedrockSession{
+		id:         id,
+		username:   username,
+		runtimeID:  runtimeID,
+		conn:       conn,
+		pm:         pm,
+		identity:   conn.IdentityData(),
+		clientData: conn.ClientData(),
+		chunkCache: bedrockworld.NewChunkCache(),
+		LoadedChunks: make(map[protocol.ChunkPos]bool),
+		lastPubX:   -999999, // Trigger update immediately on first move
+		lastPubZ:   -999999,
+		lastChunkX: -999999,
+		lastChunkZ: -999999,
+		viewDistance: 0,
+	}
 }
 
 func (s *bedrockSession) pmRef() *player.Manager { return s.pm }
@@ -70,11 +104,8 @@ func (s *bedrockSession) Kick(reason string) {
 // viewers see) — targeting the wrong id silently no-ops.
 func (s *bedrockSession) Push(vx, vy, vz float64) {
 	// Bedrock ground friction is extremely high compared to Java.
-	// We amplify the horizontal knockback and add a slight vertical bump
-	// so the client actually gets moved by the SetActorMotion packet.
-	if vy == 0 {
-		vy = 0.1
-	}
+	// We amplify the horizontal knockback so the client actually gets moved by
+	// the SetActorMotion packet without requiring an artificial vertical bump.
 	vx *= 1.5
 	vz *= 1.5
 
