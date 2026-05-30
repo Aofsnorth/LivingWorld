@@ -12,6 +12,7 @@ import (
 	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/command"
 	"livingworld/internal/player"
+	"livingworld/internal/skinbridge"
 	lwworld "livingworld/internal/world"
 	"livingworld/plugin"
 
@@ -67,7 +68,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		XBLBroadcastMode: 0,
 		Time:             s.wm.GetDefaultWorld().GetDayTime(),
 		GameRules: []protocol.GameRule{
-			{Name: "doDaylightCycle", Value: false},
+			{Name: "doDaylightCycle", Value: true},
 			{Name: "showcoordinates", Value: true},
 		},
 		ServerBlockStateChecksum: 0,
@@ -111,6 +112,20 @@ func (s *Server) handleConn(conn net.Conn) {
 	if s.skins != nil {
 		sk := skin.SkinFromClientData(bs.clientData)
 		pl.BedrockSkinURL = s.skins.RegisterRGBA(playerID, int(sk.SkinImageWidth), int(sk.SkinImageHeight), sk.SkinData)
+		
+		go func(pID uuid.UUID, pName string, url string) {
+			key := strings.TrimPrefix(url, s.skins.GetAddr()+"/skins/")
+			pngData := s.skins.GetSkin(key)
+			if len(pngData) > 0 {
+				val, sig, err := skinbridge.UploadToMineSkin(pngData, s.cfg.Java.MineSkinAPIKey)
+				if err != nil {
+					log.Printf("[Bedrock] MineSkin upload failed for %s: %v", pName, err)
+					return
+				}
+				log.Printf("[Bedrock] MineSkin upload success for %s", pName)
+				s.pm.UpdateProfileProperty(pID, "textures", val, sig)
+			}
+		}(playerID, playerName, pl.BedrockSkinURL)
 	}
 	s.pm.AddPlayer(pl)
 	defer s.pm.RemovePlayer(playerID)

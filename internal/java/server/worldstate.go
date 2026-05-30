@@ -20,17 +20,12 @@ func buildSetDefaultSpawnPositionPacket(dimension string, x, y, z int, yaw, pitc
 	)
 }
 
-// buildSetTimePacket builds the MC 26.1 set_time packet (id 113). 26.1 replaced
+// buildSetTimePacket builds the MC 1.21.4 (26.1) set_time packet. 1.21.4 replaced
 // the old (Long worldAge, Long timeOfDay, Bool tickDayTime) body with a
-// count-prefixed list of per-dimension "world clocks"; sending the old shape
-// crashes the client. We emit exactly one overworld clock (id 0).
+// count-prefixed list of per-dimension "world clocks". We emit exactly one
+// overworld clock (id 0) matching our custom world_clock registry.
 //
 //	worldAge  = monotonically increasing total tick count
-//	dayTime   = time-of-day in ticks (0..23999; 0=dawn, 6000=noon, 18000=midnight)
-//	advancing = whether the client auto-advances the sun (rate 1.0 vs frozen 0.0)
-//
-// Verified against ViaVersion's 1.21.9→1.21.11 rewriter and the Rosegold
-// protocol>=775 decoder (the live wiki is still pinned to protocol 773).
 func buildSetTimePacket(worldAge, dayTime int64, advancing bool) pk.Packet {
 	rate := pk.Float(0)
 	if advancing {

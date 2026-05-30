@@ -267,6 +267,34 @@ func (m *Manager) UpdateSkinParts(id uuid.UUID, parts byte) {
 	}
 }
 
+func (m *Manager) UpdateProfileProperty(id uuid.UUID, name, value, signature string) {
+	m.mu.Lock()
+	p := m.players[id]
+	changed := false
+	if p != nil {
+		found := false
+		for i, prop := range p.ProfileProperties {
+			if prop.Name == name {
+				if p.ProfileProperties[i].Value != value || p.ProfileProperties[i].Signature != signature {
+					p.ProfileProperties[i].Value = value
+					p.ProfileProperties[i].Signature = signature
+					changed = true
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			p.ProfileProperties = append(p.ProfileProperties, ProfileProperty{Name: name, Value: value, Signature: signature})
+			changed = true
+		}
+	}
+	m.mu.Unlock()
+	if changed && p != nil {
+		m.publish(Event{Type: EventSkin, Player: p.Snapshot()})
+	}
+}
+
 func (m *Manager) PublishSwing(id uuid.UUID) {
 	m.mu.RLock()
 	p := m.players[id]

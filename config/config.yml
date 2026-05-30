@@ -11,11 +11,11 @@ world:
     z: 0
     yaw: 0
     pitch: 0
-  persistence: true      # save edited chunks to disk
-  directory: worlds      # base folder; each world saves under <directory>/<name>
-  autosaveSeconds: 300   # periodic autosave; 0 = only save on shutdown
-  difficulty: normal     # peaceful | easy | normal | hard
-  dayNightCycle: true    # advance the sun/moon (false = fixed time)
+  persistence: true # save edited chunks to disk
+  directory: worlds # base folder; each world saves under <directory>/<name>
+  autosaveSeconds: 300 # periodic autosave; 0 = only save on shutdown
+  difficulty: normal # peaceful | easy | normal | hard
+  dayNightCycle: true # advance the sun/moon (false = fixed time)
 
 java:
   bind: 0.0.0.0
@@ -24,6 +24,7 @@ java:
   maxPlayers: 2
   viewDistance: 10
   simulationDistance: 10
+  mineSkinAPIKey: "msk_vTfiSII5_AqXMfAIASnY6NSIX8NHU_2SvFOOzbdkNkq6OzrWhkI5-8dB-mezFk52Oz9VOr4Fc"
   # Offline-mode skin source (client doesn't send a skin when cracked):
   #   auto   = try everything automatically: Ely.by then Mojang (recommended)
   #   mojang = premium account with that name only (may be someone else!)

@@ -16,8 +16,8 @@ type Config struct {
 	PluginsDir string `yaml:"pluginsDir"`
 
 	// Ops lists the usernames (case-insensitive) allowed to run operator/cheat
-	// commands like /gamemode and /time.
-	Ops []string `yaml:"ops"`
+	// commands like /gamemode and /time. Loaded from ops.txt.
+	Ops []string `yaml:"-"`
 
 	World   WorldConfig   `yaml:"world"`
 	Java    JavaConfig    `yaml:"java"`
@@ -93,6 +93,10 @@ type JavaConfig struct {
 	//   "ely"    Ely.by / LegacyLauncher / TLauncher cracked skins only
 	//   "none"   don't fetch (let the client's own launcher skin show)
 	SkinSource string `yaml:"skinSource"`
+
+	// MineSkinAPIKey is used to upload Bedrock skins to Mojang so Java clients
+	// can see them. Required for cross-edition skins to work.
+	MineSkinAPIKey string `yaml:"mineSkinAPIKey"`
 }
 
 type BedrockConfig struct {
@@ -161,6 +165,17 @@ func Load(path string) (*Config, error) {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	opsFile := strings.Replace(path, "config.yml", "ops.txt", 1)
+	if opsB, err := os.ReadFile(opsFile); err == nil {
+		lines := strings.Split(string(opsB), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				cfg.Ops = append(cfg.Ops, line)
+			}
+		}
 	}
 
 	if v := os.Getenv("LIVINGWORLD_SERVER_NAME"); v != "" {

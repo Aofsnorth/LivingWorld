@@ -43,6 +43,11 @@ func (s *Service) Start() {
 	log.Printf("[SkinBridge] serving Bedrock skins for Java clients at %s", s.addr)
 }
 
+func (s *Service) GetAddr() string {
+	return s.addr
+}
+
+
 func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) string {
 	if s == nil || s.addr == "" || width <= 0 || height <= 0 || len(rgba) < width*height*4 {
 		return ""
@@ -105,9 +110,7 @@ type textureURL struct {
 
 func (s *Service) handleSkin(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/skins/")
-	s.mu.RLock()
-	data := append([]byte(nil), s.skins[key]...)
-	s.mu.RUnlock()
+	data := s.GetSkin(key)
 	if len(data) == 0 {
 		http.NotFound(w, r)
 		return
@@ -115,4 +118,10 @@ func (s *Service) handleSkin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	_, _ = w.Write(data)
+}
+
+func (s *Service) GetSkin(key string) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]byte(nil), s.skins[key]...)
 }

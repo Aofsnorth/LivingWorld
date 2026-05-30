@@ -20,8 +20,13 @@ func (j *javaBridge) startPlayerEventLoop() {
 				j.sessions.ForEach(func(s *PlayerSession) { s.removeForeignAvatar(ev.Player) })
 			case player.EventSwing:
 				j.sessions.ForEach(func(s *PlayerSession) { s.swingForeignAvatar(ev.Player) })
-			case player.EventSneak, player.EventSkin:
+			case player.EventSneak:
 				j.sessions.ForEach(func(s *PlayerSession) { s.updateForeignMetadata(ev.Player) })
+			case player.EventSkin:
+				j.sessions.ForEach(func(s *PlayerSession) {
+					s.removeForeignAvatar(ev.Player)
+					s.spawnForeignAvatar(ev.Player)
+				})
 			}
 		}
 	}()

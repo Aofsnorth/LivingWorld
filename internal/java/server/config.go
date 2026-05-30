@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"sort"
 
@@ -31,6 +32,13 @@ func (j *javaListPing) PlayerSamples() []gmserver.PlayerSample { return j.player
 func (j *javaListPing) Description() *chat.Message             { return j.ping.Description() }
 func (j *javaListPing) FavIcon() string                        { return j.ping.FavIcon() }
 
+type rawBytes []byte
+
+func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
+	n, err := w.Write(r)
+	return int64(n), err
+}
+
 func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 	log.Printf("[Java] AcceptConfig: starting config phase")
 	keys := make([]string, 0, len(c.registrySizes))
@@ -47,6 +55,24 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 			packetid.ClientboundConfigRegistryData,
 			pk.Identifier(id),
 			reg,
+		)); err != nil {
+			return err
+		}
+	}
+
+	// Send world_clock registry for 26.1 (1.21.4)
+	{
+		var buf bytes.Buffer
+		_, _ = pk.VarInt(1).WriteTo(&buf)                         // count
+		_, _ = pk.Identifier("minecraft:overworld").WriteTo(&buf) // entry id
+		_, _ = pk.Boolean(true).WriteTo(&buf)                     // has data
+		_, _ = buf.Write([]byte{0x0a, 0x00})                      // empty NBT compound
+
+		log.Printf("[Java] AcceptConfig: sending registry minecraft:world_clock")
+		if err := conn.WritePacket(pk.Marshal(
+			packetid.ClientboundConfigRegistryData,
+			pk.Identifier("minecraft:world_clock"),
+			rawBytes(buf.Bytes()),
 		)); err != nil {
 			return err
 		}
