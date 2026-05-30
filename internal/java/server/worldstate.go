@@ -20,19 +20,33 @@ func buildSetDefaultSpawnPositionPacket(dimension string, x, y, z int, yaw, pitc
 	)
 }
 
-// buildSetTimePacket builds the MC 1.21.4/1.21.5 (26.1) set_time packet.
-// The format is:
-//	worldAge  = monotonically increasing total tick count
-//	count     = number of clocks (VarInt)
-//	clocks    = array of [id (VarInt), dayTime (Long), advancing (Boolean)]
+// buildSetTimePacket builds the MC 26.1 (protocol 775) update_time (set_time)
+// packet. 26.1 reworked time into per-dimension "world clocks" (registry
+// minecraft:world_clock), so the packet is no longer the old three scalars — it
+// carries a global world age followed by a list of per-clock updates:
+//
+//	age      = global game time, monotonic ticks (Long)
+//	count    = number of clock updates (VarInt)
+//	updates  = count × {
+//	             clockId   = world_clock registry index; 0 = overworld (VarInt)
+//	             advancing = this clock ticks on the client (Boolean)
+//	             dayTime   = this clock's time-of-day, wraps at 24000 (Long)
+//	           }
+//
+// Field order inside the entry is advancing-before-dayTime. Sending
+// {clockId, dayTime, advancing} (the obvious order) decodes without error but
+// makes the client read `advancing` from the high byte of dayTime (0x00 → false)
+// and `dayTime` from the shifted remainder — the sun freezes at a bogus midday
+// position. The flat three-scalar form (no clock list) instead leaves 8 trailing
+// bytes and the client rejects the packet ("8 bytes extra").
 func buildSetTimePacket(worldAge, dayTime int64, advancing bool) pk.Packet {
 	return pk.Marshal(
 		packetid.ClientboundGameSetTime,
-		pk.Long(worldAge),
-		pk.VarInt(1),          // clock count = 1
-		pk.VarInt(0),          // clock id 0 (minecraft:world_clock registry index)
-		pk.Long(dayTime),      // total ticks (positions the sun)
-		pk.Boolean(advancing), // whether the sun moves
+		pk.Long(worldAge),     // age (global)
+		pk.VarInt(1),          // clock update count
+		pk.VarInt(0),          // clockId 0 = minecraft:overworld
+		pk.Boolean(advancing), // this clock advances on the client
+		pk.Long(dayTime),      // this clock's time-of-day
 	)
 }
 
@@ -47,9 +61,8 @@ func buildChangeDifficultyPacket(difficulty byte, locked bool) pk.Packet {
 }
 
 // sendWorldState sends the default spawn position (compass target), the current
-// difficulty, and the current time-of-day. In MC 26.1 the time packet uses the
-// new world-clock list format (see buildSetTimePacket) — the old SetTime shape
-// would crash the client, which is why earlier versions of this file omitted it.
+// difficulty, and the current time-of-day (see buildSetTimePacket for the 26.1
+// update_time format).
 func (s *PlayerSession) sendWorldState() {
 	sp := s.Bridge.cfg.World.Spawn
 	_ = s.SendPacket(buildSetDefaultSpawnPositionPacket("minecraft:overworld", int(sp.X), int(sp.Y), int(sp.Z), sp.Yaw, sp.Pitch))

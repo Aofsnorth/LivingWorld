@@ -332,24 +332,34 @@ func (m *Manager) StartTimeLoop(advance bool) {
 	m.mu.Lock()
 	if m.timeStop != nil {
 		m.mu.Unlock()
+		log.Printf("[World] StartTimeLoop: already running, skipping")
 		return
 	}
 	stop := make(chan struct{})
 	m.timeStop = stop
 	m.mu.Unlock()
 
+	log.Printf("[World] StartTimeLoop: starting (advance=%v)", advance)
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond) // 20 TPS
 		defer ticker.Stop()
+		tickCount := 0
 		for {
 			select {
 			case <-stop:
+				log.Printf("[World] StartTimeLoop: stopped")
 				return
 			case <-ticker.C:
 				for _, w := range m.GetAllWorlds() {
 					w.SetTime(w.GetTime() + 1)
 					if advance {
 						w.SetDayTime((w.GetDayTime() + 1) % 24000)
+					}
+				}
+				tickCount++
+				if tickCount%400 == 0 { // log setiap 20 detik (400 tick)
+					for _, w := range m.GetAllWorlds() {
+						log.Printf("[World] %s: age=%d dayTime=%d", w.name, w.GetTime(), w.GetDayTime())
 					}
 				}
 			}
