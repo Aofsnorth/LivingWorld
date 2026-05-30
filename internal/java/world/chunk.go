@@ -1,6 +1,7 @@
 package world
 
 import (
+	"log"
 	"livingworld/internal/world"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -13,6 +14,9 @@ import (
 // airStateID is the global state ID of air (0). LivingWorld's canonical world
 // block IDs ARE Java global state IDs, so no per-block translation is needed.
 var airStateID = block.StateID(block.ToStateID[block.Air{}])
+
+// maxValidStateID is the highest valid block state index in the global palette.
+var maxValidStateID = block.StateID(len(block.StateList) - 1)
 
 // ExportConvertToLevelChunk is exported for testing.
 func ExportConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
@@ -51,12 +55,20 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 			for lz := 0; lz < 16; lz++ {
 				for lx := 0; lx < 16; lx++ {
 					b := wChunk.GetBlock(lx, y, lz)
-					if b.ID() == 0 {
+					rawID := b.ID()
+					if rawID == 0 {
 						continue
 					}
 
 					// Canonical world IDs are Java global state IDs: use directly.
-					stateID := block.StateID(b.ID())
+					stateID := block.StateID(rawID)
+
+					// Guard against corrupt/out-of-range block IDs that would
+					// panic inside PaletteContainer.Set → BitStorage.Set.
+					if stateID < 0 || stateID > maxValidStateID {
+						log.Printf("[Java] ConvertToLevelChunk: skipping invalid stateID %d at (%d,%d,%d)", stateID, lx, y, lz)
+						continue
+					}
 
 					if stateID != airStateID {
 						idx := (ly << 8) | (lz << 4) | lx
@@ -77,12 +89,16 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 	for b := chunkHeight + 1; b > 0; b >>= 1 {
 		bitsPerEntry++
 	}
+	maxHeightVal := (1 << bitsPerEntry) - 1
 	hm := level.NewBitStorage(bitsPerEntry, 16*16, nil)
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
 			val := highestBlock[x][z] + 1 + 64
 			if val < 0 {
 				val = 0
+			}
+			if val > maxHeightVal {
+				val = maxHeightVal
 			}
 			hm.Set(x*16+z, val)
 		}
