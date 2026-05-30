@@ -29,3 +29,4 @@ diag/*
 plugins/
 whoami/
 worlds/
+.kiro
