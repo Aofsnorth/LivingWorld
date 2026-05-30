@@ -140,8 +140,9 @@ func (h *Handler775) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 	_, _ = pk.String(p.Username).WriteTo(&buf) // ByteBufCodecs.PLAYER_NAME
 	props := p.ProfileProperties
 	if p.Edition == player.EditionBedrock {
-		props = nil
-		if p.BedrockSkinURL != "" {
+		// Use MineSkin properties if they are already populated via UpdateProfileProperty.
+		// Otherwise, fallback to the local HTTP server (which works for some clients but not official Java).
+		if len(props) == 0 && p.BedrockSkinURL != "" {
 			name, val := skinbridge.TextureProperty(p.UUID, p.Username, p.BedrockSkinURL)
 			props = []player.ProfileProperty{{Name: name, Value: val}}
 		}

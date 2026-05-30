@@ -69,6 +69,15 @@ func (s *bedrockSession) Kick(reason string) {
 // player knows itself as bedrockLocalRuntime (1), NOT bs.runtimeID (the id other
 // viewers see) — targeting the wrong id silently no-ops.
 func (s *bedrockSession) Push(vx, vy, vz float64) {
+	// Bedrock ground friction is extremely high compared to Java.
+	// We amplify the horizontal knockback and add a slight vertical bump
+	// so the client actually gets moved by the SetActorMotion packet.
+	if vy == 0 {
+		vy = 0.1
+	}
+	vx *= 1.5
+	vz *= 1.5
+
 	s.write(&packet.SetActorMotion{
 		EntityRuntimeID: bedrockLocalRuntime,
 		Velocity:        mgl32.Vec3{float32(vx), float32(vy), float32(vz)},

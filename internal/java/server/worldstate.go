@@ -20,25 +20,19 @@ func buildSetDefaultSpawnPositionPacket(dimension string, x, y, z int, yaw, pitc
 	)
 }
 
-// buildSetTimePacket builds the MC 1.21.4 (26.1) set_time packet. 1.21.4 replaced
-// the old (Long worldAge, Long timeOfDay, Bool tickDayTime) body with a
-// count-prefixed list of per-dimension "world clocks". We emit exactly one
-// overworld clock (id 0) matching our custom world_clock registry.
-//
+// buildSetTimePacket builds the MC 1.21.4/1.21.5 (26.1) set_time packet.
+// The format is:
 //	worldAge  = monotonically increasing total tick count
+//	count     = number of clocks (VarInt)
+//	clocks    = array of [id (VarInt), dayTime (Long), advancing (Boolean)]
 func buildSetTimePacket(worldAge, dayTime int64, advancing bool) pk.Packet {
-	rate := pk.Float(0)
-	if advancing {
-		rate = pk.Float(1.0)
-	}
 	return pk.Marshal(
 		packetid.ClientboundGameSetTime,
-		pk.Long(worldAge),   // field 1: world age / game time
-		pk.VarInt(1),        // field 2: clock count = 1
-		pk.VarInt(0),        // 2a: clock id 0 = overworld day clock
-		pk.VarLong(dayTime), // 2b: total ticks (positions the sun)
-		pk.Float(0),         // 2c: partial tick
-		rate,                // 2d: rate (1.0 advancing, 0.0 frozen)
+		pk.Long(worldAge),
+		pk.VarInt(1),          // clock count = 1
+		pk.VarInt(0),          // clock id 0 (minecraft:world_clock registry index)
+		pk.Long(dayTime),      // total ticks (positions the sun)
+		pk.Boolean(advancing), // whether the sun moves
 	)
 }
 
