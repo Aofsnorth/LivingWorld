@@ -163,6 +163,7 @@ func (m *Manager) AddPlayer(p *Player) {
 	m.players[p.UUID] = p
 	m.mu.Unlock()
 	m.publish(Event{Type: EventJoin, Player: p.Snapshot()})
+	m.Broadcast(p.Username + " joined the game")
 }
 
 func (m *Manager) RemovePlayer(id uuid.UUID) {
@@ -172,6 +173,7 @@ func (m *Manager) RemovePlayer(id uuid.UUID) {
 	m.mu.Unlock()
 	if p != nil {
 		m.publish(Event{Type: EventLeave, Player: p.Snapshot()})
+		m.Broadcast(p.Username + " left the game")
 	}
 }
 

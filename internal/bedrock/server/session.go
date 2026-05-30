@@ -180,8 +180,8 @@ func bedrockMetadata(name string, sneaking bool) protocol.EntityMetadata {
 func bedrockSurvivalAbilityData(runtimeID uint64) protocol.AbilityData {
 	return protocol.AbilityData{
 		EntityUniqueID:     int64(runtimeID),
-		PlayerPermissions:  1,
-		CommandPermissions: protocol.CommandPermissionLevelAny,
+		PlayerPermissions:  0,
+		CommandPermissions: 0,
 		Layers: []protocol.AbilityLayer{{
 			Type:      protocol.AbilityLayerTypeBase,
 			Abilities: protocol.AbilityCount - 1,

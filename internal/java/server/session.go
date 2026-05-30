@@ -46,6 +46,7 @@ type PlayerSession struct {
 
 	chunkQueue   chan struct{}
 	mu sync.Mutex
+	Ready bool
 }
 
 func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *javaBridge) *PlayerSession {

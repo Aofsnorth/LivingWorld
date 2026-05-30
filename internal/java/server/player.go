@@ -121,6 +121,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	_ = session.version.UpdateForeignMetadata(session, pl.Snapshot())
 
 	session.spawnExistingForeignPlayers()
+	session.Ready = true
 
 	done := make(chan struct{})
 	go func() {
@@ -150,10 +151,4 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 		session.HandlePacket(p)
 	}
 	close(done)
-
-	j.sessions.Broadcast(pk.Marshal(
-		packetid.ClientboundGameSystemChat,
-		pk.NBT(chatText{Text: name + " left the game"}),
-		pk.Boolean(false),
-	))
 }

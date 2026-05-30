@@ -53,7 +53,39 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 		return ""
 	}
 	var img *image.NRGBA
-	if width > 64 || height > 64 {
+	
+	isPadded64 := false
+	if width == 128 && height == 128 {
+		isPadded64 = true
+		for y := 0; y < 128; y++ {
+			for x := 0; x < 128; x++ {
+				if x >= 64 || y >= 64 {
+					idx := (y*128 + x) * 4
+					if rgba[idx+3] != 0 {
+						isPadded64 = false
+						break
+					}
+				}
+			}
+			if !isPadded64 {
+				break
+			}
+		}
+	}
+
+	if isPadded64 {
+		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
+		for y := 0; y < 64; y++ {
+			for x := 0; x < 64; x++ {
+				srcIdx := (y*128 + x) * 4
+				dstIdx := (y*64 + x) * 4
+				img.Pix[dstIdx] = rgba[srcIdx]
+				img.Pix[dstIdx+1] = rgba[srcIdx+1]
+				img.Pix[dstIdx+2] = rgba[srcIdx+2]
+				img.Pix[dstIdx+3] = rgba[srcIdx+3]
+			}
+		}
+	} else if width > 64 || height > 64 {
 		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
 		scaleX := width / 64
 		scaleY := height / 64
@@ -61,43 +93,25 @@ func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) str
 		if scaleY == 0 { scaleY = 1 }
 		for y := 0; y < 64; y++ {
 			for x := 0; x < 64; x++ {
-				var rSum, gSum, bSum, aSum int
-				var activePixels int
-				for dy := 0; dy < scaleY; dy++ {
-					sy := y*scaleY + dy
-					if sy >= height {
-						continue
-					}
-					for dx := 0; dx < scaleX; dx++ {
-						sx := x*scaleX + dx
-						if sx >= width {
-							continue
-						}
-						srcIdx := (sy*width + sx) * 4
-						r := int(rgba[srcIdx])
-						g := int(rgba[srcIdx+1])
-						b := int(rgba[srcIdx+2])
-						a := int(rgba[srcIdx+3])
+				// Use nearest-neighbor sampling to preserve pixel-art sharpness.
+				// Averaging pixels makes the skin look blurry/compressed.
+				sx := x * scaleX
+				sy := y * scaleY
+				
+				var r, g, b, a byte
+				if sx < width && sy < height {
+					srcIdx := (sy*width + sx) * 4
+					r = rgba[srcIdx]
+					g = rgba[srcIdx+1]
+					b = rgba[srcIdx+2]
+					a = rgba[srcIdx+3]
+				}
 
-						rSum += r * a
-						gSum += g * a
-						bSum += b * a
-						aSum += a
-						activePixels++
-					}
-				}
 				dstIdx := (y*64 + x) * 4
-				if aSum > 0 {
-					img.Pix[dstIdx] = byte(rSum / aSum)
-					img.Pix[dstIdx+1] = byte(gSum / aSum)
-					img.Pix[dstIdx+2] = byte(bSum / aSum)
-					img.Pix[dstIdx+3] = byte(aSum / activePixels)
-				} else {
-					img.Pix[dstIdx] = 0
-					img.Pix[dstIdx+1] = 0
-					img.Pix[dstIdx+2] = 0
-					img.Pix[dstIdx+3] = 0
-				}
+				img.Pix[dstIdx] = r
+				img.Pix[dstIdx+1] = g
+				img.Pix[dstIdx+2] = b
+				img.Pix[dstIdx+3] = a
 			}
 		}
 	} else {

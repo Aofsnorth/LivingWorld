@@ -184,8 +184,10 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		absZ := center.Z() + int32(offset[2])
 		absYInd := center.Y() + int32(offset[1])
 
+		arrayYInd := absYInd - int32(rng.Min()>>4)
 		subChunkCount := int32((rng.Height() >> 4) + 1)
-		if absYInd < 0 || absYInd >= subChunkCount {
+		
+		if arrayYInd < 0 || arrayYInd >= subChunkCount {
 			entries = append(entries, protocol.SubChunkEntry{
 				Offset: offset,
 				Result: protocol.SubChunkResultIndexOutOfBounds,
@@ -224,7 +226,7 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		}
 
 		chunkCache.Mu.RLock()
-		sub := ch.Sub()[absYInd]
+		sub := ch.Sub()[arrayYInd]
 		if sub.Empty() {
 			chunkCache.Mu.RUnlock()
 			entries = append(entries, protocol.SubChunkEntry{
@@ -235,7 +237,7 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 			continue
 		}
 
-		rawData := dfchunk.EncodeSubChunk(ch, dfchunk.NetworkEncoding, int(absYInd))
+		rawData := dfchunk.EncodeSubChunk(ch, dfchunk.NetworkEncoding, int(arrayYInd))
 		chunkCache.Mu.RUnlock()
 		entries = append(entries, protocol.SubChunkEntry{
 			Offset:              offset,

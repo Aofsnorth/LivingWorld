@@ -41,6 +41,9 @@ func (s *PlayerSession) spawnExistingForeignPlayers() {
 }
 
 func (s *PlayerSession) spawnForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
 	_ = s.version.SpawnForeignAvatar(s, p)
 }
 
@@ -49,6 +52,9 @@ func (s *PlayerSession) sendPlayerInfoAdd(p player.PlayerSnapshot) error {
 }
 
 func (s *PlayerSession) moveForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
 	s.mu.Lock()
 	oldPos, exists := s.lastSentPos[p.UUID]
 	s.lastSentPos[p.UUID] = p.Position
@@ -57,6 +63,9 @@ func (s *PlayerSession) moveForeignAvatar(p player.PlayerSnapshot) {
 }
 
 func (s *PlayerSession) removeForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
 	_ = s.version.RemoveForeignAvatar(s, p)
 }
 
@@ -65,9 +74,15 @@ func (s *PlayerSession) sendPlayerInfoRemove(p player.PlayerSnapshot) error {
 }
 
 func (s *PlayerSession) swingForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
 	_ = s.version.SwingForeignAvatar(s, p)
 }
 
 func (s *PlayerSession) updateForeignMetadata(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
 	_ = s.version.UpdateForeignMetadata(s, p)
 }
