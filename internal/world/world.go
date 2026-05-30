@@ -73,24 +73,30 @@ func (w *World) Save() error {
 	}
 	w.mu.RUnlock()
 
-	if storage == nil {
+	if storage == nil || len(dirty) == 0 {
 		return nil
 	}
 	var firstErr error
-	saved := 0
 	for _, e := range dirty {
 		if err := storage.SaveChunk(e.pos.X, e.pos.Z, e.c); err != nil {
 			log.Printf("[World %s] save chunk (%d,%d) failed: %v", w.name, e.pos.X, e.pos.Z, err)
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
 		}
-		e.c.ClearDirty()
-		saved++
 	}
-	if saved > 0 {
-		log.Printf("[World %s] saved %d chunk(s)", w.name, saved)
+	// Commit buffered writes (region backends write whole files here).
+	if err := storage.Flush(); err != nil {
+		log.Printf("[World %s] flush failed: %v", w.name, err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		for _, e := range dirty {
+			e.c.ClearDirty()
+		}
+		log.Printf("[World %s] saved %d chunk(s)", w.name, len(dirty))
 	}
 	return firstErr
 }
@@ -269,7 +275,7 @@ func (m *Manager) SetBlockAndPublish(source BlockUpdateSource, x, y, z int, bloc
 // <baseDir>/<worldName>. Returns the first error encountered creating a backend.
 func (m *Manager) EnablePersistence(baseDir string) error {
 	for _, w := range m.GetAllWorlds() {
-		store, err := NewDiskStorage(filepath.Join(baseDir, w.Name()))
+		store, err := NewRegionStorage(filepath.Join(baseDir, w.Name()))
 		if err != nil {
 			return err
 		}

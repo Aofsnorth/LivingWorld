@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"log"
 
-	dfbiome "github.com/df-mc/dragonfly/server/world/biome"
+	lwworld "livingworld/internal/world"
+
 	dfworld "github.com/df-mc/dragonfly/server/world"
+	dfbiome "github.com/df-mc/dragonfly/server/world/biome"
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
@@ -63,45 +65,38 @@ func LogBlockPaletteVersion() {
 	}
 }
 
-// SendInitialChunks builds flat terrain chunks and sends them inline in
-// LevelChunk packets. This is the classic approach that works across all
-// Bedrock protocol versions.  chunkCache is populated so that
-// handleSubChunkRequest can serve the modern sub-chunk request system too.
+// SendInitialChunks converts the shared world's chunks (generated terrain plus
+// any persisted player edits) into Bedrock LevelChunk packets and sends them
+// inline. Reading the real world is what makes block edits and persistence show
+// up on Bedrock the same as on Java. chunkCache is populated so the SubChunkRequest
+// path can serve the same data.
 func (c *ChunkConverter) SendInitialChunks(
-	conn *minecraft.Conn, centerChunkX, centerChunkZ, radius int, groundY int16,
+	conn *minecraft.Conn, w *lwworld.World, centerChunkX, centerChunkZ, radius int,
 	chunkCache map[protocol.ChunkPos]*dfchunk.Chunk,
 ) {
 	rng := dfworld.Overworld.Range()
 	airRID := BlockRID("minecraft:air")
-	bedrockRID := BlockRID("minecraft:bedrock")
-	dirtRID := BlockRID("minecraft:dirt")
-	grassRID := BlockRID("minecraft:grass_block", map[string]any{"minecraft:snowy_bit": false})
 	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
-
-	bedrockY := groundY - 3
-	dirtY1 := groundY - 2
-	dirtY2 := groundY - 1
-	grassBlockY := groundY
 
 	// Total sub-chunks for the overworld range (-64..319 → 24 sub-chunks).
 	subChunkCount := uint32((rng.Height() >> 4) + 1)
+	maxY := int(rng.Max()) // 319; world blocks live at Y >= 0
 
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			cx, cz := centerChunkX+dx, centerChunkZ+dz
+			wchunk := w.LoadChunk(cx, cz)
 			ch := dfchunk.New(airRID, rng)
 
-			for x := uint8(0); x < 16; x++ {
-				for z := uint8(0); z < 16; z++ {
-					setBlock := func(y int16, rid uint32) {
-						if y >= int16(rng.Min()) && y <= int16(rng.Max()) {
-							ch.SetBlock(x, y, z, 0, rid)
+			for x := 0; x < 16; x++ {
+				for z := 0; z < 16; z++ {
+					for y := 0; y <= maxY; y++ {
+						id := wchunk.GetBlock(x, y, z).ID()
+						if id == 0 {
+							continue
 						}
+						ch.SetBlock(uint8(x), int16(y), uint8(z), 0, LivingWorldBlockIDToBedrockRID(id))
 					}
-					setBlock(bedrockY, bedrockRID)
-					setBlock(dirtY1, dirtRID)
-					setBlock(dirtY2, dirtRID)
-					setBlock(grassBlockY, grassRID)
 				}
 			}
 			for y := int16(rng.Min()); y <= int16(rng.Max()); y += 4 {
@@ -138,8 +133,8 @@ func (c *ChunkConverter) SendInitialChunks(
 		}
 	}
 
-	log.Printf("[Bedrock] Sent %d chunks (inline), groundY=%d, subChunks=%d",
-		(2*radius+1)*(2*radius+1), groundY, subChunkCount)
+	log.Printf("[Bedrock] Sent %d chunks (inline from world), subChunks=%d",
+		(2*radius+1)*(2*radius+1), subChunkCount)
 }
 
 // HandleSubChunkRequest processes SubChunkRequest packets for the modern
@@ -218,7 +213,7 @@ func SendSetTime(conn *minecraft.Conn, ticks int32) error {
 func DimensionMismatchError(clientProtocol int32) string {
 	return fmt.Sprintf(
 		"Bedrock client protocol %d doesn't match dragonfly's embedded palette (protocol %d). "+
-		"Blocks will render invisible. Update dragonfly or use a matching client version.",
+			"Blocks will render invisible. Update dragonfly or use a matching client version.",
 		clientProtocol, protocol.CurrentProtocol)
 }
 

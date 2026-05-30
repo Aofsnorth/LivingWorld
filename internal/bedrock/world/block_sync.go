@@ -1,9 +1,19 @@
 package world
 
 import (
+	"sync"
+
 	lwworld "livingworld/internal/world"
 
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
+)
+
+// ridCache memoizes world state ID -> Bedrock runtime ID. Chunk serialization
+// resolves the RID for every non-air block, so caching avoids repeated palette
+// hash lookups.
+var (
+	ridCacheMu sync.RWMutex
+	ridCache   = map[int32]uint32{}
 )
 
 // bedrockPropOverrides supplies the Bedrock block-state properties required for
@@ -18,11 +28,24 @@ var bedrockPropOverrides = map[string]map[string]any{
 // LivingWorldBlockIDToBedrockRID maps a canonical world block ID (= Java global
 // state ID) to a Bedrock runtime ID via the block's namespaced name.
 func LivingWorldBlockIDToBedrockRID(id int32) uint32 {
+	ridCacheMu.RLock()
+	rid, ok := ridCache[id]
+	ridCacheMu.RUnlock()
+	if ok {
+		return rid
+	}
+
 	name := lwworld.StateName(id)
 	if props, ok := bedrockPropOverrides[name]; ok {
-		return BlockRID(name, props)
+		rid = BlockRID(name, props)
+	} else {
+		rid = BlockRID(name)
 	}
-	return BlockRID(name)
+
+	ridCacheMu.Lock()
+	ridCache[id] = rid
+	ridCacheMu.Unlock()
+	return rid
 }
 
 // BedrockRIDToLivingWorldBlockID maps a Bedrock runtime ID back to a canonical

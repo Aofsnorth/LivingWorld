@@ -1,7 +1,9 @@
 package player
 
 import (
+	"math"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"livingworld/internal/world"
@@ -13,6 +15,10 @@ import (
 type Controller interface {
 	SendMessage(msg string)
 	Kick(reason string)
+	// Push applies a velocity impulse to the player's own entity, in blocks/tick
+	// (the shared Minecraft velocity unit). Implementations convert to their
+	// edition's wire format (Java short = blocks/tick*8000, Bedrock mgl32.Vec3).
+	Push(vx, vy, vz float64)
 }
 
 type Manager struct {
@@ -79,6 +85,77 @@ func (m *Manager) Kick(id uuid.UUID, reason string) {
 	if c != nil {
 		c.Kick(reason)
 	}
+}
+
+func (m *Manager) push(id uuid.UUID, vx, vy, vz float64) {
+	m.ctrlMu.RLock()
+	c := m.controllers[id]
+	m.ctrlMu.RUnlock()
+	if c != nil {
+		c.Push(vx, vy, vz)
+	}
+}
+
+// Player-push tuning. Values are in blocks; velocity is blocks/tick.
+const (
+	pushTickHz     = 10  // pushes/second
+	pushRadius     = 0.6 // horizontal center distance under which players push apart
+	pushVertical   = 1.8 // only push when vertical spans overlap (player height)
+	pushStrength   = 0.05
+	pushMaxPerTick = 0.4 // clamp so deeply-overlapped players don't launch
+)
+
+// StartPushLoop runs the cross-edition player-push loop until Close. Players of
+// both editions push each other apart (Java's player-vs-player push is
+// server-authoritative, so it must be driven here rather than client-side).
+func (m *Manager) StartPushLoop() {
+	go func() {
+		ticker := time.NewTicker(time.Second / pushTickHz)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.pushTick()
+		}
+	}()
+}
+
+func (m *Manager) pushTick() {
+	players := m.GetAllPlayers()
+	for i := 0; i < len(players); i++ {
+		for j := i + 1; j < len(players); j++ {
+			a, b := players[i], players[j]
+			if a.EntityRuntimeID == 0 || b.EntityRuntimeID == 0 {
+				continue
+			}
+			if math.Abs(b.Position.Y-a.Position.Y) >= pushVertical {
+				continue
+			}
+			dx := b.Position.X - a.Position.X
+			dz := b.Position.Z - a.Position.Z
+			distSq := dx*dx + dz*dz
+			if distSq >= pushRadius*pushRadius || distSq < 1e-6 {
+				continue
+			}
+			dist := math.Sqrt(distSq)
+			f := pushStrength * (1.0 - dist/pushRadius)
+			if f <= 0 {
+				continue
+			}
+			vx := clampF((dx/dist)*f, -pushMaxPerTick, pushMaxPerTick)
+			vz := clampF((dz/dist)*f, -pushMaxPerTick, pushMaxPerTick)
+			m.push(a.UUID, -vx, 0, -vz)
+			m.push(b.UUID, vx, 0, vz)
+		}
+	}
+}
+
+func clampF(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (m *Manager) AddPlayer(p *Player) {
@@ -359,3 +436,4 @@ func (p *Player) Heal(amount float32) {
 func (p *Player) SendMessage(message string)       {}
 func (p *Player) SendTitle(title, subtitle string) {}
 func (p *Player) Kick(reason string)               {}
+func (p *Player) Push(vx, vy, vz float64)          {}

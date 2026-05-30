@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -10,6 +11,7 @@ import (
 	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/player"
 	lwworld "livingworld/internal/world"
+	"livingworld/plugin"
 
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/go-gl/mathgl/mgl32"
@@ -49,7 +51,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	gameData := minecraft.GameData{
 		WorldName:        s.cfg.ServerName,
 		WorldSeed:        s.cfg.World.Seed,
-		Difficulty:       0,
+		Difficulty:       int32(s.cfg.World.DifficultyByte()),
 		EntityUniqueID:   int64(bedrockLocalRuntime),
 		EntityRuntimeID:  bedrockLocalRuntime,
 		PlayerGameMode:   packet.GameTypeSurvival,
@@ -71,14 +73,18 @@ func (s *Server) handleConn(conn net.Conn) {
 			RewindHistorySize:                0,
 			ServerAuthoritativeBlockBreaking: true,
 		},
-		ChunkRadius:                  int32(s.cfg.Bedrock.ViewDistance),
-		PlayerPermissions:            1, // member, not operator: prevents settings/commands gamemode changes.
-		BaseGameVersion:              protocol.CurrentVersion,
-		Items:                        inventory.VanillaItemEntries(),
-		PersonaDisabled:              false,
-		CustomSkinsDisabled:          false,
-		EmoteChatMuted:               false,
-		ServerAuthoritativeInventory: false,
+		ChunkRadius:         int32(s.cfg.Bedrock.ViewDistance),
+		PlayerPermissions:   1, // member, not operator: prevents settings/commands gamemode changes.
+		BaseGameVersion:     protocol.CurrentVersion,
+		Items:               inventory.VanillaItemEntries(),
+		PersonaDisabled:     false,
+		CustomSkinsDisabled: false,
+		EmoteChatMuted:      false,
+		// Modern Bedrock clients (1.16.100+) require the server-authoritative
+		// inventory system; with this false the client refuses to open the
+		// inventory UI. gophertunnel's StartGame already sends an (empty)
+		// CreativeContent, so the inventory initializes. Matches dragonfly.
+		ServerAuthoritativeInventory: true,
 	}
 
 	if err := mcConn.StartGame(gameData); err != nil {
@@ -106,12 +112,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.pm.AddPlayer(pl)
 	defer s.pm.RemovePlayer(playerID)
 
+	// Register this session so server/plugin code can message, kick, or push the
+	// player (cross-edition player pushing is server-driven).
+	s.pm.SetController(playerID, bs)
+	defer s.pm.RemoveController(playerID)
+
 	chunkCache := make(map[protocol.ChunkPos]*dfchunk.Chunk)
 	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, chunkCache)
 
 	teleportPlayer(mcConn, spawnClientPos, spawn.Pitch, spawn.Yaw)
 	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime)
 	s.sendLocalPlayerActorData(mcConn)
+	sendInitialInventories(mcConn)
 	_ = bedrockworld.SendSetTime(mcConn, 6000)
 	s.spawnExistingForeignPlayers(bs)
 
@@ -123,6 +135,24 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		s.handlePacket(bs, pk, chunkCache)
 	}
+}
+
+// sendInitialInventories initializes the player's inventory windows so the
+// Bedrock client will actually render the inventory UI when opened. With the
+// server-authoritative inventory system the client keeps the screen closed
+// (player just freezes) until these windows have been given content, even if
+// empty. Sizes match dragonfly: main 36, armour 4, off-hand 1, UI 54.
+func sendInitialInventories(conn *minecraft.Conn) {
+	send := func(windowID uint32, size int) {
+		_ = conn.WritePacket(&packet.InventoryContent{
+			WindowID: windowID,
+			Content:  make([]protocol.ItemInstance, size),
+		})
+	}
+	send(protocol.WindowIDInventory, 36)
+	send(protocol.WindowIDArmour, 4)
+	send(protocol.WindowIDOffHand, 1)
+	send(protocol.WindowIDUI, 54)
 }
 
 func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
@@ -307,6 +337,29 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 		}
 
+	case *packet.Interact:
+		// Pressing the inventory key sends Interact{OpenInventory}; the server must
+		// reply with ContainerOpen for the client to actually open the inventory UI.
+		// Sending it twice while open crashes the client, so guard with invOpened.
+		if p.ActionType == packet.InteractActionOpenInventory && !bs.invOpened {
+			bs.invOpened = true
+			x, y, z := int32(0), int32(bedrockGroundY), int32(0)
+			if pl := s.pm.GetPlayer(bs.id); pl != nil {
+				x, y, z = int32(pl.Position.X), int32(pl.Position.Y), int32(pl.Position.Z)
+			}
+			_ = conn.WritePacket(&packet.ContainerOpen{
+				WindowID:                0,
+				ContainerType:           0xff,
+				ContainerEntityUniqueID: -1,
+				ContainerPosition:       protocol.BlockPos{x, y, z},
+			})
+		}
+
+	case *packet.ContainerClose:
+		bs.invOpened = false
+		// Acknowledge the close so the client allows the inventory to be reopened.
+		_ = conn.WritePacket(&packet.ContainerClose{WindowID: p.WindowID, ContainerType: p.ContainerType})
+
 	case *packet.ItemStackRequest:
 		responses := make([]protocol.ItemStackResponse, 0, len(p.Requests))
 		for _, req := range p.Requests {
@@ -315,6 +368,17 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 		_ = conn.WritePacket(&packet.ItemStackResponse{Responses: responses})
 
 	case *packet.Text:
+		if p.TextType == packet.TextTypeChat && p.Message != "" {
+			ev := &plugin.PlayerChatEvent{
+				BaseEvent:  plugin.BaseEvent{Type_: plugin.EventPlayerChat},
+				PlayerName: bs.username,
+				Message:    p.Message,
+			}
+			if !plugin.Manager().EmitCancellable(ev) {
+				// Deliver to BOTH editions via the shared player manager.
+				s.pm.Broadcast(fmt.Sprintf("<%s> %s", bs.username, ev.Message))
+			}
+		}
 
 	case *packet.Animate:
 		if p.ActionType == packet.AnimateActionSwingArm {

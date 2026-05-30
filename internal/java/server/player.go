@@ -57,13 +57,24 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 		}
 	}
 
-	// In offline mode, the client doesn't send textures. Fall back to Mojang
-	// API lookup by username so the player's official skin can still be shown
-	// to Bedrock viewers.
+	// In offline mode, the client doesn't send textures. Fall back to the
+	// configured skin source by username so the player's skin can still be shown
+	// (to themselves on authlib-injector launchers, and to Bedrock viewers).
 	var value, signature string
 	if skinURL == "" {
-		log.Printf("[Java] No textures property from client for %s, trying Mojang API", name)
-		skinURL, model, value, signature = skin.FetchMojangSkin(name)
+		switch j.cfg.Java.SkinSource {
+		case "mojang":
+			log.Printf("[Java] No client textures for %s, trying Mojang API", name)
+			skinURL, model, value, signature = skin.FetchMojangSkin(name)
+		case "ely", "elyby", "ely.by":
+			log.Printf("[Java] No client textures for %s, fetching skin from Ely.by", name)
+			skinURL, model, value, signature = skin.FetchElySkin(name)
+		case "none", "off", "disabled":
+			log.Printf("[Java] No client textures for %s, skin source disabled", name)
+		default: // "auto" or unset — try every source (Ely.by then Mojang)
+			log.Printf("[Java] No client textures for %s, auto-resolving skin", name)
+			skinURL, model, value, signature = skin.FetchAnySkin(name)
+		}
 	}
 
 	var skinData []byte
@@ -101,7 +112,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	// Register this session so server/plugin code can message or kick the player.
 	j.pm.SetController(id, session)
 	defer j.pm.RemoveController(id)
-	
+
 	// Send the player info to themselves so they see their own skin in inventory/third-person.
 	_ = session.sendPlayerInfoAdd(pl.Snapshot())
 

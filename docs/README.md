@@ -141,9 +141,14 @@ blockState, placeable := item.BlockStateID("minecraft:oak_planks")
 ## 💾 World Persistence
 
 - Edits set a per-chunk dirty flag; only edited chunks are written.
-- Chunks are stored as gzip-compressed files under `worlds/<world>/region/c.<x>.<z>.bin` (atomic temp-file + rename).
+- Chunks are grouped **32×32 into region files** at `worlds/<world>/region/r.<rx>.<rz>.lwr`
+  (gzip-compressed, atomic temp-file + rename) — like Minecraft's Anvil format, so a
+  normal play area is a **handful of files instead of hundreds**.
 - Autosave runs on an interval and a final save runs on graceful shutdown.
 - On access, a chunk is loaded from disk if present, otherwise generated.
+
+> Upgrading from an older build that wrote per-chunk `c.<x>.<z>.bin` files? Those are
+> no longer read — delete the old `worlds/` folder once (a superflat world regenerates).
 
 ## 📁 Project Structure
 
@@ -194,10 +199,29 @@ MIT — see [LICENSE](LICENSE).
 - [gophertunnel](https://github.com/sandertv/gophertunnel) — Bedrock protocol
 - [dragonfly](https://github.com/df-mc/dragonfly) — Bedrock block palette + design inspiration
 
+## 🧑‍🎨 Skins
+
+In offline mode the client doesn't send its skin, so the server resolves it by
+username from a configurable source (`java.skinSource`):
+
+- `mojang` — the official premium account with that name (default). Note: for a
+  cracked name this returns whoever *owns* that premium name, which may be a
+  stranger.
+- `ely` — the **Ely.by** skin store used by **LegacyLauncher / TLauncher** and
+  similar cracked launchers. Use this if your players are cracked.
+- `none` — send no skin (let the client's own launcher skin show).
+
+Vanilla Java clients only load skins from `.minecraft.net` / `.mojang.com`, so
+`ely` skins render only for players whose launcher injects authlib-injector
+(LegacyLauncher/TLauncher do). Bedrock viewers always see Java players' skins
+(the server downloads the PNG and forwards it).
+
 ## ⚠️ Current Limitations
 
 - **Bedrock block fidelity**: state→Bedrock mapping is name-based; stateful blocks (stairs orientation, slab halves, log axis, …) fall back to defaults. Property overrides can be added in `internal/bedrock/world/block_sync.go`.
+- **Bedrock → Java skins**: not shown on vanilla Java clients (Mojang restricts skin URLs to its own domains). A MineSkin-style uploader is the proper fix.
 - **Held-item placement**: the block/item registries are complete, but parsing the 26.1 creative item-stack (data components) to place the held item is not yet wired — survival block-break + server/plugin `SetBlock` work today.
+- **Bedrock inventory**: opens (server-authoritative inventory enabled), but item *manipulation* (ItemStackRequest handling) is not yet implemented, so moved items snap back.
 - **Player actions across protocols**: `Broadcast`/`Message`/`Kick` are wired for **Java** sessions; the Bedrock controller is a follow-up.
 - **World generation**: only superflat.
 

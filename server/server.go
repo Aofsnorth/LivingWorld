@@ -71,6 +71,7 @@ func New(cfg *Config) *Server {
 	}
 
 	players := player.NewManager()
+	players.StartPushLoop() // cross-edition player-to-player pushing
 	skins := skinbridge.New()
 
 	s := &Server{

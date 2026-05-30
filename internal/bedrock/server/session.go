@@ -32,6 +32,10 @@ type bedrockSession struct {
 	lastAuthInputAt     time.Time
 	lastX, lastY, lastZ float64
 
+	// invOpened tracks whether the player's own inventory ContainerOpen has been
+	// sent. Re-sending ContainerOpen while already open crashes the client.
+	invOpened bool
+
 	mu sync.Mutex
 }
 
@@ -43,6 +47,27 @@ func (s *bedrockSession) write(pk packet.Packet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = s.conn.WritePacket(pk)
+}
+
+// SendMessage implements player.Controller: chat to this Bedrock client.
+func (s *bedrockSession) SendMessage(msg string) {
+	s.write(&packet.Text{TextType: packet.TextTypeRaw, Message: msg})
+}
+
+// Kick implements player.Controller: disconnect this Bedrock client.
+func (s *bedrockSession) Kick(reason string) {
+	_ = s.conn.Close()
+}
+
+// Push implements player.Controller: apply a velocity impulse (blocks/tick) to
+// the local player. Bedrock velocity is mgl32.Vec3 in blocks/tick. The local
+// player knows itself as bedrockLocalRuntime (1), NOT bs.runtimeID (the id other
+// viewers see) — targeting the wrong id silently no-ops.
+func (s *bedrockSession) Push(vx, vy, vz float64) {
+	s.write(&packet.SetActorMotion{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Velocity:        mgl32.Vec3{float32(vx), float32(vy), float32(vz)},
+	})
 }
 
 func (s *Server) addSession(bs *bedrockSession) {
@@ -85,16 +110,20 @@ func bedrockMetadata(name string, sneaking bool) protocol.EntityMetadata {
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
 
 	meta[protocol.EntityDataKeyName] = name
+	// The dedicated AlwaysShowNameTag byte (not just the flag) is what makes the
+	// nametag render at any distance/angle; without it Bedrock fades it like a mob
+	// nametag (only when close and looked at). Matches dragonfly's reference.
+	meta[protocol.EntityDataKeyAlwaysShowNameTag] = uint8(1)
 	meta[protocol.EntityDataKeyScale] = float32(1)
 	meta[protocol.EntityDataKeyWidth] = float32(0.6)
 
 	if sneaking {
 		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
-		meta[protocol.EntityDataKeyPoseIndex] = int32(5)      // Crouching pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.5)     // Reduced height
+		meta[protocol.EntityDataKeyPoseIndex] = int32(5)  // Crouching pose index
+		meta[protocol.EntityDataKeyHeight] = float32(1.5) // Reduced height
 	} else {
-		meta[protocol.EntityDataKeyPoseIndex] = int32(0)      // Standing pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.8)     // Normal height
+		meta[protocol.EntityDataKeyPoseIndex] = int32(0)  // Standing pose index
+		meta[protocol.EntityDataKeyHeight] = float32(1.8) // Normal height
 	}
 
 	// Full air so remote player entities never render drowning bubble particles.

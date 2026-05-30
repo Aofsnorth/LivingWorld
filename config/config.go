@@ -14,14 +14,14 @@ type Config struct {
 	MOTD       string `yaml:"motd"`
 	PluginsDir string `yaml:"pluginsDir"`
 
-	World WorldConfig `yaml:"world"`
-	Java  JavaConfig  `yaml:"java"`
+	World   WorldConfig   `yaml:"world"`
+	Java    JavaConfig    `yaml:"java"`
 	Bedrock BedrockConfig `yaml:"bedrock"`
 }
 
 type WorldConfig struct {
-	Type  string `yaml:"type"` // superflat
-	Seed  int64  `yaml:"seed"`
+	Type  string      `yaml:"type"` // superflat
+	Seed  int64       `yaml:"seed"`
 	Spawn SpawnConfig `yaml:"spawn"`
 
 	// Persistence controls saving the world to disk. Directory is the base path
@@ -31,12 +31,34 @@ type WorldConfig struct {
 	Persistence     bool   `yaml:"persistence"`
 	Directory       string `yaml:"directory"`
 	AutosaveSeconds int    `yaml:"autosaveSeconds"`
+
+	// Difficulty: "peaceful" | "easy" | "normal" | "hard". Drives mob spawning
+	// and damage once the entity system exists.
+	Difficulty string `yaml:"difficulty"`
+
+	// DayNightCycle enables the advancing time-of-day (sun/moon movement).
+	DayNightCycle bool `yaml:"dayNightCycle"`
+}
+
+// DifficultyByte maps the configured difficulty name to the Minecraft 0-3 value
+// (peaceful=0, easy=1, normal=2, hard=3). Unknown values default to normal.
+func (w WorldConfig) DifficultyByte() byte {
+	switch w.Difficulty {
+	case "peaceful":
+		return 0
+	case "easy":
+		return 1
+	case "hard":
+		return 3
+	default: // "normal" or unset
+		return 2
+	}
 }
 
 type SpawnConfig struct {
-	X float64 `yaml:"x"`
-	Y float64 `yaml:"y"`
-	Z float64 `yaml:"z"`
+	X     float64 `yaml:"x"`
+	Y     float64 `yaml:"y"`
+	Z     float64 `yaml:"z"`
 	Yaw   float32 `yaml:"yaw"`
 	Pitch float32 `yaml:"pitch"`
 }
@@ -48,6 +70,14 @@ type JavaConfig struct {
 	ViewDistance       int    `yaml:"viewDistance"`
 	SimulationDistance int    `yaml:"simulationDistance"`
 	Bind               string `yaml:"bind"`
+
+	// SkinSource decides where to fetch a player's skin in offline mode (when the
+	// client doesn't send one):
+	//   "auto"  (default) try every source: Ely.by then Mojang
+	//   "mojang" premium accounts only
+	//   "ely"    Ely.by / LegacyLauncher / TLauncher cracked skins only
+	//   "none"   don't fetch (let the client's own launcher skin show)
+	SkinSource string `yaml:"skinSource"`
 }
 
 type BedrockConfig struct {
@@ -70,6 +100,8 @@ func Default() *Config {
 			Persistence:     true,
 			Directory:       "worlds",
 			AutosaveSeconds: 300,
+			Difficulty:      "normal",
+			DayNightCycle:   true,
 		},
 		Java: JavaConfig{
 			Bind:               "0.0.0.0",
@@ -78,6 +110,7 @@ func Default() *Config {
 			MaxPlayers:         100,
 			ViewDistance:       10,
 			SimulationDistance: 10,
+			SkinSource:         "auto",
 		},
 		Bedrock: BedrockConfig{
 			Bind:         "0.0.0.0",

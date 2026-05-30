@@ -87,11 +87,16 @@ func DecodeChunk(data []byte) (*Chunk, error) {
 }
 
 // Storage persists and retrieves chunks for a single world.
+//
+// SaveChunk may buffer writes; callers must call Flush to guarantee durability
+// (region-based backends batch a whole region into one file on Flush).
 type Storage interface {
 	// LoadChunk returns the stored chunk and ok=true if present on disk.
 	LoadChunk(cx, cz int) (c *Chunk, ok bool, err error)
-	// SaveChunk writes a chunk to disk.
+	// SaveChunk records a chunk to be persisted (possibly buffered until Flush).
 	SaveChunk(cx, cz int, c *Chunk) error
+	// Flush writes any buffered data to disk.
+	Flush() error
 	Close() error
 }
 
@@ -100,6 +105,7 @@ type NopStorage struct{}
 
 func (NopStorage) LoadChunk(cx, cz int) (*Chunk, bool, error) { return nil, false, nil }
 func (NopStorage) SaveChunk(cx, cz int, c *Chunk) error       { return nil }
+func (NopStorage) Flush() error                               { return nil }
 func (NopStorage) Close() error                               { return nil }
 
 // DiskStorage stores each chunk as a gzip-compressed file under
@@ -167,5 +173,8 @@ func (d *DiskStorage) SaveChunk(cx, cz int, c *Chunk) error {
 	}
 	return os.Rename(tmp, final)
 }
+
+// Flush is a no-op: DiskStorage writes each chunk immediately in SaveChunk.
+func (d *DiskStorage) Flush() error { return nil }
 
 func (d *DiskStorage) Close() error { return nil }

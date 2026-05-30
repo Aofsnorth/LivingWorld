@@ -23,7 +23,7 @@ func (s *Server) bootstrapWorld(conn *minecraft.Conn, radius int, chunkCache map
 	log.Printf("[Bedrock] Sending world bootstrap radius=%d centerChunk=(%d,%d) groundY=%d", radius, centerX, centerZ, bedrockGroundY)
 	_ = conn.WritePacket(&packet.ChunkRadiusUpdated{ChunkRadius: int32(radius)})
 	_ = conn.WritePacket(&packet.NetworkChunkPublisherUpdate{Position: spawn, Radius: uint32(radius * 16)})
-	s.converter.SendInitialChunks(conn, int(centerX), int(centerZ), radius, bedrockGroundY, chunkCache)
+	s.converter.SendInitialChunks(conn, s.wm.GetDefaultWorld(), int(centerX), int(centerZ), radius, chunkCache)
 	s.sendInventory(conn)
 }
 

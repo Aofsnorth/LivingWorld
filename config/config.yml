@@ -22,6 +22,12 @@ java:
   maxPlayers: 2
   viewDistance: 10
   simulationDistance: 10
+  # Offline-mode skin source (client doesn't send a skin when cracked):
+  #   auto   = try everything automatically: Ely.by then Mojang (recommended)
+  #   mojang = premium account with that name only (may be someone else!)
+  #   ely    = Ely.by / LegacyLauncher / TLauncher cracked skins only
+  #   none   = don't set a skin (let the launcher's own skin show)
+  skinSource: auto
 
 bedrock:
   bind: 0.0.0.0
