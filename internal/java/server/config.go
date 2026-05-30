@@ -41,6 +41,32 @@ func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
 
 func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 	log.Printf("[Java] AcceptConfig: starting config phase")
+
+	// Announce the vanilla "core" data pack BEFORE sending registries. In 26.1
+	// the client only initialises its built-in resource provider (knownPacks)
+	// when it receives a SelectKnownPacks packet; otherwise registry entries we
+	// send without data resolve against ResourceProvider.EMPTY and fail to load.
+	// We rely on this so the client fills the minecraft:timeline elements (which
+	// carry the sun_angle/moon_angle curves) from its own data — sending the full
+	// timeline NBT by hand would be huge and brittle. The version field need not
+	// match the client build exactly: the vanilla "core" pack is required and is
+	// always retained in the client's resource manager regardless.
+	// Verified from 26.1 client: ClientConfigurationPacketListenerImpl.runWithResources.
+	{
+		var buf bytes.Buffer
+		_, _ = pk.VarInt(1).WriteTo(&buf)           // known pack count
+		_, _ = pk.String("minecraft").WriteTo(&buf) // namespace
+		_, _ = pk.String("core").WriteTo(&buf)      // id
+		_, _ = pk.String("26.1").WriteTo(&buf)      // version
+		log.Printf("[Java] AcceptConfig: sending SelectKnownPacks (minecraft:core)")
+		if err := conn.WritePacket(pk.Packet{
+			ID:   int32(packetid.ClientboundConfigSelectKnownPacks),
+			Data: buf.Bytes(),
+		}); err != nil {
+			return err
+		}
+	}
+
 	keys := make([]string, 0, len(c.registrySizes))
 	for id, count := range c.registrySizes {
 		if count > 0 {
@@ -72,6 +98,35 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		if err := conn.WritePacket(pk.Marshal(
 			packetid.ClientboundConfigRegistryData,
 			pk.Identifier("minecraft:world_clock"),
+			rawBytes(buf.Bytes()),
+		)); err != nil {
+			return err
+		}
+	}
+
+	// Send the minecraft:timeline registry for 26.1. The timeline elements carry
+	// the sun_angle / moon_angle / star_angle keyframe tracks that actually move
+	// the sun; without this registry the dimension_type's "timelines" reference is
+	// unbound and the client rejects the join ("Unbound tags in registry
+	// minecraft:timeline"). We send each element WITHOUT data (hasData=false) so
+	// the client loads the real curves from its built-in "core" pack (announced via
+	// SelectKnownPacks above). Order matters: tags/refs are by index, and
+	// dimension_type.timelines references these ids. day=overworld sun curve.
+	{
+		timelineIDs := []string{
+			"minecraft:day", "minecraft:moon",
+			"minecraft:early_game", "minecraft:villager_schedule",
+		}
+		var buf bytes.Buffer
+		_, _ = pk.VarInt(len(timelineIDs)).WriteTo(&buf) // entry count
+		for _, id := range timelineIDs {
+			_, _ = pk.Identifier(id).WriteTo(&buf)
+			_, _ = pk.Boolean(false).WriteTo(&buf) // hasData=false → use built-in
+		}
+		log.Printf("[Java] AcceptConfig: sending registry minecraft:timeline (%d data-less entries)", len(timelineIDs))
+		if err := conn.WritePacket(pk.Marshal(
+			packetid.ClientboundConfigRegistryData,
+			pk.Identifier("minecraft:timeline"),
 			rawBytes(buf.Bytes()),
 		)); err != nil {
 			return err
@@ -137,7 +192,7 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		return err
 	}
 	log.Printf("[Java] AcceptConfig: sent UpdateTags")
-	
+
 	// Send FinishConfiguration to transition client to play state
 	log.Printf("[Java] AcceptConfig: sending FinishConfiguration packet")
 	if err := conn.WritePacket(pk.Marshal(packetid.ClientboundConfigFinishConfiguration)); err != nil {

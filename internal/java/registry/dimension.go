@@ -11,19 +11,33 @@ import (
 //
 // Source: 26.1.2.jar/data/minecraft/dimension_type/overworld.json
 type dimensionType26_1 struct {
-	HasSkylight                 bool                    `nbt:"has_skylight"`
-	HasCeiling                  bool                    `nbt:"has_ceiling"`
-	HasEnderDragonFight         bool                    `nbt:"has_ender_dragon_fight"`
-	CoordinateScale             float64                 `nbt:"coordinate_scale"`
-	Height                      int32                   `nbt:"height"`
-	LogicalHeight               int32                   `nbt:"logical_height"`
-	MinY                        int32                   `nbt:"min_y"`
-	AmbientLight                float32                 `nbt:"ambient_light"`
-	InfiniteBurn                string                  `nbt:"infiniburn"`
-	MonsterSpawnLightLevel      int32                   `nbt:"monster_spawn_light_level"`
-	MonsterSpawnBlockLightLimit int32                   `nbt:"monster_spawn_block_light_limit"`
-	Skybox                      string                  `nbt:"skybox,omitempty"`
-	Attributes                  map[string]any          `nbt:"attributes"`
+	HasSkylight                 bool    `nbt:"has_skylight"`
+	HasCeiling                  bool    `nbt:"has_ceiling"`
+	HasEnderDragonFight         bool    `nbt:"has_ender_dragon_fight"`
+	CoordinateScale             float64 `nbt:"coordinate_scale"`
+	Height                      int32   `nbt:"height"`
+	LogicalHeight               int32   `nbt:"logical_height"`
+	MinY                        int32   `nbt:"min_y"`
+	AmbientLight                float32 `nbt:"ambient_light"`
+	InfiniteBurn                string  `nbt:"infiniburn"`
+	MonsterSpawnLightLevel      int32   `nbt:"monster_spawn_light_level"`
+	MonsterSpawnBlockLightLimit int32   `nbt:"monster_spawn_block_light_limit"`
+	Skybox                      string  `nbt:"skybox,omitempty"`
+	// 26.1 added these two. Without default_clock the dimension is not bound to
+	// any world_clock, and without timelines the client has no sun_angle/moon_angle
+	// curve — the sun freezes overhead even when set_time advances.
+	//
+	// timelines is a HolderSet<Timeline>. We encode it as an INLINE LIST of
+	// element ids (an NBT list of strings) rather than a tag string
+	// ("#minecraft:in_overworld"): a tag would require us to also serialize the
+	// timeline tag registry, whereas a direct list only needs the referenced
+	// timeline elements to exist (we send them data-less in config.go, so the
+	// client fills them from its built-in "core" pack). default_clock is a
+	// Holder<WorldClock> serialized as a plain id string.
+	// Source: 26.1.2.jar/data/minecraft/dimension_type/overworld.json
+	Timelines    []string       `nbt:"timelines"`
+	DefaultClock string         `nbt:"default_clock"`
+	Attributes   map[string]any `nbt:"attributes"`
 }
 
 // buildOverworldAttributes builds the exact "attributes" dispatched map for
@@ -98,7 +112,12 @@ func registerDimension(r *mcregistry.Registries, sizes map[string]int) {
 		MonsterSpawnLightLevel:      7, // plain int; nether=7, end=15
 		MonsterSpawnBlockLightLimit: 0,
 		Skybox:                      "overworld",
-		Attributes:                  buildOverworldAttributes(),
+		// Inline list of timeline element ids (matches client's #in_overworld tag
+		// expansion: universal→villager_schedule, plus day/moon/early_game). All
+		// four are sent data-less in config.go so the client uses its built-in data.
+		Timelines:    []string{"minecraft:day", "minecraft:moon", "minecraft:early_game", "minecraft:villager_schedule"},
+		DefaultClock: "minecraft:overworld",
+		Attributes:   buildOverworldAttributes(),
 	}
 	r.DimensionType.Put("minecraft:overworld", marshalNBT(dim))
 	sizes["minecraft:dimension_type"] = 1

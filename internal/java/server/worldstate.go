@@ -22,31 +22,39 @@ func buildSetDefaultSpawnPositionPacket(dimension string, x, y, z int, yaw, pitc
 
 // buildSetTimePacket builds the MC 26.1 (protocol 775) update_time (set_time)
 // packet. 26.1 reworked time into per-dimension "world clocks" (registry
-// minecraft:world_clock), so the packet is no longer the old three scalars — it
-// carries a global world age followed by a list of per-clock updates:
+// minecraft:world_clock). Verified against the decompiled 26.1 server jar
+// (ClientboundSetTimePacket.STREAM_CODEC):
 //
-//	age      = global game time, monotonic ticks (Long)
-//	count    = number of clock updates (VarInt)
-//	updates  = count × {
-//	             clockId   = world_clock registry index; 0 = overworld (VarInt)
-//	             advancing = this clock ticks on the client (Boolean)
-//	             dayTime   = this clock's time-of-day, wraps at 24000 (Long)
-//	           }
+//	gameTime     = global game time, monotonic ticks (Long)
+//	clockUpdates = Map<Holder<WorldClock>, ClockNetworkState>, encoded as:
+//	   count = number of clock updates (VarInt)
+//	   count × {
+//	     clockId     = world_clock holder id; 0 = overworld (VarInt)
+//	     ClockNetworkState {
+//	       totalTicks  = this clock's time-of-day (VarLong)
+//	       partialTick = sub-tick fraction (Float)
+//	       rate        = ticks-per-tick; 1.0 = normal, 0.0 = frozen (Float)
+//	     }
+//	   }
 //
-// Field order inside the entry is advancing-before-dayTime. Sending
-// {clockId, dayTime, advancing} (the obvious order) decodes without error but
-// makes the client read `advancing` from the high byte of dayTime (0x00 → false)
-// and `dayTime` from the shifted remainder — the sun freezes at a bogus midday
-// position. The flat three-scalar form (no clock list) instead leaves 8 trailing
-// bytes and the client rejects the packet ("8 bytes extra").
+// The value is NOT a boolean+long. The old "tick day time" flag became the
+// float `rate`: send 1.0 to let the client advance the sun itself between
+// server syncs, 0.0 to freeze it. Sending a Boolean+Long here makes the client
+// read totalTicks as a VarLong from the wrong bytes and the sun sticks at a
+// bogus midday position.
 func buildSetTimePacket(worldAge, dayTime int64, advancing bool) pk.Packet {
+	rate := pk.Float(0)
+	if advancing {
+		rate = pk.Float(1)
+	}
 	return pk.Marshal(
 		packetid.ClientboundGameSetTime,
-		pk.Long(worldAge),     // age (global)
-		pk.VarInt(1),          // clock update count
-		pk.VarInt(0),          // clockId 0 = minecraft:overworld
-		pk.Boolean(advancing), // this clock advances on the client
-		pk.Long(dayTime),      // this clock's time-of-day
+		pk.Long(worldAge), // gameTime (global)
+		pk.VarInt(1),      // clockUpdates map count
+		pk.VarInt(0),      // clockId 0 = minecraft:overworld
+		pk.VarLong(dayTime), // ClockNetworkState.totalTicks (time-of-day)
+		pk.Float(0),         // ClockNetworkState.partialTick
+		rate,                // ClockNetworkState.rate (1.0 advance, 0.0 freeze)
 	)
 }
 
