@@ -55,6 +55,8 @@ type Session interface {
 	UpdateChunks()
 	SendWorldState()
 
+	HandleChatCommand(p pk.Packet)
+
 	HandleMovePos(p pk.Packet)
 	HandleMovePosRot(p pk.Packet)
 	HandleMoveRot(p pk.Packet)

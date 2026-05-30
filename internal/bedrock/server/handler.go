@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/bedrock/skin"
 	bedrockworld "livingworld/internal/bedrock/world"
+	"livingworld/internal/command"
 	"livingworld/internal/player"
 	lwworld "livingworld/internal/world"
 	"livingworld/plugin"
@@ -63,7 +65,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		WorldGameMode:    packet.GameTypeSurvival,
 		Hardcore:         false,
 		XBLBroadcastMode: 0,
-		Time:             6000,
+		Time:             s.wm.GetDefaultWorld().GetDayTime(),
 		GameRules: []protocol.GameRule{
 			{Name: "doDaylightCycle", Value: false},
 			{Name: "showcoordinates", Value: true},
@@ -94,11 +96,12 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	log.Printf("[Bedrock] Client %s spawned successfully", addr)
 
-	bs := newBedrockSession(playerID, playerName, uint64(100000+s.pm.PlayerCount()), mcConn)
+	bs := newBedrockSession(playerID, playerName, uint64(100000+s.pm.PlayerCount()), mcConn, s.pm)
 	s.addSession(bs)
 	defer s.removeSession(playerID)
 	pl := player.NewPlayer(playerID, playerName, player.EditionBedrock)
 	pl.EntityRuntimeID = bs.runtimeID
+	pl.Op = s.cfg.IsOp(playerName)
 	pl.Position.X = float64(spawnFeet[0])
 	pl.Position.Y = float64(spawnFeet[1])
 	pl.Position.Z = float64(spawnFeet[2])
@@ -117,6 +120,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.pm.SetController(playerID, bs)
 	defer s.pm.RemoveController(playerID)
 
+	// gophertunnel's StartGame hardcodes CommandsEnabled=true (which shows the
+	// gamemode/cheat selector). Disable it for non-ops so they can't self-change
+	// gamemode; ops keep it. Then advertise our commands so the client autocompletes.
+	_ = mcConn.WritePacket(&packet.SetCommandsEnabled{Enabled: pl.Op})
+	s.sendAvailableCommands(mcConn)
+
 	chunkCache := make(map[protocol.ChunkPos]*dfchunk.Chunk)
 	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, chunkCache)
 
@@ -124,7 +133,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime)
 	s.sendLocalPlayerActorData(mcConn)
 	sendInitialInventories(mcConn)
-	_ = bedrockworld.SendSetTime(mcConn, 6000)
+	_ = bedrockworld.SendSetTime(mcConn, int32(s.wm.GetDefaultWorld().GetDayTime()))
 	s.spawnExistingForeignPlayers(bs)
 
 	for {
@@ -366,6 +375,21 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache m
 			responses = append(responses, inventory.RejectItemStackRequest(req.RequestID))
 		}
 		_ = conn.WritePacket(&packet.ItemStackResponse{Responses: responses})
+
+	case *packet.CommandRequest:
+		raw := strings.TrimPrefix(p.CommandLine, "/")
+		command.Default().Dispatch(bs, raw)
+
+	case *packet.SetPlayerGameType:
+		// Reject client self-gamemode changes unless the player is OP. Re-assert
+		// the authoritative survival state so a non-OP client snaps back.
+		if pl := s.pm.GetPlayer(bs.id); pl == nil || !pl.Op {
+			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
+		}
+
+	case *packet.SetDefaultGameType:
+		// Never client-authoritative.
+		s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 
 	case *packet.Text:
 		if p.TextType == packet.TextTypeChat && p.Message != "" {

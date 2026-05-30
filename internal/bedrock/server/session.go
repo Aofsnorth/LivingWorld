@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"livingworld/internal/player"
+
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft"
@@ -27,6 +29,7 @@ type bedrockSession struct {
 	conn       *minecraft.Conn
 	identity   login.IdentityData
 	clientData login.ClientData
+	pm         *player.Manager
 
 	lastMovePublish     time.Time
 	lastAuthInputAt     time.Time
@@ -39,9 +42,11 @@ type bedrockSession struct {
 	mu sync.Mutex
 }
 
-func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *minecraft.Conn) *bedrockSession {
-	return &bedrockSession{id: id, username: username, runtimeID: runtimeID, conn: conn, identity: conn.IdentityData(), clientData: conn.ClientData()}
+func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *minecraft.Conn, pm *player.Manager) *bedrockSession {
+	return &bedrockSession{id: id, username: username, runtimeID: runtimeID, conn: conn, pm: pm, identity: conn.IdentityData(), clientData: conn.ClientData()}
 }
+
+func (s *bedrockSession) pmRef() *player.Manager { return s.pm }
 
 func (s *bedrockSession) write(pk packet.Packet) {
 	s.mu.Lock()

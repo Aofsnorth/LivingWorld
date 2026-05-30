@@ -74,6 +74,7 @@ func (s *Server) Start() error {
 	bedrockworld.LogBlockPaletteVersion()
 	s.startBlockEventLoop()
 	s.startPlayerEventLoop()
+	s.startTimeLoop()
 
 	s.wg.Add(1)
 	go s.acceptLoop()

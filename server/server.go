@@ -23,6 +23,7 @@ import (
 
 	"livingworld/config"
 	"livingworld/internal/bedrock"
+	"livingworld/internal/command"
 	"livingworld/internal/java"
 	"livingworld/internal/player"
 	"livingworld/internal/skinbridge"
@@ -72,6 +73,9 @@ func New(cfg *Config) *Server {
 
 	players := player.NewManager()
 	players.StartPushLoop() // cross-edition player-to-player pushing
+	worlds.StartTimeLoop(cfg.World.DayNightCycle)
+	command.Bind(players, worlds)
+	command.RegisterBuiltins(command.Default())
 	skins := skinbridge.New()
 
 	s := &Server{

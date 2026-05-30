@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,9 +15,23 @@ type Config struct {
 	MOTD       string `yaml:"motd"`
 	PluginsDir string `yaml:"pluginsDir"`
 
+	// Ops lists the usernames (case-insensitive) allowed to run operator/cheat
+	// commands like /gamemode and /time.
+	Ops []string `yaml:"ops"`
+
 	World   WorldConfig   `yaml:"world"`
 	Java    JavaConfig    `yaml:"java"`
 	Bedrock BedrockConfig `yaml:"bedrock"`
+}
+
+// IsOp reports whether username is in the configured ops list (case-insensitive).
+func (c *Config) IsOp(username string) bool {
+	for _, op := range c.Ops {
+		if strings.EqualFold(op, username) {
+			return true
+		}
+	}
+	return false
 }
 
 type WorldConfig struct {

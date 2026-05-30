@@ -208,6 +208,7 @@ type Manager struct {
 	defaultWorld *World
 	blockEvents  *BlockEventBus
 	autosaveStop chan struct{}
+	timeStop     chan struct{}
 }
 
 func NewManager() *Manager {
@@ -324,12 +325,48 @@ func (m *Manager) StartAutosave(interval time.Duration) {
 	}()
 }
 
-// Close stops autosave and performs a final save of all worlds.
+// StartTimeLoop advances every world's clock at 20 ticks/sec. worldAge is
+// monotonic; dayTime wraps at 24000. When advance is false the clock is frozen
+// (e.g. a fixed-time world) but worldAge still increments. Idempotent.
+func (m *Manager) StartTimeLoop(advance bool) {
+	m.mu.Lock()
+	if m.timeStop != nil {
+		m.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	m.timeStop = stop
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond) // 20 TPS
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				for _, w := range m.GetAllWorlds() {
+					w.SetTime(w.GetTime() + 1)
+					if advance {
+						w.SetDayTime((w.GetDayTime() + 1) % 24000)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// Close stops autosave and the time loop, then performs a final save of all worlds.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.autosaveStop != nil {
 		close(m.autosaveStop)
 		m.autosaveStop = nil
+	}
+	if m.timeStop != nil {
+		close(m.timeStop)
+		m.timeStop = nil
 	}
 	m.mu.Unlock()
 	return m.Save()

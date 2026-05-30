@@ -91,6 +91,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	}
 
 	pl := player.NewPlayer(id, name, player.EditionJava)
+	pl.Op = j.cfg.IsOp(name)
 	pl.EntityRuntimeID = uint64(session.EntityID())
 	pl.Position.X, pl.Position.Y, pl.Position.Z = session.X, session.Y, session.Z
 	pl.Rotation.Pitch, pl.Rotation.Yaw = session.Pitch, session.Yaw

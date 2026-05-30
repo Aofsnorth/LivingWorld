@@ -311,6 +311,8 @@ func (h *Handler775) HandlePacket(s Session, p pk.Packet) {
 		s.HandleUseItemOn(p)
 	case packetid.ServerboundGameChat:
 		s.HandleChat(p)
+	case packetid.ServerboundGameChatCommand:
+		s.HandleChatCommand(p)
 	case packetid.ServerboundGameSetCreativeModeSlot:
 		s.HandleCreativeSlot(p)
 	case packetid.ServerboundGameSetCarriedItem:

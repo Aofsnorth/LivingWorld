@@ -3,6 +3,7 @@ package server
 import (
 	"livingworld/internal/java/protocol"
 	"log"
+	"time"
 
 	"livingworld/config"
 	javaregistry "livingworld/internal/java/registry"
@@ -39,6 +40,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	log.Printf("[Java] Using default protocol version: %d (ProtocolVersion=%d). Supported: %v", j.protocol, gmserver.ProtocolVersion, protocol.GetSupportedProtocols())
 	j.startPlayerEventLoop()
 	j.startBlockEventLoop()
+	j.startTimeLoop()
 	ping := gmserver.NewPingInfo("LivingWorld Java", j.protocol, chat.Message{Text: cfg.MOTD}, nil)
 	playerList := gmserver.NewPlayerList(cfg.Java.MaxPlayers)
 	registries, registrySizes := javaregistry.Build()
@@ -58,4 +60,19 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 
 func (j *javaBridge) acceptConn(conn gmnet.Conn) {
 	j.server.AcceptConn(&conn)
+}
+
+// startTimeLoop periodically broadcasts the authoritative world time. With the
+// daylight cycle on, the client advances the sun itself between sends (rate=1.0),
+// so a few-second interval is enough to correct drift without spamming.
+func (j *javaBridge) startTimeLoop() {
+	advancing := j.cfg.World.DayNightCycle
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			w := j.wm.GetDefaultWorld()
+			j.sessions.Broadcast(buildSetTimePacket(w.GetTime(), w.GetDayTime(), advancing))
+		}
+	}()
 }

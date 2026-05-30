@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 
+	"livingworld/internal/command"
 	"livingworld/plugin"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -16,6 +17,11 @@ type chatText struct {
 func (s *PlayerSession) HandleChat(p pk.Packet) {
 	var message pk.String
 	if err := p.Scan(&message); err != nil {
+		return
+	}
+	// Some clients deliver "/cmd" as plain chat; route it to the command system.
+	if len(message) > 0 && message[0] == '/' {
+		command.Default().Dispatch(s, string(message[1:]))
 		return
 	}
 	ev := &plugin.PlayerChatEvent{
