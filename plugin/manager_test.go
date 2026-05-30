@@ -69,3 +69,39 @@ func TestPluginLifecycle(t *testing.T) {
 		t.Errorf("plugin still enabled after unregister")
 	}
 }
+
+
+// panicPlugin registers a handler that panics, to verify isolation + auto-disable.
+type panicPlugin struct {
+	m     *PluginManager
+	calls int
+}
+
+func (p *panicPlugin) Name() string    { return "panicker" }
+func (p *panicPlugin) Version() string { return "1.0" }
+func (p *panicPlugin) OnEnable(h Host) error {
+	p.m.OnPlayerJoin(func(e *PlayerJoinEvent) { p.calls++; panic("boom") })
+	return nil
+}
+func (p *panicPlugin) OnDisable() error { return nil }
+
+func TestHandlerPanicIsolatedAndPluginDisabled(t *testing.T) {
+	m := NewManager()
+	p := &panicPlugin{m: m}
+	if err := m.Register(p); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// First emit triggers the panic; it must be recovered (no crash) and the
+	// owning plugin disabled along with its handler.
+	m.Emit(&PlayerJoinEvent{BaseEvent: BaseEvent{Type_: EventPlayerJoin}, PlayerName: "a"})
+	if got := m.List(); len(got) != 0 {
+		t.Fatalf("expected plugin disabled, still registered: %v", got)
+	}
+
+	// Second emit must not re-invoke the removed handler.
+	m.Emit(&PlayerJoinEvent{BaseEvent: BaseEvent{Type_: EventPlayerJoin}, PlayerName: "b"})
+	if p.calls != 1 {
+		t.Fatalf("handler invoked %d times, want 1 (should be removed after panic)", p.calls)
+	}
+}

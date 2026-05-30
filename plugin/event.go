@@ -12,6 +12,14 @@ const (
 	EventBlockPlace     EventType = "block.place"
 	EventServerStart    EventType = "server.start"
 	EventServerStop     EventType = "server.stop"
+	EventPlayerAttack   EventType = "player.attack"   // cancellable
+	EventEntityDamage   EventType = "entity.damage"   // cancellable
+	EventEntityDeath    EventType = "entity.death"    // not cancellable
+	EventPlayerCommand  EventType = "player.command"  // cancellable
+	EventContainerClick EventType = "container.click" // cancellable
+	EventItemDrop       EventType = "item.drop"       // cancellable
+	EventItemPickup     EventType = "item.pickup"     // cancellable
+	EventPlayerRespawn  EventType = "player.respawn"  // not cancellable
 )
 
 // Event is the common interface for all events.
@@ -85,6 +93,73 @@ type BlockPlaceEvent struct {
 type ServerStartEvent struct{ BaseEvent }
 
 type ServerStopEvent struct{ BaseEvent }
+
+// PlayerInteractEvent fires when a player right-clicks a block or air. Cancellable.
+type PlayerInteractEvent struct {
+	BaseEvent
+	PlayerName string
+	X, Y, Z    int
+	BlockID    int32
+}
+
+// PlayerAttackEvent fires when a player attacks an entity. Cancellable.
+type PlayerAttackEvent struct {
+	BaseEvent
+	PlayerName string
+	TargetID   int32
+}
+
+// EntityDamageEvent fires when an entity takes damage. Cancellable.
+type EntityDamageEvent struct {
+	BaseEvent
+	EntityID int32
+	Cause    string
+	Amount   float64
+}
+
+// EntityDeathEvent fires when an entity dies. Not cancellable.
+type EntityDeathEvent struct {
+	BaseEvent
+	EntityID int32
+	Cause    string
+}
+
+// PlayerCommandEvent fires before a command runs; cancelling suppresses it.
+type PlayerCommandEvent struct {
+	BaseEvent
+	PlayerName string
+	Command    string // command line without the leading slash
+}
+
+// ContainerClickEvent fires when a player clicks a container slot. Cancellable.
+type ContainerClickEvent struct {
+	BaseEvent
+	PlayerName string
+	Slot       int
+}
+
+// ItemDropEvent fires when a player drops an item. Cancellable.
+type ItemDropEvent struct {
+	BaseEvent
+	PlayerName string
+	ItemID     string
+	Count      int
+}
+
+// ItemPickupEvent fires when a player picks up an item. Cancellable.
+type ItemPickupEvent struct {
+	BaseEvent
+	PlayerName string
+	ItemID     string
+	Count      int
+}
+
+// PlayerRespawnEvent fires after a player respawns. Not cancellable.
+type PlayerRespawnEvent struct {
+	BaseEvent
+	PlayerName string
+	X, Y, Z    float64
+}
 
 // newBase is a small helper for constructing events with the right type tag.
 func newBase(t EventType) BaseEvent { return BaseEvent{Type_: t} }

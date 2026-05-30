@@ -51,17 +51,26 @@ func Manager() *PluginManager {
 	return globalManager
 }
 
+// handler pairs an event callback with the plugin that registered it, so a
+// panicking handler can be traced back and its plugin disabled.
+type handler struct {
+	owner string // plugin name; "" when registered outside a plugin's OnEnable
+	fn    func(Event)
+}
+
 type PluginManager struct {
 	plugins       map[string]*loadedPlugin
-	eventHandlers map[EventType][]func(Event)
+	eventHandlers map[EventType][]handler
 	mu            sync.RWMutex
+	regMu         sync.Mutex // serializes Register so handler attribution is correct
 	host          Host
+	enabling      string // plugin currently in OnEnable (for handler attribution)
 }
 
 func NewManager() *PluginManager {
 	return &PluginManager{
 		plugins:       make(map[string]*loadedPlugin),
-		eventHandlers: make(map[EventType][]func(Event)),
+		eventHandlers: make(map[EventType][]handler),
 	}
 }
 
@@ -81,15 +90,26 @@ func (m *PluginManager) Host() Host {
 
 // Register enables a plugin, handing it the Host.
 func (m *PluginManager) Register(p Plugin) error {
+	m.regMu.Lock()
+	defer m.regMu.Unlock()
+
 	m.mu.Lock()
 	if _, exists := m.plugins[p.Name()]; exists {
 		m.mu.Unlock()
 		return fmt.Errorf("plugin already registered: %s", p.Name())
 	}
 	host := m.host
+	m.enabling = p.Name() // tag handlers registered during OnEnable
 	m.mu.Unlock()
 
-	if err := p.OnEnable(host); err != nil {
+	err := p.OnEnable(host)
+
+	m.mu.Lock()
+	m.enabling = ""
+	m.mu.Unlock()
+
+	if err != nil {
+		m.removeHandlers(p.Name()) // roll back partial registration
 		return fmt.Errorf("OnEnable failed: %w", err)
 	}
 
@@ -137,9 +157,9 @@ func (m *PluginManager) List() []string {
 }
 
 // On registers a raw handler for an event type.
-func (m *PluginManager) On(eventType EventType, handler func(Event)) {
+func (m *PluginManager) On(eventType EventType, fn func(Event)) {
 	m.mu.Lock()
-	m.eventHandlers[eventType] = append(m.eventHandlers[eventType], handler)
+	m.eventHandlers[eventType] = append(m.eventHandlers[eventType], handler{owner: m.enabling, fn: fn})
 	m.mu.Unlock()
 }
 
@@ -148,11 +168,52 @@ func (m *PluginManager) On(eventType EventType, handler func(Event)) {
 // callers should check evt.Cancelled() for cancellable events.
 func (m *PluginManager) Emit(event Event) {
 	m.mu.RLock()
-	handlers := make([]func(Event), len(m.eventHandlers[event.Type()]))
+	handlers := make([]handler, len(m.eventHandlers[event.Type()]))
 	copy(handlers, m.eventHandlers[event.Type()])
 	m.mu.RUnlock()
-	for _, handler := range handlers {
-		handler(event)
+	for _, h := range handlers {
+		m.dispatch(h, event)
+	}
+}
+
+// dispatch runs one handler with panic isolation: a panicking handler never
+// crashes the server, and if it belongs to a plugin that plugin is disabled.
+func (m *PluginManager) dispatch(h handler, event Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Plugin] handler for %q panicked: %v", event.Type(), r)
+			if h.owner != "" {
+				log.Printf("[Plugin] disabling %q after panic", h.owner)
+				m.disable(h.owner)
+			}
+		}
+	}()
+	h.fn(event)
+}
+
+// disable removes a plugin's handlers and calls OnDisable, tolerating a panic
+// in OnDisable so cleanup of one bad plugin never cascades.
+func (m *PluginManager) disable(name string) {
+	m.removeHandlers(name)
+	defer func() { _ = recover() }()
+	_ = m.Unregister(name)
+}
+
+// removeHandlers drops every handler registered by the named plugin.
+func (m *PluginManager) removeHandlers(owner string) {
+	if owner == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for t, hs := range m.eventHandlers {
+		kept := make([]handler, 0, len(hs))
+		for _, h := range hs {
+			if h.owner != owner {
+				kept = append(kept, h)
+			}
+		}
+		m.eventHandlers[t] = kept
 	}
 }
 
@@ -181,4 +242,31 @@ func (m *PluginManager) OnBlockBreak(fn func(*BlockBreakEvent)) {
 }
 func (m *PluginManager) OnBlockPlace(fn func(*BlockPlaceEvent)) {
 	m.On(EventBlockPlace, func(e Event) { fn(e.(*BlockPlaceEvent)) })
+}
+func (m *PluginManager) OnPlayerInteract(fn func(*PlayerInteractEvent)) {
+	m.On(EventPlayerInteract, func(e Event) { fn(e.(*PlayerInteractEvent)) })
+}
+func (m *PluginManager) OnPlayerAttack(fn func(*PlayerAttackEvent)) {
+	m.On(EventPlayerAttack, func(e Event) { fn(e.(*PlayerAttackEvent)) })
+}
+func (m *PluginManager) OnEntityDamage(fn func(*EntityDamageEvent)) {
+	m.On(EventEntityDamage, func(e Event) { fn(e.(*EntityDamageEvent)) })
+}
+func (m *PluginManager) OnEntityDeath(fn func(*EntityDeathEvent)) {
+	m.On(EventEntityDeath, func(e Event) { fn(e.(*EntityDeathEvent)) })
+}
+func (m *PluginManager) OnPlayerCommand(fn func(*PlayerCommandEvent)) {
+	m.On(EventPlayerCommand, func(e Event) { fn(e.(*PlayerCommandEvent)) })
+}
+func (m *PluginManager) OnContainerClick(fn func(*ContainerClickEvent)) {
+	m.On(EventContainerClick, func(e Event) { fn(e.(*ContainerClickEvent)) })
+}
+func (m *PluginManager) OnItemDrop(fn func(*ItemDropEvent)) {
+	m.On(EventItemDrop, func(e Event) { fn(e.(*ItemDropEvent)) })
+}
+func (m *PluginManager) OnItemPickup(fn func(*ItemPickupEvent)) {
+	m.On(EventItemPickup, func(e Event) { fn(e.(*ItemPickupEvent)) })
+}
+func (m *PluginManager) OnPlayerRespawn(fn func(*PlayerRespawnEvent)) {
+	m.On(EventPlayerRespawn, func(e Event) { fn(e.(*PlayerRespawnEvent)) })
 }
