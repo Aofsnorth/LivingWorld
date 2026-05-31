@@ -15,7 +15,8 @@ It is also designed to be **used as a library** — embed it in your own Go prog
 
 - **🔄 Cross-Play Native** — Bedrock and Java players share the same world, blocks, and entities
 - **🧱 Complete block & item registries** — the full vanilla 26.1 palette (~29,800 block states, ~1,500 items) via the bundled go-mc data; no hand-maintained tables
-- **💾 World persistence** — chunk edits are saved to disk (gzip per-chunk files), autosaved, and reloaded on restart
+- **💾 World persistence** — chunk edits are saved to disk (gzip region files), autosaved, and reloaded on restart
+- **🗺️ World import** — convert vanilla **Java** worlds in and out with the `worldconvert` tool (Anvil ⇄ LivingWorld)
 - **🎮 Ergonomic plugin API** — typed event handlers, **cancellable** events, and a `Host` capability surface
 - **📦 Library-shaped** — `import "livingworld/server"` and run a full server in a few lines
 - **🔧 Protocol Adaptors** — automatic translation between Java state IDs and Bedrock runtime IDs
@@ -150,11 +151,28 @@ blockState, placeable := item.BlockStateID("minecraft:oak_planks")
 > Upgrading from an older build that wrote per-chunk `c.<x>.<z>.bin` files? Those are
 > no longer read — delete the old `worlds/` folder once (a superflat world regenerates).
 
+## 🗺️ World Import / Conversion
+
+Vanilla worlds aren't loaded directly — convert them with the bundled `worldconvert` tool:
+
+```bash
+go build -o worldconvert ./cmd/worldconvert
+./worldconvert import-java <vanillaJavaWorldDir> worlds/world   # vanilla Java → server
+./worldconvert export-java worlds/world <vanillaJavaWorldDir>   # server → vanilla Java
+```
+
+Conversion pivots on the block **name** (LivingWorld's block ID *is* the Java global
+block-state ID), so Java ⇄ LivingWorld is near-identity. The source is never modified.
+Block-state *properties* default and lighting/biomes/entities aren't transferred
+(vanilla recomputes lighting on load). Bedrock (LevelDB) conversion isn't implemented
+yet (`import-bedrock`/`export-bedrock` return a clear error).
+
 ## 📁 Project Structure
 
 ```
 livingworld/
 ├── cmd/server/            # thin entry point over the public API
+├── cmd/worldconvert/      # vanilla Java ⇄ LivingWorld world converter
 ├── server/                # PUBLIC library API (server.New / Run / Host)
 ├── plugin/                # PUBLIC plugin API (events, Host, manager)
 ├── config/                # configuration

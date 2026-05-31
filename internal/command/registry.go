@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"livingworld/internal/player"
+	"livingworld/internal/shared/constants/chat"
 	"livingworld/internal/world"
 )
 
@@ -90,11 +91,11 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 	}
 	cmd, ok := r.Get(fields[0])
 	if !ok {
-		s.Reply("§cUnknown command: /" + fields[0])
+		s.Reply(chat.ColorRed + "Unknown command: /" + fields[0])
 		return true
 	}
 	if cmd.Permission == PermOperator && !s.IsOp() {
-		s.Reply("§cYou don't have permission to use /" + cmd.Name)
+		s.Reply(chat.ColorRed + "You don't have permission to use /" + cmd.Name)
 		return true
 	}
 	args := fields[1:]
@@ -103,7 +104,7 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 		if usage == "" {
 			usage = cmd.Name
 		}
-		s.Reply("§cUsage: /" + usage)
+		s.Reply(chat.ColorRed + "Usage: /" + usage)
 		return true
 	}
 	r.mu.RLock()
@@ -111,7 +112,7 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 	r.mu.RUnlock()
 	ctx := &Ctx{Sender: s, Args: args, PM: pm, WM: wm}
 	if err := cmd.Handler(ctx); err != nil {
-		s.Reply("§cError: " + err.Error())
+		s.Reply(chat.ColorRed + "Error: " + err.Error())
 	}
 	return true
 }

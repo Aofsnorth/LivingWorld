@@ -2,8 +2,8 @@ package server
 
 import (
 	"github.com/Tnze/go-mc/data/packetid"
-	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/nbt"
+	pk "github.com/Tnze/go-mc/net/packet"
 )
 
 func (s *PlayerSession) sendInitialPlayPackets() error {

@@ -45,8 +45,23 @@ type PlayerSession struct {
 	lastSentPos  map[uuid.UUID]world.Position
 
 	chunkQueue chan struct{}
-	mu         sync.Mutex
-	Ready      bool
+	// sendQueue serializes foreign-avatar relays (spawn/move/skin/...) on a
+	// per-session goroutine so a slow client backs up only its own queue, never
+	// the shared player-event loop. Without this, the single event-loop goroutine
+	// blocked on each client's network write in turn, so one busy/slow client
+	// stalled relays to everyone (players looked frozen) and could even drop
+	// join events under the movement-packet flood (foreign players invisible).
+	sendQueue chan func()
+	mu        sync.Mutex
+	// writeMu serializes all writes to Conn_. SendPacket/WriteRaw are called
+	// concurrently from many goroutines (chunk worker, player-event loop, drop
+	// loop, block-update loop, keep-alive, the read loop). go-mc's
+	// Conn.WritePacket has no internal lock, so concurrent writes interleave
+	// their bytes and corrupt the packet stream — which showed up as chunks
+	// rendering wrong / not at all while moving (the moment with the most
+	// concurrent traffic: chunk streaming + entity sync at once).
+	writeMu sync.Mutex
+	Ready   bool
 }
 
 func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *javaBridge) *PlayerSession {
@@ -67,6 +82,7 @@ func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *j
 		LoadedChunks: make(map[world.ChunkPos]bool),
 		lastSentPos:  make(map[uuid.UUID]world.Position),
 		chunkQueue:   make(chan struct{}, 1),
+		sendQueue:    make(chan func(), 1024),
 	}
 }
 
@@ -121,12 +137,16 @@ func (s *PlayerSession) SendWorldState() {
 }
 
 func (s *PlayerSession) SendPacket(p pk.Packet) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.Conn_.WritePacket(p)
 }
 
 // WriteRaw writes pre-framed packet data directly to the connection.
 // The data must already include the length prefix (VarInt) followed by packetID + payload.
 func (s *PlayerSession) WriteRaw(data []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.Conn_.Writer.Write(data)
 	return err
 }
@@ -203,5 +223,24 @@ func (m *SessionManager) ForEach(fn func(*PlayerSession)) {
 func (s *PlayerSession) ChunkWorker() {
 	for range s.chunkQueue {
 		s.updateChunksWithBatch(true)
+	}
+}
+
+// sendLoop runs queued relay work (foreign-avatar spawn/move/...) in order on a
+// dedicated goroutine, so blocking network writes never stall the shared
+// player-event loop.
+func (s *PlayerSession) sendLoop() {
+	for f := range s.sendQueue {
+		f()
+	}
+}
+
+// enqueue schedules relay work for this session. If the queue is full the client
+// is hopelessly behind, so the update is dropped for this session only (it will
+// be corrected by the next position/teleport update) rather than blocking others.
+func (s *PlayerSession) enqueue(f func()) {
+	select {
+	case s.sendQueue <- f:
+	default:
 	}
 }

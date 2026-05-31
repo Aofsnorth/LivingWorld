@@ -43,7 +43,7 @@ func (s *Server) sendAvailableCommands(conn *minecraft.Conn) {
 
 // --- command.Sender implementation on the Bedrock session ---
 
-func (s *bedrockSession) Name() string  { return s.username }
+func (s *bedrockSession) Name() string    { return s.username }
 func (s *bedrockSession) UUID() uuid.UUID { return s.id }
 
 func (s *bedrockSession) IsOp() bool {

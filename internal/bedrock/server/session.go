@@ -1,7 +1,6 @@
 package server
 
 import (
-	"math"
 	"sync"
 	"time"
 
@@ -58,6 +57,8 @@ type bedrockSession struct {
 	// sent. Re-sending ContainerOpen while already open crashes the client.
 	invOpened bool
 
+	health float32 // server-tracked health for cross-edition melee damage
+
 	mu sync.Mutex
 }
 
@@ -77,6 +78,7 @@ func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *mi
 		lastChunkX:   -999999,
 		lastChunkZ:   -999999,
 		viewDistance: 0,
+		health:       20,
 	}
 }
 
@@ -101,19 +103,40 @@ func (s *bedrockSession) Kick(reason string) {
 // Push implements player.Controller: apply a velocity impulse (blocks/tick) to
 // the local player. Bedrock velocity is mgl32.Vec3 in blocks/tick. The local
 // player knows itself as bedrockLocalRuntime (1), NOT bs.runtimeID (the id other
-// viewers see) — targeting the wrong id silently no-ops.
+// viewers see) â€” targeting the wrong id silently no-ops.
 func (s *bedrockSession) Push(vx, vy, vz float64) {
-	// Bedrock ground friction is extremely high compared to Java, so a Bedrock
-	// player shoved by a Java player feels "heavy" / barely moves. Amplify the
-	// horizontal knockback strongly so SetActorMotion actually displaces the
-	// client. No vertical bump — vy stays as given (0 from the push loop) so we
-	// never fight the client's own gravity.
-	vx *= 3.0
-	vz *= 3.0
+	// Bedrock here uses client-authoritative movement (StartGame leaves
+	// MovementType=Client), so the client only partially applies a server
+	// SetActorMotion to its own player â€” a Bedrock player shoved by a Java player
+	// feels "heavy" / barely moves while the Java player (whose client applies
+	// SetEntityMotion in full) moves freely, i.e. the push is lopsided. We amplify
+	// the horizontal impulse to compensate. The push loop's force is bounded by
+	// pushStrength(0.08), so even at full overlap this stays at ~0.36 b/t (melee-
+	// knockback scale) and never launches. NOTE: true cross-edition parity needs
+	// server-authoritative movement (specs Â§6); this is the bounded interim tuning.
+	vx *= 4.5
+	vz *= 4.5
 
 	s.write(&packet.SetActorMotion{
 		EntityRuntimeID: bedrockLocalRuntime,
 		Velocity:        mgl32.Vec3{float32(vx), float32(vy), float32(vz)},
+	})
+}
+
+// Hurt implements player.Controller: apply melee damage to this Bedrock player —
+// drop its health bar and play the hurt flash + sound on its own client.
+func (s *bedrockSession) Hurt(amount float32) {
+	s.mu.Lock()
+	s.health -= amount
+	if s.health < 0 {
+		s.health = 0
+	}
+	hp := s.health
+	s.mu.Unlock() // write() also takes s.mu; never hold it across a write
+	s.write(&packet.ActorEvent{EntityRuntimeID: bedrockLocalRuntime, EventType: packet.ActorEventHurt})
+	s.write(&packet.UpdateAttributes{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Attributes:      []protocol.Attribute{bedrockHealthAttribute(hp)},
 	})
 }
 
@@ -146,114 +169,4 @@ func (s *Server) forEachSession(fn func(*bedrockSession)) {
 	for _, bs := range list {
 		fn(bs)
 	}
-}
-
-func bedrockMetadata(name string, sneaking bool) protocol.EntityMetadata {
-	meta := protocol.NewEntityMetadata()
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasGravity)
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasCollision)
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagShowName)
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagAlwaysShowName)
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
-
-	meta[protocol.EntityDataKeyName] = name
-	// The dedicated AlwaysShowNameTag byte (not just the flag) is what makes the
-	// nametag render at any distance/angle; without it Bedrock fades it like a mob
-	// nametag (only when close and looked at). Matches dragonfly's reference.
-	meta[protocol.EntityDataKeyAlwaysShowNameTag] = uint8(1)
-	meta[protocol.EntityDataKeyScale] = float32(1)
-	meta[protocol.EntityDataKeyWidth] = float32(0.6)
-
-	if sneaking {
-		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
-		meta[protocol.EntityDataKeyPoseIndex] = int32(5)  // Crouching pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.5) // Reduced height
-	} else {
-		meta[protocol.EntityDataKeyPoseIndex] = int32(0)  // Standing pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.8) // Normal height
-	}
-
-	// Full air so remote player entities never render drowning bubble particles.
-	meta[protocol.EntityDataKeyAirSupply] = int16(300)
-	meta[protocol.EntityDataKeyAirSupplyMax] = int16(300)
-	return meta
-}
-
-func bedrockSurvivalAbilityData(runtimeID uint64) protocol.AbilityData {
-	return protocol.AbilityData{
-		EntityUniqueID:     int64(runtimeID),
-		PlayerPermissions:  0,
-		CommandPermissions: 0,
-		Layers: []protocol.AbilityLayer{{
-			Type:      protocol.AbilityLayerTypeBase,
-			Abilities: protocol.AbilityCount - 1,
-			Values: protocol.AbilityBuild |
-				protocol.AbilityMine |
-				protocol.AbilityDoorsAndSwitches |
-				protocol.AbilityOpenContainers |
-				protocol.AbilityAttackPlayers |
-				protocol.AbilityAttackMobs,
-			FlySpeed:         protocol.AbilityBaseFlySpeed,
-			VerticalFlySpeed: protocol.AbilityBaseVerticalFlySpeed,
-			WalkSpeed:        protocol.AbilityBaseWalkSpeed,
-		}},
-	}
-}
-
-func bedrockMovementAttribute() protocol.Attribute {
-	return protocol.Attribute{
-		AttributeValue: protocol.AttributeValue{
-			Name:  "minecraft:movement",
-			Value: protocol.AbilityBaseWalkSpeed,
-			Max:   math.MaxFloat32,
-			Min:   0,
-		},
-		DefaultMin: 0,
-		DefaultMax: math.MaxFloat32,
-		Default:    protocol.AbilityBaseWalkSpeed,
-	}
-}
-
-func bedrockLocalClientPosFromFeet(x, y, z float64) mgl32.Vec3 {
-	return mgl32.Vec3{float32(x), float32(y + bedrockLocalEyeHeight), float32(z)}
-}
-
-func bedrockSharedFeetFromLocalClient(pos mgl32.Vec3) (x, y, z float64) {
-	// The local Bedrock player is spawned/teleported with a camera-like Y
-	// (feet + 1.62). Movement packets from this gophertunnel path remain in the
-	// same visual coordinate space. Convert back to the shared feet coordinate
-	// used by Java/world state; otherwise Java viewers see Bedrock players
-	// floating about one eye-height above the grass.
-	return float64(pos[0]), float64(pos[1]) - bedrockLocalEyeHeight, float64(pos[2])
-}
-
-func bedrockPosFromFeet(x, y, z float64) mgl32.Vec3 {
-	// A remote player entity rendered for a Bedrock viewer needs the same visual
-	// Y offset the local Bedrock client uses for its own render position —
-	// regardless of the source edition. Without it the entity is drawn one
-	// eye-height too low and appears sunk into the ground. This applies equally
-	// to Bedrock-origin players (see bedrockPosFromJavaFeet for the Java case).
-	return mgl32.Vec3{float32(x), float32(y + bedrockLocalEyeHeight), float32(z)}
-}
-
-func bedrockPosFromJavaFeet(x, y, z float64) mgl32.Vec3 {
-	// Remote Java player entities in Bedrock need the same visual offset that
-	// the local Bedrock client expects for player render positions. Without this
-	// the Java player appears buried below the grass block.
-	return mgl32.Vec3{float32(x), float32(y + bedrockLocalEyeHeight), float32(z)}
-}
-
-func (s *bedrockSession) movementUpdate(now time.Time, x, y, z float64) (publish bool, correct bool) {
-	if s.lastMovePublish.IsZero() {
-		s.lastMovePublish = now
-		s.lastX, s.lastY, s.lastZ = x, y, z
-		return true, false
-	}
-	dt := now.Sub(s.lastMovePublish).Seconds()
-	if dt <= 0 {
-		return false, false
-	}
-	s.lastMovePublish = now
-	s.lastX, s.lastY, s.lastZ = x, y, z
-	return true, false
 }

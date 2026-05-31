@@ -7,6 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"livingworld/internal/shared/constants/gameplay"
+	"livingworld/internal/shared/constants/network"
+	"livingworld/internal/shared/constants/system"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -59,14 +63,14 @@ type WorldConfig struct {
 // (peaceful=0, easy=1, normal=2, hard=3). Unknown values default to normal.
 func (w WorldConfig) DifficultyByte() byte {
 	switch w.Difficulty {
-	case "peaceful":
-		return 0
-	case "easy":
-		return 1
-	case "hard":
-		return 3
+	case gameplay.DifficultyPeaceful:
+		return gameplay.DifficultyBytePeaceful
+	case gameplay.DifficultyEasy:
+		return gameplay.DifficultyByteEasy
+	case gameplay.DifficultyHard:
+		return gameplay.DifficultyByteHard
 	default: // "normal" or unset
-		return 2
+		return gameplay.DifficultyByteNormal
 	}
 }
 
@@ -97,6 +101,14 @@ type JavaConfig struct {
 	// MineSkinAPIKey is used to upload Bedrock skins to Mojang so Java clients
 	// can see them. Required for cross-edition skins to work.
 	MineSkinAPIKey string `yaml:"mineSkinAPIKey"`
+
+	// BedrockHDSkins, when true, serves a Bedrock player's FULL-resolution
+	// (128×128) skin to Java via the local skin bridge instead of the MineSkin
+	// 64×64 signed property — fixing the downscaled "burik" look. This only
+	// renders on clients that accept unsigned skin URLs from arbitrary hosts
+	// (most authlib-injector launchers do; strict/vanilla clients show the
+	// default skin instead, so it is OFF by default — flip it on and test).
+	BedrockHDSkins bool `yaml:"bedrockHDSkins"`
 }
 
 type BedrockConfig struct {
@@ -109,33 +121,39 @@ type BedrockConfig struct {
 
 func Default() *Config {
 	return &Config{
-		ServerName: "LivingWorld Server",
-		MOTD:       "A Minecraft Server",
-		PluginsDir: "./plugins",
+		ServerName: system.DefaultServerName,
+		MOTD:       system.DefaultMOTD,
+		PluginsDir: system.DefaultPluginsDirectory,
 		World: WorldConfig{
-			Type:            "superflat",
-			Seed:            12345,
-			Spawn:           SpawnConfig{X: 0, Y: 4, Z: 0, Yaw: 0, Pitch: 0},
+			Type: system.WorldTypeDefault,
+			Seed: system.DefaultWorldSeed,
+			Spawn: SpawnConfig{
+				X:     system.DefaultSpawnX,
+				Y:     system.DefaultSpawnY,
+				Z:     system.DefaultSpawnZ,
+				Yaw:   system.DefaultSpawnYaw,
+				Pitch: system.DefaultSpawnPitch,
+			},
 			Persistence:     true,
-			Directory:       "worlds",
-			AutosaveSeconds: 300,
-			Difficulty:      "normal",
+			Directory:       system.DefaultWorldsDirectory,
+			AutosaveSeconds: int(system.DefaultAutosaveInterval.Seconds()),
+			Difficulty:      gameplay.DifficultyNormal,
 			DayNightCycle:   true,
 		},
 		Java: JavaConfig{
-			Bind:               "0.0.0.0",
-			Port:               25565,
+			Bind:               network.DefaultBindAddress,
+			Port:               network.DefaultJavaPort,
 			OnlineMode:         false,
-			MaxPlayers:         100,
-			ViewDistance:       10,
-			SimulationDistance: 10,
-			SkinSource:         "auto",
+			MaxPlayers:         system.DefaultMaxPlayers,
+			ViewDistance:       gameplay.DefaultJavaViewDistance,
+			SimulationDistance: gameplay.DefaultSimulationDistance,
+			SkinSource:         system.SkinSourceAuto,
 		},
 		Bedrock: BedrockConfig{
-			Bind:         "0.0.0.0",
-			Port:         19132,
-			MaxPlayers:   100,
-			ViewDistance: 8,
+			Bind:         network.DefaultBindAddress,
+			Port:         network.DefaultBedrockPort,
+			MaxPlayers:   system.DefaultMaxPlayers,
+			ViewDistance: gameplay.DefaultBedrockViewDistance,
 			AuthDisabled: true,
 		},
 	}
@@ -167,7 +185,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	opsFile := strings.Replace(path, "config.yml", "ops.txt", 1)
+	opsFile := strings.Replace(path, "config.yml", system.DefaultOpsFile, 1)
 	if opsB, err := os.ReadFile(opsFile); err == nil {
 		lines := strings.Split(string(opsB), "\n")
 		for _, line := range lines {

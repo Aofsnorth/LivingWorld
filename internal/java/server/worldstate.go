@@ -49,9 +49,9 @@ func buildSetTimePacket(worldAge, dayTime int64, advancing bool) pk.Packet {
 	}
 	return pk.Marshal(
 		packetid.ClientboundGameSetTime,
-		pk.Long(worldAge), // gameTime (global)
-		pk.VarInt(1),      // clockUpdates map count
-		pk.VarInt(0),      // clockId 0 = minecraft:overworld
+		pk.Long(worldAge),   // gameTime (global)
+		pk.VarInt(1),        // clockUpdates map count
+		pk.VarInt(0),        // clockId 0 = minecraft:overworld
 		pk.VarLong(dayTime), // ClockNetworkState.totalTicks (time-of-day)
 		pk.Float(0),         // ClockNetworkState.partialTick
 		rate,                // ClockNetworkState.rate (1.0 advance, 0.0 freeze)

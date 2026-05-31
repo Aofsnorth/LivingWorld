@@ -46,6 +46,7 @@ Doc-coverage index for every package, mapped to its workstream lane (DESIGN [§3
 | Package | St | Summary | Req |
 |---|----|---------|-----|
 | `internal/persistence` | ⏳ | **World save/load + player data.** Pluggable `Storage` (Anvil/region default, LevelDB optional — Decision a); autosave, world lock, corrupt-chunk quarantine; per-player data. Extracted from `internal/world/{persistence,region}.go`. | R3.4-3.6,R6.3 |
+| `internal/worldconvert` | ✅ | Convert vanilla **Java Anvil** (`region/*.mca`) ⇄ LivingWorld region format (`region/r.*.lwr`), pivoting on block name (LivingWorld id == Java state id). Driven by `cmd/worldconvert`. Bedrock LevelDB path stubbed. | R3.4 |
 
 ## Public API & extensions (lanes 5, 9)
 | Package | St | Summary | Req |

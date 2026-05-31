@@ -1,9 +1,9 @@
 package server
 
 import (
-	"livingworld/plugin"
-	"livingworld/internal/world"
 	"livingworld/internal/item"
+	"livingworld/internal/world"
+	"livingworld/plugin"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/level/block"
@@ -43,7 +43,7 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 			BaseEvent:  plugin.BaseEvent{Type_: plugin.EventBlockBreak},
 			PlayerName: s.Username(),
 			X:          pos.X, Y: pos.Y, Z: pos.Z,
-			BlockID:    current.ID(),
+			BlockID: current.ID(),
 		}
 		if plugin.Manager().EmitCancellable(ev) {
 			// A plugin vetoed the break: re-affirm the block to the client so its

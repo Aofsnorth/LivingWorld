@@ -56,12 +56,13 @@ func (s *PlayerSession) sendInventory() {
 // IMPORTANT: Java window 0 has a special layout (crafting result + grid + armor +
 // main + hotbar + offhand). The internal inventory is a flat 46-slot array, so we
 // must remap indices when sending to the client:
-//   Client slot 0      = crafting result (always empty, not stored)
-//   Client slot 1-4    = crafting grid 2×2 (not stored)
-//   Client slot 5-8    = armor slots (not stored yet)
-//   Client slot 9-35   = main inventory (internal 9-35)
-//   Client slot 36-44  = hotbar (internal 0-8)
-//   Client slot 45     = offhand (internal 40)
+//
+//	Client slot 0      = crafting result (always empty, not stored)
+//	Client slot 1-4    = crafting grid 2×2 (not stored)
+//	Client slot 5-8    = armor slots (not stored yet)
+//	Client slot 9-35   = main inventory (internal 9-35)
+//	Client slot 36-44  = hotbar (internal 0-8)
+//	Client slot 45     = offhand (internal 40)
 func (s *PlayerSession) syncInventory() {
 	pl := s.Bridge.pm.GetPlayer(s.UUID())
 	if pl == nil || pl.Inventory == nil {
@@ -128,4 +129,7 @@ func (s *PlayerSession) HandleSetCarriedItem(p pk.Packet) {
 	s.mu.Lock()
 	s.SelectedSlot = int32(slot)
 	s.mu.Unlock()
+	// Publish the held-slot change so other clients (both editions) re-render
+	// this player's hand item.
+	s.Bridge.pm.UpdateHeldSlot(s.UUID(), int(slot))
 }

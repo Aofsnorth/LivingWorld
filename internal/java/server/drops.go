@@ -3,6 +3,9 @@ package server
 import (
 	"time"
 
+	"github.com/Tnze/go-mc/data/packetid"
+	pk "github.com/Tnze/go-mc/net/packet"
+
 	"livingworld/internal/drops"
 	"livingworld/internal/player"
 )
@@ -24,6 +27,14 @@ func (j *javaBridge) startDropLoop() {
 		j.sessions.ForEach(func(s *PlayerSession) {
 			if s.Ready {
 				_ = s.version.SpawnItemEntity(s, int32(d.EntityID), d.Item, d.Count, d.X, d.Y, d.Z)
+				// Give the item its pop/scatter velocity so the Java client runs
+				// vanilla item physics. The 26.1 AddEntity carries no velocity, so
+				// without this the item just plops straight down.
+				_ = s.SendPacket(pk.Marshal(
+					packetid.ClientboundGameSetEntityMotion,
+					pk.VarInt(int32(d.EntityID)),
+					toLpVec3(d.VX, d.VY, d.VZ),
+				))
 			}
 		})
 	})
@@ -56,8 +67,9 @@ func (j *javaBridge) pickupTick(store *drops.Store) {
 		if collector == nil {
 			continue
 		}
-		// Claim the drop atomically; if another loop/edition already took it, skip.
-		if !store.Remove(d.EntityID) {
+		// Claim the drop atomically (no despawn packet — the take animation
+		// removes it client-side); if another loop/edition took it, skip.
+		if !store.Claim(d.EntityID) {
 			continue
 		}
 		j.collectDrop(collector, d)
@@ -92,9 +104,11 @@ func (j *javaBridge) collectDrop(collector *player.Player, d drops.Drop) {
 		if !s.Ready {
 			return
 		}
-		// Pickup animation: item flies to the collector entity.
+		// The take packet flies the item to the collector and the client removes
+		// it once the stack shrinks to empty. Sending an explicit remove here (or
+		// via the store despawn) deletes the entity first and cancels the
+		// animation — that was the "no magnet pickup" bug.
 		_ = s.version.TakeItemEntity(s, int32(d.EntityID), int32(collector.EntityRuntimeID), d.Count)
-		_ = s.version.RemoveItemEntity(s, int32(d.EntityID))
 	})
 	// Push the new inventory slot to the collector if it's a Java session.
 	if cs := j.sessions.Get(collector.UUID); cs != nil {

@@ -149,23 +149,61 @@ LivingWorld normalizes to internal format, converts on send.
 
 ## Protocol Constants
 
-### Java Edition (1.20.2)
+### Java Edition (26.1.2)
 
 ```go
 const (
-    ProtocolVersion = 764
-    MinecraftVersion = "1.20.2"
+    ProtocolVersion  = 775        // covers Java 26.1 / 26.1.1 / 26.1.2
+    MinecraftVersion = "26.1.2"
 )
 ```
 
-### Bedrock Edition (1.21)
+### Bedrock Edition (1.26.20)
 
 ```go
 const (
-    CurrentProtocol = 972  // or 975 for 26.21
-    CurrentVersion   = "1.21.x"
+    CurrentProtocol = 975
+    CurrentVersion  = "1.26.20"
 )
 ```
+
+## Configuration-phase registries (Java 775)
+
+During the Configuration phase the server streams dynamic registries to the
+client. New in 26.1 is `minecraft:timeline` (the data-driven day/night sun/moon
+angle + sky-colour curves). LivingWorld sends the **full** timeline NBT for each
+element (`day`, `moon`, `early_game`, `villager_schedule`) rather than relying on
+the client's built-in `core` pack via `SelectKnownPacks`:
+
+- The client matches a known pack by **exact id + version**. Protocol 775 spans
+  26.1 / 26.1.1 / 26.1.2, and the server cannot know the connecting patch, so a
+  single announced version can never match all of them — a data-less timeline
+  then fails with *"Unbound values in registry minecraft:timeline"* and the
+  client aborts at `finish_configuration`.
+- Sending full data is version-independent and always accepted. The data is
+  bundled verbatim from `26.1.2.jar` under `internal/java/server/registrydata/`.
+
+## Cross-edition authority notes
+
+- **Player push** is server-driven (`player.Manager` push loop): a symmetric,
+  horizontal-only impulse, applied **only to grounded players** so a descending
+  player's fall velocity is never reset (Java `SetEntityMotion` / Bedrock
+  `SetActorMotion` replace the whole velocity vector, unlike vanilla's additive
+  push). Bedrock uses client-authoritative movement, so its push is amplified to
+  compensate for client damping.
+- **Game mode** is server-authoritative: a non-op Bedrock client that changes its
+  mode via the pause-menu *Settings → Game* selector is snapped back by echoing a
+  `SetPlayerGameType{Survival}` plus survival abilities (handler `SetPlayerGameType`).
+
+## World conversion
+
+Vanilla worlds are not loaded directly; the `worldconvert` CLI (`cmd/worldconvert`,
+`internal/worldconvert`) converts between vanilla **Java Anvil** (`region/*.mca`)
+and LivingWorld's region format (`region/r.<rx>.<rz>.lwr`). The pivot is the block
+**name**, because LivingWorld's block ID *is* the Java global block-state ID, making
+Java↔LivingWorld near-identity at the state level. Block-state *properties* default,
+and lighting/biomes/entities are not transferred (vanilla recomputes lighting on
+load). Bedrock (LevelDB) conversion is stubbed pending block-palette mapping.
 
 ## Future Protocol Support
 

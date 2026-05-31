@@ -29,8 +29,24 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	}
 	session.version = versionHandler
 
+	// Restore saved player data (position/health/food) before the initial spawn
+	// packets so the client respawns where it logged out.
+	saved, hasSaved := j.pm.LoadPlayerData(id)
+	if hasSaved {
+		session.X, session.Y, session.Z = saved.X, saved.Y, saved.Z
+		session.Yaw, session.Pitch = saved.Yaw, saved.Pitch
+		if saved.Health > 0 {
+			session.Health = saved.Health
+		}
+		if saved.Food > 0 {
+			session.Food = int32(saved.Food)
+		}
+	}
+
 	go session.ChunkWorker()
 	defer close(session.chunkQueue)
+	go session.sendLoop()
+	defer close(session.sendQueue)
 
 	j.sessions.Add(session)
 	defer j.sessions.Remove(id)
@@ -96,6 +112,9 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	pl.Position.X, pl.Position.Y, pl.Position.Z = session.X, session.Y, session.Z
 	pl.Rotation.Pitch, pl.Rotation.Yaw = session.Pitch, session.Yaw
 	pl.OnGround = true
+	if hasSaved {
+		pl.ApplyPersisted(saved) // restore inventory/gamemode/health
+	}
 	pl.ProfileProperties = javaProfileProperties(properties)
 	if len(pl.ProfileProperties) == 0 && value != "" {
 		pl.ProfileProperties = []player.ProfileProperty{{
@@ -120,8 +139,14 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	// Send initial metadata to themselves (including skin parts)
 	_ = session.version.UpdateForeignMetadata(session, pl.Snapshot())
 
-	session.spawnExistingForeignPlayers()
+	// Mark Ready BEFORE the catch-up spawn: spawnForeignAvatar (and the async
+	// event handlers) early-return while !Ready. If we spawn first, every
+	// already-online player — e.g. a Bedrock player who joined earlier — is
+	// skipped and stays invisible to this client.
 	session.Ready = true
+	session.spawnExistingForeignPlayers()
+	session.spawnExistingMobs()
+	session.sendWeather()
 
 	done := make(chan struct{})
 	go func() {
@@ -134,7 +159,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 			case <-done:
 				return
 			case <-ticker.C:
-				if err := conn.WritePacket(pk.Marshal(packetid.ClientboundGameKeepAlive, pk.Long(time.Now().UnixMilli()))); err != nil {
+				if err := session.SendPacket(pk.Marshal(packetid.ClientboundGameKeepAlive, pk.Long(time.Now().UnixMilli()))); err != nil {
 					log.Printf("[Java] KeepAlive send error: %v", err)
 					return
 				}

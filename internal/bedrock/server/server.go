@@ -6,10 +6,10 @@ import (
 	"sync"
 
 	"livingworld/config"
+	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/player"
 	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
-	bedrockworld "livingworld/internal/bedrock/world"
 
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
@@ -75,6 +75,8 @@ func (s *Server) Start() error {
 	s.startBlockEventLoop()
 	s.startPlayerEventLoop()
 	s.startTimeLoop()
+	s.startMobSync()
+	s.startWeatherSync()
 	s.startDropLoop()
 	s.registerPickupHandler()
 

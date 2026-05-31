@@ -68,6 +68,7 @@ type Session interface {
 	HandleSetCarriedItem(p pk.Packet)
 	HandleSwing(p pk.Packet)
 	HandlePlayerCommand(p pk.Packet)
+	HandleInteract(p pk.Packet)
 	SendPacket(p pk.Packet) error
 }
 

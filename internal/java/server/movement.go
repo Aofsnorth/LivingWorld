@@ -3,6 +3,10 @@ package server
 import (
 	javaworld "livingworld/internal/java/world"
 	"livingworld/internal/world"
+	"log"
+	"runtime"
+	"sort"
+	"sync"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -137,13 +141,10 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 		}
 	}
 
-	// Start chunk batch
-	newChunkCount := int32(0)
-	if useBatch {
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
-	}
-
-	// Send chunk data
+	// Collect the in-range chunks that still need sending. newChunks tracks the
+	// full in-range set (for the LoadedChunks diff); toSend holds only the missing
+	// ones so we can order them.
+	var toSend []world.ChunkPos
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			pos := world.ChunkPos{X: int(cx + dx), Z: int(cz + dz)}
@@ -152,26 +153,86 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 			s.mu.Lock()
 			isLoaded := s.LoadedChunks[pos]
 			s.mu.Unlock()
-
 			if !isLoaded {
-				wChunk := s.Bridge.wm.GetDefaultWorld().LoadChunk(pos.X, pos.Z)
-				lChunk := javaworld.ConvertToLevelChunk(wChunk)
-				packet := javaworld.BuildLevelChunkWithLightPacket(int32(pos.X), int32(pos.Z), lChunk)
-				_ = s.SendPacket(packet)
-				newChunkCount++
+				toSend = append(toSend, pos)
 			}
 		}
 	}
 
-	// End chunk batch
+	// Send nearest-first so the world builds outward from the player like vanilla.
+	// The previous raster order made chunks pop in from one corner ("weird").
+	sort.Slice(toSend, func(i, j int) bool {
+		return chunkDistSq(toSend[i], cx, cz) < chunkDistSq(toSend[j], cx, cz)
+	})
+
+	newChunkCount := int32(len(toSend))
+	// Build the chunk packets concurrently (C2ME-style: chunk generation +
+	// serialization is the CPU-heavy part, so fan it out across cores), then send
+	// them in nearest-first order. world.LoadChunk is mutex-guarded, so parallel
+	// loads/generation are safe.
+	packets := make([]pk.Packet, len(toSend))
+	w := s.Bridge.wm.GetDefaultWorld()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, chunkBuildWorkers)
+	for i := range toSend {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			pos := toSend[i]
+			lChunk := javaworld.ConvertToLevelChunk(w.LoadChunk(pos.X, pos.Z))
+			packets[i] = javaworld.BuildLevelChunkWithLightPacket(int32(pos.X), int32(pos.Z), lChunk)
+		}(i)
+	}
+	wg.Wait()
+
+	if useBatch && newChunkCount > 0 {
+		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
+	}
+	sent, failed, minBytes, maxBytes := 0, 0, 1<<30, 0
+	var firstErr error
+	for _, pkt := range packets {
+		n := len(pkt.Data)
+		if n < minBytes {
+			minBytes = n
+		}
+		if n > maxBytes {
+			maxBytes = n
+		}
+		if err := s.SendPacket(pkt); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		sent++
+	}
 	if useBatch && newChunkCount > 0 {
 		_ = s.SendPacket(pk.Marshal(
 			packetid.ClientboundGameChunkBatchFinished,
 			pk.VarInt(newChunkCount),
 		))
 	}
+	// TEMP DIAGNOSTIC: ground-truth how many chunks were built and actually
+	// written to the socket (remove once the load issue is pinned down).
+	log.Printf("[Java][chunks] %s center=(%d,%d) r=%d toSend=%d built=%d sent=%d failed=%d pktBytes=[%d..%d] firstErr=%v",
+		s.UsernameVal, cx, cz, radius, len(toSend), len(packets), sent, failed, minBytes, maxBytes, firstErr)
 
 	s.mu.Lock()
 	s.LoadedChunks = newChunks
 	s.mu.Unlock()
+}
+
+// chunkBuildWorkers bounds how many chunks are generated + serialized in
+// parallel per batch (C2ME-style parallel chunk I/O). It scales with CPU cores.
+var chunkBuildWorkers = max(2, runtime.NumCPU())
+
+// chunkDistSq is the squared chunk distance from pos to the player's chunk
+// (cx,cz), used to send chunks nearest-first.
+func chunkDistSq(pos world.ChunkPos, cx, cz int32) int {
+	dx := pos.X - int(cx)
+	dz := pos.Z - int(cz)
+	return dx*dx + dz*dz
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
@@ -41,15 +42,13 @@ func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
-	// Announce the vanilla "core" data pack BEFORE sending registries. In 26.1
-	// the client only initialises its built-in resource provider (knownPacks)
-	// when it receives a SelectKnownPacks packet; otherwise registry entries we
-	// send without data resolve against ResourceProvider.EMPTY and fail to load.
-	// We rely on this so the client fills the minecraft:timeline elements (which
-	// carry the sun_angle/moon_angle curves) from its own data — sending the full
-	// timeline NBT by hand would be huge and brittle. The version field need not
-	// match the client build exactly: the vanilla "core" pack is required and is
-	// always retained in the client's resource manager regardless.
+	// Announce the vanilla "core" data pack BEFORE sending registries. This keeps
+	// the 26.1 client's resource provider initialised the same way it was when
+	// 26.1 already worked. NOTE: the client matches a known pack by exact
+	// id+version, so this announced version only matches one patch build; we
+	// therefore no longer depend on it for timeline (see the timeline block below,
+	// which now sends full data). The packet stays as a harmless no-op for the
+	// patch builds whose version differs.
 	// Verified from 26.1 client: ClientConfigurationPacketListenerImpl.runWithResources.
 	{
 		var buf bytes.Buffer
@@ -103,11 +102,13 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 	// Send the minecraft:timeline registry for 26.1. The timeline elements carry
 	// the sun_angle / moon_angle / star_angle keyframe tracks that actually move
 	// the sun; without this registry the dimension_type's "timelines" reference is
-	// unbound and the client rejects the join ("Unbound tags in registry
-	// minecraft:timeline"). We send each element WITHOUT data (hasData=false) so
-	// the client loads the real curves from its built-in "core" pack (announced via
-	// SelectKnownPacks above). Order matters: tags/refs are by index, and
-	// dimension_type.timelines references these ids. day=overworld sun curve.
+	// unbound and the client rejects the join. We send each element WITH its full
+	// NBT data (extracted from 26.1.2.jar) rather than relying on the client's
+	// built-in "core" pack: protocol 775 spans 26.1/26.1.1/26.1.2 and the client
+	// matches known packs by exact version, which the server cannot know — so the
+	// data-less approach only worked for whichever single version we announced and
+	// crashed the rest ("Unbound values in registry minecraft:timeline" on 26.1.2).
+	// See timeline.go. Order matches the dimension_type.timelines id list.
 	{
 		timelineIDs := []string{
 			"minecraft:day", "minecraft:moon",
@@ -116,8 +117,13 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		var buf bytes.Buffer
 		_, _ = pk.VarInt(len(timelineIDs)).WriteTo(&buf) // entry count
 		for _, id := range timelineIDs {
+			data, err := timelineNBT(strings.TrimPrefix(id, "minecraft:"))
+			if err != nil {
+				return err
+			}
 			_, _ = pk.Identifier(id).WriteTo(&buf)
-			_, _ = pk.Boolean(false).WriteTo(&buf) // hasData=false → use built-in
+			_, _ = pk.Boolean(true).WriteTo(&buf) // hasData=true
+			_, _ = buf.Write(data)                // network NBT (nameless compound)
 		}
 		if err := conn.WritePacket(pk.Marshal(
 			packetid.ClientboundConfigRegistryData,

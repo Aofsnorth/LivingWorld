@@ -78,11 +78,11 @@ func (l lpVec3) WriteTo(w io.Writer) (int64, error) {
 
 func toLpVec3(x, y, z float64) lpVec3 {
 	sanitize := func(v float64) float64 {
-		if v < -1.7179869183E10 {
-			return -1.7179869183E10
+		if v < -1.7179869183e10 {
+			return -1.7179869183e10
 		}
-		if v > 1.7179869183E10 {
-			return 1.7179869183E10
+		if v > 1.7179869183e10 {
+			return 1.7179869183e10
 		}
 		return v
 	}
@@ -104,7 +104,7 @@ func toLpVec3(x, y, z float64) lpVec3 {
 		max = abs(z)
 	}
 
-	if max < 3.051944088384301E-5 {
+	if max < 3.051944088384301e-5 {
 		return lpVec3([]byte{0})
 	}
 

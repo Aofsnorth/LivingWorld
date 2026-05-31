@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"mime/multipart"
@@ -40,25 +41,32 @@ func mineSkinNormalize(pngData []byte) []byte {
 	if w != 128 || h != 128 {
 		return pngData // unexpected size; don't guess, send original
 	}
-	// 128x128 → 64x64 via 2x2 box average (keeps the skin recognizable).
+	// 128x128 → 64x64 with an ALPHA-WEIGHTED average of each 2x2 block: RGB is
+	// averaged weighted by the source alpha (so fully-transparent overlay pixels
+	// don't bleed black halos into edges), and alpha is averaged. This is smoother
+	// than the previous most-opaque pick (which kept harsh/noisy pixels — the
+	// "burik" look) while staying edge-correct, and it's the best a 64x64 skin can
+	// represent of a 128 source.
 	out := image.NewNRGBA(image.Rect(0, 0, 64, 64))
 	for y := 0; y < 64; y++ {
 		for x := 0; x < 64; x++ {
-			var r, g, bl, a uint32
+			var r, g, bl, wsum, asum float64
 			for dy := 0; dy < 2; dy++ {
 				for dx := 0; dx < 2; dx++ {
-					pr, pg, pb, pa := img.At(b.Min.X+x*2+dx, b.Min.Y+y*2+dy).RGBA()
-					r += pr >> 8
-					g += pg >> 8
-					bl += pb >> 8
-					a += pa >> 8
+					c := color.NRGBAModel.Convert(img.At(b.Min.X+x*2+dx, b.Min.Y+y*2+dy)).(color.NRGBA)
+					w := float64(c.A)
+					r += float64(c.R) * w
+					g += float64(c.G) * w
+					bl += float64(c.B) * w
+					wsum += w
+					asum += float64(c.A)
 				}
 			}
-			i := out.PixOffset(x, y)
-			out.Pix[i] = uint8(r / 4)
-			out.Pix[i+1] = uint8(g / 4)
-			out.Pix[i+2] = uint8(bl / 4)
-			out.Pix[i+3] = uint8(a / 4)
+			px := color.NRGBA{A: uint8(asum / 4)}
+			if wsum > 0 {
+				px.R, px.G, px.B = uint8(r/wsum), uint8(g/wsum), uint8(bl/wsum)
+			}
+			out.SetNRGBA(x, y, px)
 		}
 	}
 	var buf bytes.Buffer

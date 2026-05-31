@@ -42,6 +42,8 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	j.startBlockEventLoop()
 	j.startTimeLoop()
 	j.startDropLoop()
+	j.startMobSync()
+	j.wm.OnWeatherChange(j.broadcastWeather)
 	ping := gmserver.NewPingInfo("LivingWorld Java", j.protocol, chat.Message{Text: cfg.MOTD}, nil)
 	playerList := gmserver.NewPlayerList(cfg.Java.MaxPlayers)
 	registries, registrySizes := javaregistry.Build()

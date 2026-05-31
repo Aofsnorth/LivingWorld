@@ -15,14 +15,25 @@ and an **official anticheat**.
 
 ---
 
-## 0. Verified current state (2026-05-31)
+## 0. Verified current state (audited 2026-05-31)
 
-- **Java**: patched `third_party/go-mc` → `ProtocolVersion = 775` (MC Java **26.1**). Upstream go-mc is at 767, so our fork is hand-maintained.
+> Audit against `internal/*` source. **[x]** = substantially implemented · **[~]** = partial/foundation only · **[ ]** = not started.
+
+- **Java**: patched `third_party/go-mc` → `ProtocolVersion = 775`. Supports **26.1 / 26.1.1 / 26.1.2** (all proto 775). 26.1.2 join crash fixed this session — `minecraft:timeline` registry now ships full NBT (`internal/java/server/timeline.go`).
 - **Bedrock**: `gophertunnel v1.56.2` → `CurrentProtocol = 975`, `CurrentVersion = "1.26.20"`.
-- **World**: superflat only; per-chunk gzip persistence; no biomes/caves/structures; overworld only.
-- **Gameplay**: movement + block place/break + basic block conversion; no entities/mobs/combat/inventory-sync.
-- **Security**: deps bumped — `go-jose v4.1.4`, `golang.org/x/net v0.53.0` (closes GO-2026-4945 / -4918). Still TODO: build on **Go 1.26.3** to close 5 reachable stdlib vulns.
-- **Plugins**: basic typed events + `Host` surface only.
+- **[~] World**: real chunk model (24 sections, light-data struct), Anvil-style **region storage** + disk persistence + async autosave (`internal/world/region.go`, `persistence.go`), day/night time loop, block-event bus, crack manager. No lighting *propagation*, no structures.
+- **[~] Worldgen**: Perlin noise + biome select + terrain shape + **caves (carve)** + surface rules + superflat (`internal/worldgen/*`). No ravines/ore-distribution/structures; overworld only.
+- **[~] Gameplay**: movement, block place/break + cross-edition block conversion, item drops + pickup, inventory sync (basic), held-item equipment cross-edition (fixed), cross-edition player push (fixed: on-ground guard + balance). No redstone/fluids/block-entities.
+- **[~] Combat**: knockback + damage math (armor/resistance/critical) (`internal/combat`). No status effects/full PvP loop.
+- **[~] Entities**: entity manager + **A\* pathfinding** (`internal/entity`). Players-as-entities cross-edition with skins (`skinbridge`). No mobs/AI-goals/spawning.
+- **[~] Commands**: dispatcher + `/time /give /tp /gamemode /help` (`internal/command`). Not the full vanilla set; no Brigadier graph.
+- **[~] Anticheat**: engine + per-player weighted violations + staged actions + checks (Speed/Reach/KillAura/Autoclicker/Timer) + config/events (`internal/anticheat`). Movement still client-auth (no server-auth foundation, §6.1).
+- **[~] Plugins**: typed events + `Host` + manifest + `dfcompat` scaffold (`plugin/`).
+- **[~] Cross-edition**: block/item/entity Java-state ⇄ Bedrock-runtime maps (`internal/registry`), canonical translate/bridge scaffold (`internal/network`). Maps are partial, not full-palette auto-generated.
+- **Auth**: Xbox + Mojang/offline UUID paths (`internal/auth`).
+- **Security**: deps bumped — `go-jose v4.1.4`, `golang.org/x/net v0.53.0`. Still TODO: build on **Go 1.26.3**; add `govulncheck` to CI.
+
+> **Honest scope note:** the items below are a full vanilla-parity roadmap (worldgen structures, redstone, fluids, block entities, full mobs/AI, dimensions/portals, the complete command set, the multiprotocol translation plugin, and the full anticheat suite). These are each multi-week subsystems and remain **[ ]**; they are not completed in a single pass. This session closed the reported bugs (26.1.2 join, held item, cross-edition push, non-op Bedrock game-mode change), added a vanilla **Java world converter** (`cmd/worldconvert`, Anvil ⇄ `.lwr`), corrected this status audit, and brought `docs/PROTOCOL.md` + `docs/VERSIONS.md` up to date.
 
 ---
 
@@ -268,7 +279,7 @@ First-party, **server-authoritative** anticheat. Bedrock defaults to client-auth
 - [ ] **(I)** Build on **Go 1.26.3** to clear the 5 reachable stdlib vulns (GO-2026-4971/4947/4946/4870/4866); add `govulncheck` to CI.
 - [ ] **(I)** Raise test coverage from ~5 test files toward the ROADMAP's >80% (unit + integration + parity + load).
 - [ ] **(I)** CI matrix: build + vet + vulncheck + per-`LWVersion` connect tests; pin `go-raknet` to a tagged release.
-- [ ] **(I)** Keep `docs/PROTOCOL.md` & `docs/VERSIONS.md` in sync with reality (currently stale at 764/1.20.2 → should be **775 / 975**).
+- [x] **(I)** Keep `docs/PROTOCOL.md` & `docs/VERSIONS.md` in sync with reality (done: updated to **775 / 975**, 26.1.x + 1.26.20; added timeline-registry, push/gamemode authority, and world-conversion notes).
 - [ ] **(I)** Observability: metrics, profiling endpoints (auth-gated), crash diagnostics in `diag/`.
 - [ ] **(I)** Deployment: Docker image, sample compose, ops runbook, backup/restore.
 

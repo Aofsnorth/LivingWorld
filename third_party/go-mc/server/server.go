@@ -84,7 +84,9 @@ func (s *Server) AcceptConn(conn *net.Conn) {
 		// Send disconnect for protocol mismatch
 		_ = conn.WritePacket(pk.Marshal(
 			packetid.ClientboundLoginLoginDisconnect,
-			chat.Message{Text: "Protocol mismatch! Server: " + ProtocolName + ", Client: " + strconv.Itoa(int(protocol))},
+			chat.Message{Text: "\u00a7cUnsupported version!\u00a7r\nThis server runs Minecraft \u00a7a" + ProtocolName +
+				"\u00a7r (protocol " + strconv.Itoa(int(ProtocolVersion)) + ").\nYour client sent protocol " +
+				strconv.Itoa(int(protocol)) + ". Please switch to a supported version."},
 		))
 		if s.Logger != nil {
 			s.Logger.Printf("client %v rejected: protocol %d (expected %d)", conn.Socket.RemoteAddr(), protocol, ProtocolVersion)

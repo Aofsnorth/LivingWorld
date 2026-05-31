@@ -1,8 +1,8 @@
 package server
 
 import (
-	"livingworld/internal/world"
 	bedrockworld "livingworld/internal/bedrock/world"
+	"livingworld/internal/world"
 
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"

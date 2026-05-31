@@ -15,15 +15,17 @@
 package server
 
 import (
-	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"livingworld/config"
 	"livingworld/internal/bedrock"
 	"livingworld/internal/command"
+	"livingworld/internal/infrastructure/logging"
 	"livingworld/internal/java"
 	"livingworld/internal/player"
 	"livingworld/internal/skinbridge"
@@ -53,6 +55,7 @@ type Server struct {
 	skins   *skinbridge.Service
 	java    *java.Server
 	bedrock *bedrock.Server
+	logger  logging.Logger
 
 	ops       *OpsList
 	whitelist *Whitelist
@@ -65,18 +68,21 @@ func New(cfg *Config) *Server {
 		cfg = DefaultConfig()
 	}
 
+	logger := logging.GetLogger("Server")
+
 	worlds := world.NewManager()
 	switch cfg.World.Type {
 	case "", "superflat":
 		worlds.GetDefaultWorld().SetGenerator(worldgen.NewSuperflat())
 	default:
-		log.Printf("Unknown world.type %q, falling back to superflat", cfg.World.Type)
+		logger.Warn("Unknown world.type %q, falling back to superflat", cfg.World.Type)
 		worlds.GetDefaultWorld().SetGenerator(worldgen.NewSuperflat())
 	}
 
 	players := player.NewManager()
 	players.StartPushLoop() // cross-edition player-to-player pushing
 	worlds.StartTimeLoop(cfg.World.DayNightCycle)
+	worlds.StartMobAI()
 	command.Bind(players, worlds)
 	command.RegisterBuiltins(command.Default())
 	skins := skinbridge.New()
@@ -88,6 +94,7 @@ func New(cfg *Config) *Server {
 		skins:   skins,
 		java:    java.NewServer(cfg, players, worlds),
 		bedrock: bedrock.NewServer(cfg, players, worlds, skins),
+		logger:  logger,
 	}
 	// Ops are seeded from cfg (Config.Ops drives the login op-check); the
 	// whitelist starts empty and disabled. Main replaces these with
@@ -106,11 +113,22 @@ func (s *Server) Start() error {
 
 	if s.cfg.World.Persistence {
 		if err := s.worlds.EnablePersistence(s.cfg.World.Directory); err != nil {
-			log.Printf("World persistence disabled (setup failed): %v", err)
+			s.logger.Warn("World persistence disabled (setup failed): %v", err)
 		} else {
 			s.worlds.StartAutosave(time.Duration(s.cfg.World.AutosaveSeconds) * time.Second)
-			log.Printf("World persistence enabled at %q (autosave every %ds)", s.cfg.World.Directory, s.cfg.World.AutosaveSeconds)
+			if err := s.players.EnablePersistence(filepath.Join(s.cfg.World.Directory, "playerdata")); err != nil {
+				s.logger.Warn("Player persistence disabled (setup failed): %v", err)
+			}
+			s.logger.Info("World persistence enabled at %q (autosave every %ds)", s.cfg.World.Directory, s.cfg.World.AutosaveSeconds)
 		}
+	}
+
+	// Load drop-in JavaScript plugins from ./plugins before accepting players so
+	// their event handlers are registered up front.
+	if n, err := plugin.Manager().LoadScripts("plugins"); err != nil {
+		s.logger.Warn("Plugin scripts: %v", err)
+	} else if n > 0 {
+		s.logger.Info("Loaded %d script plugin(s) from ./plugins", n)
 	}
 
 	if err := s.java.Start(); err != nil {
@@ -121,13 +139,14 @@ func (s *Server) Start() error {
 		return err
 	}
 	plugin.Manager().Emit(&plugin.ServerStartEvent{BaseEvent: plugin.BaseEvent{Type_: plugin.EventServerStart}})
-	log.Printf("LivingWorld started — Java %s, Bedrock %s", s.cfg.Address(), s.cfg.BedrockAddress())
+	s.logger.Info("LivingWorld started — Java %s, Bedrock %s", s.cfg.Address(), s.cfg.BedrockAddress())
 	return nil
 }
 
 // Stop shuts down both listeners and saves all worlds. Safe to call more than once.
 func (s *Server) Stop() {
 	plugin.Manager().Emit(&plugin.ServerStopEvent{BaseEvent: plugin.BaseEvent{Type_: plugin.EventServerStop}})
+	s.players.SaveAll() // persist player data before disconnecting everyone
 	if s.bedrock != nil {
 		s.bedrock.Stop()
 	}
@@ -135,7 +154,7 @@ func (s *Server) Stop() {
 		s.java.Stop()
 	}
 	if err := s.worlds.Close(); err != nil {
-		log.Printf("Error saving worlds on shutdown: %v", err)
+		s.logger.Error("Error saving worlds on shutdown: %v", err)
 	}
 }
 
@@ -145,12 +164,23 @@ func (s *Server) Run() error {
 	if err := s.Start(); err != nil {
 		return err
 	}
+
+	// Start the operator console; "stop" triggers the same graceful shutdown as
+	// SIGINT/SIGTERM.
+	stop := make(chan struct{})
+	var once sync.Once
+	go newConsole(s, os.Stdout, func() { once.Do(func() { close(stop) }) }).run(os.Stdin)
+	s.logger.Info("Console ready — type 'help' for commands")
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("Shutting down LivingWorld...")
+	select {
+	case <-quit:
+	case <-stop:
+	}
+	s.logger.Info("Shutting down LivingWorld...")
 	s.Stop()
-	log.Println("LivingWorld stopped")
+	s.logger.Info("LivingWorld stopped")
 	return nil
 }
 
@@ -211,4 +241,4 @@ func (s *Server) SetBlock(x, y, z int, stateID int32) {
 func (s *Server) StateID(name string) int32 { return world.StateID(name) }
 
 // Log writes a line to the server log.
-func (s *Server) Log(format string, args ...any) { log.Printf(format, args...) }
+func (s *Server) Log(format string, args ...any) { s.logger.Info(format, args...) }

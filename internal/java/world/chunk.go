@@ -1,8 +1,8 @@
 package world
 
 import (
-	"log"
 	"livingworld/internal/world"
+	"log"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/level"

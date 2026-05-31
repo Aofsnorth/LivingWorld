@@ -107,6 +107,21 @@ func (s *Store) Remove(id int64) bool {
 	return true
 }
 
+// Claim atomically removes a drop WITHOUT firing despawn callbacks. Use it for
+// pickups: the edition's take animation (Java ClientboundTakeItemEntity / Bedrock
+// TakeItemActor) flies the item to the collector and removes it client-side, so
+// sending a despawn (RemoveEntities/RemoveActor) here would delete the entity
+// first and cancel the animation. Returns false if the drop was already gone.
+func (s *Store) Claim(id int64) bool {
+	s.mu.Lock()
+	_, ok := s.drops[id]
+	if ok {
+		delete(s.drops, id)
+	}
+	s.mu.Unlock()
+	return ok
+}
+
 // Get returns a copy of the drop with the given id.
 func (s *Store) Get(id int64) (Drop, bool) {
 	s.mu.RLock()

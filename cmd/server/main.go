@@ -3,8 +3,12 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
 
+	"livingworld/internal/infrastructure/logging"
 	"livingworld/server"
+
+	"github.com/mattn/go-isatty"
 )
 
 var (
@@ -15,10 +19,11 @@ var (
 // main is a thin entry point over the public livingworld/server API. Everything
 // it does can be done from your own program by importing "livingworld/server".
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	logging.Setup()
 	log.Printf("LivingWorld Server v%s (build: %s)", Version, BuildDate)
 
 	configPath := flag.String("config", "config/config.yml", "path to YAML config")
+	noTUI := flag.Bool("no-tui", false, "disable the terminal UI and use a plain console")
 	flag.Parse()
 
 	cfg, err := server.LoadConfig(*configPath)
@@ -27,7 +32,14 @@ func main() {
 	}
 
 	srv := server.New(cfg)
-	if err := srv.Run(); err != nil {
+	// Use the TUI by default on an interactive terminal; fall back to the plain
+	// console when --no-tui is set or stdout is redirected (e.g. piped to a file).
+	if !*noTUI && isatty.IsTerminal(os.Stdout.Fd()) {
+		err = srv.RunTUI()
+	} else {
+		err = srv.Run()
+	}
+	if err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }

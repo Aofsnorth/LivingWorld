@@ -60,21 +60,22 @@ func (s *Server) startDropLoop() {
 // item pickups for Bedrock players (animation + inventory sync).
 func (s *Server) registerPickupHandler() {
 	s.wm.OnItemPickup(func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
-		uid, _ := uuid.FromBytes(playerUUID[:])
-		pl := s.pm.GetPlayer(uid)
-		if pl == nil || pl.Edition != player.EditionBedrock {
-			return // not a Bedrock player
-		}
-
-		// Send TakeItemActor animation to all Bedrock viewers.
+		// Fly the item to the collector on every Bedrock viewer, whatever edition
+		// the collector is. TakeItemActor both animates and removes the item, so
+		// the store no longer sends a RemoveActor on pickup (which cancelled it).
 		s.forEachSession(func(bs *bedrockSession) {
 			bs.write(&packet.TakeItemActor{
-				ItemEntityRuntimeID: uint64(dropEntityID),
+				ItemEntityRuntimeID:  uint64(dropEntityID),
 				TakerEntityRuntimeID: playerEntityID,
 			})
 		})
 
-		// Sync inventory for the Bedrock player who picked up the item.
+		// Inventory sync only when the collector is a Bedrock player.
+		uid, _ := uuid.FromBytes(playerUUID[:])
+		pl := s.pm.GetPlayer(uid)
+		if pl == nil || pl.Edition != player.EditionBedrock {
+			return
+		}
 		if bs, ok := s.getSession(uid); ok {
 			s.syncBedrockInventory(bs, pl)
 		}
@@ -123,9 +124,9 @@ func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
 			continue
 		}
 		vel := mgl32.Vec3{
-			float32((d.EntityID%100-50)) * 0.002,
+			float32((d.EntityID%100 - 50)) * 0.002,
 			0.2,
-			float32((d.EntityID%73-36)) * 0.002,
+			float32((d.EntityID%73 - 36)) * 0.002,
 		}
 		bs.write(&packet.AddItemActor{
 			EntityUniqueID:  d.EntityID,

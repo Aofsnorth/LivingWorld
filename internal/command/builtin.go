@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"livingworld/internal/shared/constants/chat"
 )
 
 // RegisterBuiltins adds the core commands to r. Java vs Bedrock differences (e.g.
@@ -16,12 +18,12 @@ func RegisterBuiltins(r *Registry) {
 	})
 	r.Register(&Command{
 		Name: "gamemode", Aliases: []string{"gm"}, Description: "Change gamemode",
-		Usage: "gamemode <survival|creative|adventure|spectator> [player]",
+		Usage:      "gamemode <survival|creative|adventure|spectator> [player]",
 		Permission: PermOperator, MinArgs: 1, Handler: cmdGamemode,
 	})
 	r.Register(&Command{
 		Name: "tp", Aliases: []string{"teleport"}, Description: "Teleport",
-		Usage: "tp <x> <y> <z>  |  tp <player>",
+		Usage:      "tp <x> <y> <z>  |  tp <player>",
 		Permission: PermOperator, MinArgs: 1, Handler: cmdTp,
 	})
 	r.Register(&Command{
@@ -32,16 +34,67 @@ func RegisterBuiltins(r *Registry) {
 		Name: "time", Description: "Set the time of day", Usage: "time set <day|night|noon|midnight|ticks>",
 		Permission: PermOperator, MinArgs: 1, Handler: cmdTime,
 	})
+	r.Register(&Command{
+		Name: "weather", Description: "Set the weather", Usage: "weather <clear|rain|thunder>",
+		Permission: PermOperator, MinArgs: 1, Handler: cmdWeather,
+	})
+	r.Register(&Command{
+		Name: "summon", Description: "Spawn a mob", Usage: "summon <pig|cow|chicken|sheep|creeper|zombie|skeleton>",
+		Permission: PermOperator, MinArgs: 1, Handler: cmdSummon,
+	})
+}
+
+var summonable = map[string]bool{
+	"pig": true, "cow": true, "chicken": true, "sheep": true,
+	"creeper": true, "zombie": true, "skeleton": true,
+}
+
+func cmdSummon(ctx *Ctx) error {
+	if ctx.WM == nil {
+		return fmt.Errorf("no world manager")
+	}
+	name := strings.TrimPrefix(strings.ToLower(ctx.Args[0]), "minecraft:")
+	if !summonable[name] {
+		return fmt.Errorf("unknown mob %q (try pig, cow, chicken, sheep, creeper, zombie, skeleton)", ctx.Args[0])
+	}
+	x, y, z := 0.0, 64.0, 0.0
+	if ctx.PM != nil {
+		if p := ctx.PM.GetPlayerByName(ctx.Sender.Name()); p != nil {
+			s := p.Snapshot()
+			x, y, z = s.Position.X, s.Position.Y, s.Position.Z
+		}
+	}
+	ctx.WM.Mobs().Spawn("minecraft:"+name, x, y, z)
+	ctx.Sender.Reply(chat.ColorGreen + "Summoned " + name)
+	return nil
+}
+
+func cmdWeather(ctx *Ctx) error {
+	if ctx.WM == nil {
+		return fmt.Errorf("no world manager")
+	}
+	switch strings.ToLower(ctx.Args[0]) {
+	case "clear", "sun", "sunny":
+		ctx.WM.SetWeather(false, false)
+	case "rain", "rainy":
+		ctx.WM.SetWeather(true, false)
+	case "thunder", "storm", "thunderstorm":
+		ctx.WM.SetWeather(true, true)
+	default:
+		return fmt.Errorf("usage: /weather <clear|rain|thunder>")
+	}
+	ctx.Sender.Reply(chat.ColorGreen + "Weather updated")
+	return nil
 }
 
 func cmdHelp(r *Registry) Handler {
 	return func(ctx *Ctx) error {
-		ctx.Sender.Reply("§e=== Commands ===")
+		ctx.Sender.Reply(chat.ColorYellow + "=== Commands ===")
 		for _, c := range r.Commands() {
 			if c.Permission == PermOperator && !ctx.Sender.IsOp() {
 				continue
 			}
-			ctx.Sender.Reply(fmt.Sprintf("§7/%s§r - %s", c.Usage, c.Description))
+			ctx.Sender.Reply(fmt.Sprintf(chat.ColorGray+"/%s"+chat.Reset+" - %s", c.Usage, c.Description))
 		}
 		return nil
 	}
@@ -75,7 +128,7 @@ func cmdGamemode(ctx *Ctx) error {
 	if err := ctx.Sender.SetGameMode(mode); err != nil {
 		return err
 	}
-	ctx.Sender.Reply("§aGamemode updated")
+	ctx.Sender.Reply(chat.ColorGreen + "Gamemode updated")
 	return nil
 }
 
@@ -93,7 +146,7 @@ func cmdTp(ctx *Ctx) error {
 		if err := ctx.Sender.Teleport(s.Position.X, s.Position.Y, s.Position.Z); err != nil {
 			return err
 		}
-		ctx.Sender.Reply("§aTeleported to " + target.Username)
+		ctx.Sender.Reply(chat.ColorGreen + "Teleported to " + target.Username)
 		return nil
 	}
 	// /tp <x> <y> <z>
@@ -109,7 +162,7 @@ func cmdTp(ctx *Ctx) error {
 	if err := ctx.Sender.Teleport(x, y, z); err != nil {
 		return err
 	}
-	ctx.Sender.Reply(fmt.Sprintf("§aTeleported to %.1f %.1f %.1f", x, y, z))
+	ctx.Sender.Reply(fmt.Sprintf(chat.ColorGreen+"Teleported to %.1f %.1f %.1f", x, y, z))
 	return nil
 }
 
@@ -124,7 +177,7 @@ func cmdGive(ctx *Ctx) error {
 	if err := ctx.Sender.GiveItem(item, count); err != nil {
 		return err
 	}
-	ctx.Sender.Reply(fmt.Sprintf("§aGave %d x %s", count, item))
+	ctx.Sender.Reply(fmt.Sprintf(chat.ColorGreen+"Gave %d x %s", count, item))
 	return nil
 }
 
@@ -162,6 +215,6 @@ func cmdTime(ctx *Ctx) error {
 		return fmt.Errorf("no world manager")
 	}
 	ctx.WM.GetDefaultWorld().SetDayTime(ticks)
-	ctx.Sender.Reply(fmt.Sprintf("§aSet time to %d", ticks))
+	ctx.Sender.Reply(fmt.Sprintf(chat.ColorGreen+"Set time to %d", ticks))
 	return nil
 }
