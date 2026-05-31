@@ -42,7 +42,10 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 		for j := range sec.SkyLight {
 			sec.SkyLight[j] = 0xFF
 		}
-		sec.BlockLight = make([]byte, 2048)
+		// No block light: this world has no light-emitting blocks, so leaving
+		// BlockLight nil marks every section in the empty-block-light mask (client
+		// assumes zero) instead of shipping 2048 zero bytes × 24 sections (~49 KB
+		// of waste per chunk, which doubled every chunk packet to ~101 KB).
 
 		minSecY := -64 + secIdx*16
 		if minSecY+15 < 0 {

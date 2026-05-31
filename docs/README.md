@@ -15,9 +15,12 @@ It is also designed to be **used as a library** — embed it in your own Go prog
 
 - **🔄 Cross-Play Native** — Bedrock and Java players share the same world, blocks, and entities
 - **🧱 Complete block & item registries** — the full vanilla 26.1 palette (~29,800 block states, ~1,500 items) via the bundled go-mc data; no hand-maintained tables
-- **💾 World persistence** — chunk edits are saved to disk (gzip region files), autosaved, and reloaded on restart
-- **🗺️ World import** — convert vanilla **Java** worlds in and out with the `worldconvert` tool (Anvil ⇄ LivingWorld)
-- **🎮 Ergonomic plugin API** — typed event handlers, **cancellable** events, and a `Host` capability surface
+- **🎮 Cross-edition gameplay** — day/night, **weather** (`/weather`), **mobs + basic AI** (`/summon`), and **melee combat** (knockback + damage + hurt flash) all synced to both editions
+- **💾 World & player persistence** — chunk edits (gzip region files), weather/time, and per-player position/inventory/health/gamemode are saved to disk, autosaved, and restored on rejoin
+- **🗺️ World import** — bring vanilla **Java** (Anvil) *and* **Bedrock** (`.mcworld`/LevelDB) worlds in via the `worldconvert` tool
+- **🎨 Resource-pack converter** — convert a vanilla pack between Java and Bedrock (`packconvert`)
+- **🔌 Plugins, two ways** — typed **Go** plugins (compile-time, full API) and drop-in **JavaScript** scripts (runtime, no rebuild)
+- **🖥️ Terminal UI** — a live console TUI (opt out with `--no-tui`)
 - **📦 Library-shaped** — `import "livingworld/server"` and run a full server in a few lines
 - **🔧 Protocol Adaptors** — automatic translation between Java state IDs and Bedrock runtime IDs
 
@@ -36,6 +39,8 @@ go mod download
 go build -o livingworld ./cmd/server
 ./livingworld
 ```
+
+The server starts with a live **terminal UI** (status + logs) when attached to a TTY. Pass `--no-tui` for plain log output (e.g. when redirecting to a file or running as a service).
 
 ## 📦 Use as a library
 
@@ -97,6 +102,8 @@ world:
   persistence: true      # save the world to disk
   directory: "worlds"    # base folder; each world gets a subfolder
   autosaveSeconds: 300   # 0 disables autosave (a final save still runs on shutdown)
+  dayNightCycle: true    # advance the sun/moon (false = fixed time)
+  difficulty: normal     # peaceful | easy | normal | hard
 
 java:
   port: 25565
@@ -105,6 +112,9 @@ java:
   viewDistance: 10
   simulationDistance: 10
   bind: "0.0.0.0"
+  skinSource: auto       # auto | mojang | ely | none (offline-mode skin lookup)
+  mineSkinAPIKey: ""     # upload Bedrock skins so Java clients can see them
+  bedrockHDSkins: false  # serve full-res Bedrock skins (see Skins section)
 
 bedrock:
   port: 19132
@@ -122,6 +132,38 @@ bedrock:
 | `LIVINGWORLD_JAVA_PORT` | Java edition port |
 | `LIVINGWORLD_BEDROCK_PORT` | Bedrock edition port |
 | `LIVINGWORLD_PLUGINS_DIR` | Plugin directory path |
+
+## 🎮 Commands
+
+Built-in commands (operator-only except `help`), available from both editions:
+
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/help` | `help` | List available commands |
+| `/gamemode` (`/gm`) | `gamemode <survival\|creative\|adventure\|spectator>` | Change your gamemode |
+| `/tp` (`/teleport`) | `tp <x> <y> <z>` or `tp <player>` | Teleport |
+| `/give` | `give <item> [count]` | Give yourself an item |
+| `/time` | `time set <day\|night\|noon\|midnight\|ticks>` | Set time of day |
+| `/weather` | `weather <clear\|rain\|thunder>` | Set the weather (persisted, both editions) |
+| `/summon` | `summon <pig\|cow\|chicken\|sheep\|creeper\|zombie\|skeleton>` | Spawn a mob at your position |
+
+Plugins register their own commands via the `player.command` event.
+
+## 📜 JavaScript plugins (drop-in)
+
+Besides Go plugins, drop `.js` files into the `plugins/` directory — they load at
+startup with no rebuild. A `server` global exposes broadcast/message/block APIs and
+`on*` hooks mirror the Go events:
+
+```js
+// plugins/welcome.js
+server.onPlayerJoin(function (e) {
+  server.broadcast("§e" + e.playerName + " joined!");
+});
+```
+
+Go plugins are the most powerful (typed, full `Host` API, compile-time); JavaScript is
+the fastest to iterate (runtime, no rebuild). See **[PLUGIN_API.md](PLUGIN_API.md)**.
 
 ## 🧱 Blocks & Items
 
@@ -147,6 +189,9 @@ blockState, placeable := item.BlockStateID("minecraft:oak_planks")
   normal play area is a **handful of files instead of hundreds**.
 - Autosave runs on an interval and a final save runs on graceful shutdown.
 - On access, a chunk is loaded from disk if present, otherwise generated.
+- **Level state** (weather + time of day) is stored in `worlds/<world>/level.json`.
+- **Per-player data** (position, inventory, health, gamemode) is saved to
+  `worlds/<world>/playerdata/<uuid>.json` on disconnect/shutdown and restored on rejoin.
 
 > Upgrading from an older build that wrote per-chunk `c.<x>.<z>.bin` files? Those are
 > no longer read — delete the old `worlds/` folder once (a superflat world regenerates).
@@ -157,31 +202,51 @@ Vanilla worlds aren't loaded directly — convert them with the bundled `worldco
 
 ```bash
 go build -o worldconvert ./cmd/worldconvert
-./worldconvert import-java <vanillaJavaWorldDir> worlds/world   # vanilla Java → server
-./worldconvert export-java worlds/world <vanillaJavaWorldDir>   # server → vanilla Java
+./worldconvert import-java    <vanillaJavaWorldDir>    worlds/world   # vanilla Java → server
+./worldconvert export-java    worlds/world             <vanillaJavaWorldDir>
+./worldconvert import-bedrock <vanillaBedrockWorld>    worlds/world   # .mcworld / LevelDB → server
 ```
 
 Conversion pivots on the block **name** (LivingWorld's block ID *is* the Java global
-block-state ID), so Java ⇄ LivingWorld is near-identity. The source is never modified.
-Block-state *properties* default and lighting/biomes/entities aren't transferred
-(vanilla recomputes lighting on load). Bedrock (LevelDB) conversion isn't implemented
-yet (`import-bedrock`/`export-bedrock` return a clear error).
+block-state ID), so Java ⇄ LivingWorld is near-identity. **Bedrock import** (`.mcworld`
+archive or an extracted LevelDB `db/` folder) maps Bedrock runtime states → names → the
+shared palette. Block-state *properties* default and lighting/biomes/entities aren't
+transferred (vanilla recomputes lighting on load). `export-bedrock` (LevelDB writer) is
+not implemented yet and returns a clear error. The source is never modified.
+
+## 🎨 Resource-pack Conversion
+
+Convert a vanilla resource pack between editions with `packconvert` (auto-detects the source):
+
+```bash
+go build -o packconvert ./cmd/packconvert
+./packconvert <sourcePack(.zip/.mcpack/.jar/dir)> <outDir>
+```
+
+v1 converts pack **structure, manifest, icon and the textures folder layout**. Per-file
+texture renaming, 3D models, sounds, languages and Bedrock addons are not converted yet.
 
 ## 📁 Project Structure
 
 ```
 livingworld/
-├── cmd/server/            # thin entry point over the public API
-├── cmd/worldconvert/      # vanilla Java ⇄ LivingWorld world converter
+├── cmd/server/            # thin entry point over the public API (+ terminal UI)
+├── cmd/worldconvert/      # Java/Bedrock ⇄ LivingWorld world converter
+├── cmd/packconvert/       # Java ⇄ Bedrock resource-pack converter
 ├── server/                # PUBLIC library API (server.New / Run / Host)
-├── plugin/                # PUBLIC plugin API (events, Host, manager)
+├── plugin/                # PUBLIC plugin API (events, Host, manager, JS scripting)
 ├── config/                # configuration
 ├── examples/exampleplugin # runnable library + plugin example
+├── plugins/               # drop-in JavaScript plugins
 ├── internal/
 │   ├── bedrock/           # Bedrock protocol (gophertunnel)
 │   ├── java/              # Java protocol 775 (go-mc)
 │   ├── item/              # item registry (wraps go-mc item data)
+│   ├── mobs/              # cross-edition mob store + basic AI
 │   ├── player/            # shared player model + Controller routing
+│   ├── resourcepack/      # resource-pack converter
+│   ├── skinbridge/        # Bedrock→Java skin upload/serve
+│   ├── worldconvert/      # world import/export (Anvil + Bedrock LevelDB)
 │   └── world/             # shared world, chunks, blocks, persistence, registry
 │       └── generator/     # world generators (superflat)
 ├── third_party/go-mc/     # patched go-mc (Java protocol + block/item data)
@@ -196,8 +261,16 @@ livingworld/
 | `player.leave` | no | Player disconnects |
 | `player.chat` | **yes** | Chat message (cancel to suppress) |
 | `player.move` | no | Player moved |
+| `player.interact` | **yes** | Right-click a block/air |
+| `player.attack` | **yes** | Player attacks an entity |
+| `player.command` | **yes** | Before a command runs |
+| `player.respawn` | no | After a respawn |
 | `block.break` | **yes** | Block broken (cancel to keep it) |
 | `block.place` | **yes** | Block placed (cancel to prevent) |
+| `entity.damage` | **yes** | Entity takes damage (`Cause`, `Amount`) |
+| `entity.death` | no | Entity dies |
+| `container.click` | **yes** | Container slot clicked |
+| `item.drop` / `item.pickup` | **yes** | Item dropped / picked up |
 | `server.start` / `server.stop` | no | Lifecycle |
 
 ## 🔧 Development
@@ -234,13 +307,20 @@ Vanilla Java clients only load skins from `.minecraft.net` / `.mojang.com`, so
 (LegacyLauncher/TLauncher do). Bedrock viewers always see Java players' skins
 (the server downloads the PNG and forwards it).
 
+**Bedrock → Java skins** are uploaded to Mojang via MineSkin (set `java.mineSkinAPIKey`)
+so Java clients render them as a signed 64×64 texture. Set `java.bedrockHDSkins: true`
+to instead serve the full-resolution (128×128) skin from the built-in skin bridge —
+this only renders on clients that accept unsigned skin URLs from arbitrary hosts (most
+authlib-injector launchers; strict/vanilla clients fall back to the default skin), so it
+is **off by default**.
+
 ## ⚠️ Current Limitations
 
 - **Bedrock block fidelity**: state→Bedrock mapping is name-based; stateful blocks (stairs orientation, slab halves, log axis, …) fall back to defaults. Property overrides can be added in `internal/bedrock/world/block_sync.go`.
-- **Bedrock → Java skins**: not shown on vanilla Java clients (Mojang restricts skin URLs to its own domains). A MineSkin-style uploader is the proper fix.
+- **Bedrock → Java skins**: forwarded to Java via MineSkin as a signed 64×64 texture; full-resolution 128×128 (`java.bedrockHDSkins`) only renders on launchers that accept arbitrary skin URLs.
+- **Mob AI**: basic only — gravity + random wander, synced to both editions. No pathfinding or targeting yet.
 - **Held-item placement**: the block/item registries are complete, but parsing the 26.1 creative item-stack (data components) to place the held item is not yet wired — survival block-break + server/plugin `SetBlock` work today.
 - **Bedrock inventory**: opens (server-authoritative inventory enabled), but item *manipulation* (ItemStackRequest handling) is not yet implemented, so moved items snap back.
-- **Player actions across protocols**: `Broadcast`/`Message`/`Kick` are wired for **Java** sessions; the Bedrock controller is a follow-up.
 - **World generation**: only superflat.
 
 ## 🔮 Roadmap
