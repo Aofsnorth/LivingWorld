@@ -16,8 +16,9 @@ type Registry struct {
 	cmds  map[string]*Command // keyed by name AND each alias (lowercase)
 	names []string            // canonical names, registration order
 
-	pm *player.Manager
-	wm *world.Manager
+	pm  *player.Manager
+	wm  *world.Manager
+	ops OpController
 }
 
 // Ctx is passed to a command handler.
@@ -26,6 +27,7 @@ type Ctx struct {
 	Args   []string
 	PM     *player.Manager
 	WM     *world.Manager
+	Ops    OpController
 }
 
 var defaultRegistry = New(nil, nil)
@@ -39,6 +41,14 @@ func Bind(pm *player.Manager, wm *world.Manager) {
 	defaultRegistry.mu.Lock()
 	defaultRegistry.pm = pm
 	defaultRegistry.wm = wm
+	defaultRegistry.mu.Unlock()
+}
+
+// BindOps wires the operator-list capability into the default registry so /op
+// and /deop work. Called once at startup by the server.
+func BindOps(o OpController) {
+	defaultRegistry.mu.Lock()
+	defaultRegistry.ops = o
 	defaultRegistry.mu.Unlock()
 }
 
@@ -108,9 +118,9 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 		return true
 	}
 	r.mu.RLock()
-	pm, wm := r.pm, r.wm
+	pm, wm, ops := r.pm, r.wm, r.ops
 	r.mu.RUnlock()
-	ctx := &Ctx{Sender: s, Args: args, PM: pm, WM: wm}
+	ctx := &Ctx{Sender: s, Args: args, PM: pm, WM: wm, Ops: ops}
 	if err := cmd.Handler(ctx); err != nil {
 		s.Reply(chat.ColorRed + "Error: " + err.Error())
 	}

@@ -3,7 +3,6 @@ package server
 import (
 	javaworld "livingworld/internal/java/world"
 	"livingworld/internal/world"
-	"log"
 	"runtime"
 	"sort"
 	"sync"
@@ -190,24 +189,8 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 	if useBatch && newChunkCount > 0 {
 		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
 	}
-	sent, failed, minBytes, maxBytes := 0, 0, 1<<30, 0
-	var firstErr error
 	for _, pkt := range packets {
-		n := len(pkt.Data)
-		if n < minBytes {
-			minBytes = n
-		}
-		if n > maxBytes {
-			maxBytes = n
-		}
-		if err := s.SendPacket(pkt); err != nil {
-			failed++
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		sent++
+		_ = s.SendPacket(pkt)
 	}
 	if useBatch && newChunkCount > 0 {
 		_ = s.SendPacket(pk.Marshal(
@@ -215,10 +198,6 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 			pk.VarInt(newChunkCount),
 		))
 	}
-	// TEMP DIAGNOSTIC: ground-truth how many chunks were built and actually
-	// written to the socket (remove once the load issue is pinned down).
-	log.Printf("[Java][chunks] %s center=(%d,%d) r=%d toSend=%d built=%d sent=%d failed=%d pktBytes=[%d..%d] firstErr=%v",
-		s.UsernameVal, cx, cz, radius, len(toSend), len(packets), sent, failed, minBytes, maxBytes, firstErr)
 
 	s.mu.Lock()
 	s.LoadedChunks = newChunks

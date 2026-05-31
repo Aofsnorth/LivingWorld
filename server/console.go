@@ -14,6 +14,8 @@ import (
 type consoleHost interface {
 	Broadcast(msg string)
 	Players() []string
+	SetOp(name string, op bool) bool
+	ListOps() []string
 }
 
 type consoleCmd struct {
@@ -37,6 +39,9 @@ func newConsole(host consoleHost, out io.Writer, stop func()) *console {
 	c.register("help", "list console commands", c.cmdHelp)
 	c.register("list", "show online players", c.cmdList)
 	c.register("say", "broadcast a message: say <text>", c.cmdSay)
+	c.register("op", "grant operator: op <player>", c.cmdOp)
+	c.register("deop", "revoke operator: deop <player>", c.cmdDeop)
+	c.register("ops", "list operators", c.cmdOps)
 	c.register("stop", "shut the server down", func([]string) { c.stop() })
 	return c
 }
@@ -85,4 +90,33 @@ func (c *console) cmdSay(args []string) {
 		return
 	}
 	c.host.Broadcast("[Server] " + strings.Join(args, " "))
+}
+
+func (c *console) cmdOp(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(c.out, "usage: op <player>")
+		return
+	}
+	if c.host.SetOp(args[0], true) {
+		fmt.Fprintf(c.out, "%s is now an operator\n", args[0])
+	} else {
+		fmt.Fprintf(c.out, "%s is already an operator\n", args[0])
+	}
+}
+
+func (c *console) cmdDeop(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(c.out, "usage: deop <player>")
+		return
+	}
+	if c.host.SetOp(args[0], false) {
+		fmt.Fprintf(c.out, "%s is no longer an operator\n", args[0])
+	} else {
+		fmt.Fprintf(c.out, "%s was not an operator\n", args[0])
+	}
+}
+
+func (c *console) cmdOps([]string) {
+	ops := c.host.ListOps()
+	fmt.Fprintf(c.out, "%d operator(s): %s\n", len(ops), strings.Join(ops, ", "))
 }

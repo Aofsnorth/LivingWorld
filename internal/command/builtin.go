@@ -42,6 +42,7 @@ func RegisterBuiltins(r *Registry) {
 		Name: "summon", Description: "Spawn a mob", Usage: "summon <pig|cow|chicken|sheep|creeper|zombie|skeleton>",
 		Permission: PermOperator, MinArgs: 1, Handler: cmdSummon,
 	})
+	registerExtended(r)
 }
 
 var summonable = map[string]bool{

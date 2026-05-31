@@ -31,6 +31,7 @@ import (
 	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 	worldgen "livingworld/internal/world/generator"
+	terraingen "livingworld/internal/worldgen"
 	"livingworld/plugin"
 )
 
@@ -71,12 +72,17 @@ func New(cfg *Config) *Server {
 	logger := logging.GetLogger("Server")
 
 	worlds := world.NewManager()
+	dw := worlds.GetDefaultWorld()
 	switch cfg.World.Type {
 	case "", "superflat":
-		worlds.GetDefaultWorld().SetGenerator(worldgen.NewSuperflat())
+		dw.SetGenerator(worldgen.NewSuperflat())
+	case "overworld", "default", "normal":
+		dw.SetGenerator(terraingen.NewGenerator(cfg.World.Seed))
+		// Spawn on the generated surface (overworld terrain isn't flat at y=4).
+		cfg.World.Spawn.Y = float64(dw.HighestSolidY(int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z)))
 	default:
 		logger.Warn("Unknown world.type %q, falling back to superflat", cfg.World.Type)
-		worlds.GetDefaultWorld().SetGenerator(worldgen.NewSuperflat())
+		dw.SetGenerator(worldgen.NewSuperflat())
 	}
 
 	players := player.NewManager()
@@ -86,7 +92,6 @@ func New(cfg *Config) *Server {
 	command.Bind(players, worlds)
 	command.RegisterBuiltins(command.Default())
 	skins := skinbridge.New()
-
 	s := &Server{
 		cfg:     cfg,
 		worlds:  worlds,
@@ -103,6 +108,8 @@ func New(cfg *Config) *Server {
 	s.whitelist = newWhitelist()
 	// Make this server the capability surface handed to plugins.
 	plugin.Manager().SetHost(s)
+	// Wire /op and /deop to the server's operator list.
+	command.BindOps(s)
 	return s
 }
 
@@ -195,6 +202,26 @@ func (s *Server) PlayerManager() *player.Manager { return s.players }
 
 // Ops returns the operator list (admins) for runtime management.
 func (s *Server) Ops() *OpsList { return s.ops }
+
+// SetOp grants or revokes operator status by name: it updates the ops list,
+// keeps the login op-check (Config.Ops) in sync, and applies to the connected
+// player immediately. Returns whether membership actually changed.
+func (s *Server) SetOp(name string, op bool) bool {
+	var changed bool
+	if op {
+		changed, _ = s.ops.Add(name)
+	} else {
+		changed, _ = s.ops.Remove(name)
+	}
+	s.cfg.Ops = s.ops.List()
+	if pl := s.players.GetPlayerByName(name); pl != nil {
+		pl.Op = op
+	}
+	return changed
+}
+
+// ListOps returns the current operator names.
+func (s *Server) ListOps() []string { return s.ops.List() }
 
 // Whitelist returns the join whitelist. Enforcement at login is performed by
 // the protocol layer (it should reject players for which Allowed is false);

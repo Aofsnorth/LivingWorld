@@ -41,8 +41,8 @@ func (s *Server) handleConn(conn net.Conn) {
 	log.Printf("[Bedrock] Player joining: %s", playerName)
 
 	spawn := s.cfg.World.Spawn
-	spawnBlockY := int32(world.SuperflatSpawnY)
-	feetX, feetY, feetZ := float64(spawn.X)+0.5, float64(bedrockSpawnFeetY), float64(spawn.Z)+0.5
+	spawnBlockY := int32(spawn.Y)
+	feetX, feetY, feetZ := float64(spawn.X)+0.5, spawn.Y, float64(spawn.Z)+0.5
 	savedBedrock, hasSavedBedrock := s.pm.LoadPlayerData(playerID)
 	if hasSavedBedrock {
 		feetX, feetY, feetZ = savedBedrock.X, savedBedrock.Y, savedBedrock.Z

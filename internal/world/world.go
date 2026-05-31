@@ -165,6 +165,20 @@ func (w *World) UnloadChunk(cx, cz int) {
 	delete(w.chunks, ChunkPos{cx, cz})
 }
 
+// HighestSolidY returns the Y just above the highest non-air block in column
+// (x,z) — a safe feet position to spawn on for any generator (superflat returns
+// 4; overworld returns the terrain surface). The column's chunk is loaded
+// (generated if needed); falls back to 64 for an all-air column.
+func (w *World) HighestSolidY(x, z int) int {
+	w.LoadChunk(x>>4, z>>4)
+	for y := 318; y >= 0; y-- {
+		if w.GetBlock(x, y, z).ID() != AirID {
+			return y + 1
+		}
+	}
+	return 64
+}
+
 func (w *World) SetBlock(x, y, z int, block Block) {
 	chunkX, chunkZ := x>>4, z>>4
 	chunk := w.LoadChunk(chunkX, chunkZ)

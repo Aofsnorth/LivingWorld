@@ -3,18 +3,18 @@ motd: LivingWorld Server
 pluginsDir: ./plugins
 
 world:
-  type: superflat
+  type: superflat # superflat | overworld
   seed: 12345
   spawn:
     x: 0
-    y: 4
+    y: 4 # overworld: auto-snapped to the terrain surface on startup
     z: 0
     yaw: 0
     pitch: 0
   persistence: true # save edited chunks to disk
   directory: worlds # base folder; each world saves under <directory>/<name>
   autosaveSeconds: 300 # periodic autosave; 0 = only save on shutdown
-  difficulty: normal # peaceful | easy | normal | hard
+  difficulty: easy # peaceful | easy | normal | hard
   dayNightCycle: true # advance the sun/moon (false = fixed time)
 
 java:

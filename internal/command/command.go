@@ -37,6 +37,13 @@ type Sender interface {
 // Handler runs a command. ctx carries the parsed args + the Sender.
 type Handler func(ctx *Ctx) error
 
+// OpController lets the /op and /deop commands mutate the server operator list.
+// The server implements it and command.BindOps wires it in (this package can't
+// import server). It is nil until bound.
+type OpController interface {
+	SetOp(name string, op bool) bool
+}
+
 // Command is a registered command.
 type Command struct {
 	Name        string
