@@ -314,15 +314,6 @@ this only renders on clients that accept unsigned skin URLs from arbitrary hosts
 authlib-injector launchers; strict/vanilla clients fall back to the default skin), so it
 is **off by default**.
 
-## ⚠️ Current Limitations
-
-- **Bedrock block fidelity**: state→Bedrock mapping is name-based; stateful blocks (stairs orientation, slab halves, log axis, …) fall back to defaults. Property overrides can be added in `internal/bedrock/world/block_sync.go`.
-- **Bedrock → Java skins**: forwarded to Java via MineSkin as a signed 64×64 texture; full-resolution 128×128 (`java.bedrockHDSkins`) only renders on launchers that accept arbitrary skin URLs.
-- **Mob AI**: basic only — gravity + random wander, synced to both editions. No pathfinding or targeting yet.
-- **Held-item placement**: the block/item registries are complete, but parsing the 26.1 creative item-stack (data components) to place the held item is not yet wired — survival block-break + server/plugin `SetBlock` work today.
-- **Bedrock inventory**: opens (server-authoritative inventory enabled), but item *manipulation* (ItemStackRequest handling) is not yet implemented, so moved items snap back.
-- **World generation**: only superflat.
-
 ## 🔮 Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the current phase and milestones, and [PACKAGES.md](PACKAGES.md) for a per-package reference (workstream lanes + status).
