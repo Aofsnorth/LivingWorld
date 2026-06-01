@@ -55,10 +55,17 @@ func (s *Server) Start() error {
 	s.running = true
 	s.mu.Unlock()
 
-	// Replace the "raknet" network with one that forces the pong gamemode to
-	// Survival (the LAN/friends list reads it from the pong, which gophertunnel
-	// otherwise hardcodes to "Creative"). Must run before cfg.Listen("raknet",…).
-	registerSurvivalNetwork()
+	// DISABLED 2026-06-02 — see internal/bedrock/server/raknet_pong.go.
+	// registerSurvivalNetwork() replaced gophertunnel's "raknet" network to rewrite
+	// the pong gamemode to "Survival". A controlled experiment proved the listener
+	// wrapper breaks the RakNet connection handshake with go-raknet Jan-2026 (the
+	// version dragonfly v0.10.13 pulls in): the unconnected ping/pong still works
+	// (server is discoverable) but EVERY client times out connecting. Stock
+	// gophertunnel WITH this override times out; WITHOUT it a real client joins in
+	// ~15ms. The "Survival" server-list label is purely cosmetic (the in-game
+	// gamemode comes from GameData.PlayerGameMode), so dropping it to keep joins
+	// working is the right trade. Re-enable only with a non-wrapping pong fix.
+	// registerSurvivalNetwork()
 
 	cfg := minecraft.ListenConfig{
 		MaximumPlayers:         s.cfg.Bedrock.MaxPlayers,
