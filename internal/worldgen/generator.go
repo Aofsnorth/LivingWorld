@@ -25,6 +25,7 @@ var _ world.ChunkGenerator = (*Generator)(nil)
 func (g *Generator) Generate(cx, cz int) *world.Chunk {
 	buf := terrain.Build(g.seed, cx, cz)
 	c := world.NewChunk()
+	idCache := make(map[string]int32, 8) // resolve each distinct name once, not per block
 	for y := terrain.MinY; y <= terrain.MaxY; y++ {
 		for z := 0; z < terrain.Size; z++ {
 			for x := 0; x < terrain.Size; x++ {
@@ -32,7 +33,12 @@ func (g *Generator) Generate(cx, cz int) *world.Chunk {
 				if name == terrain.Air || name == terrain.CaveAir {
 					continue
 				}
-				if id := world.StateID(name); id != world.AirID {
+				id, ok := idCache[name]
+				if !ok {
+					id = world.StateID(name)
+					idCache[name] = id
+				}
+				if id != world.AirID {
 					c.SetBlock(x, y-terrain.MinY, z, world.BlockByID(id))
 				}
 			}

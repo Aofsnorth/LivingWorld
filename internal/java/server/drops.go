@@ -13,7 +13,7 @@ import (
 // pickup tuning
 const (
 	javaPickupRadius   = 1.5 // blocks; 3D distance to collect
-	javaPickupDelayTks = 40  // store ticks (2s at 20Hz) before a drop is collectable
+	javaPickupDelayTks = 10  // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
 	javaPickupHz       = 20
 )
 

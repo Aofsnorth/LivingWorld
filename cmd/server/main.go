@@ -24,12 +24,14 @@ func main() {
 
 	configPath := flag.String("config", "config/config.yml", "path to YAML config")
 	noTUI := flag.Bool("no-tui", false, "disable the terminal UI and use a plain console")
+	debugChunks := flag.Bool("debug-chunks", false, "log chunk streaming (boundary crossings, forget/send lists) for diagnosing chunk render bugs")
 	flag.Parse()
 
 	cfg, err := server.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	cfg.Java.DebugChunks = *debugChunks
 
 	srv := server.New(cfg)
 	// Use the TUI by default on an interactive terminal; fall back to the plain

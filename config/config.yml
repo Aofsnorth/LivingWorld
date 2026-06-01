@@ -31,6 +31,7 @@ java:
   #   ely    = Ely.by / LegacyLauncher / TLauncher cracked skins only
   #   none   = don't set a skin (let the launcher's own skin show)
   skinSource: auto
+  bedrockHDSkins: true
 
 bedrock:
   bind: 0.0.0.0

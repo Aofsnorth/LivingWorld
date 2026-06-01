@@ -3,6 +3,7 @@ package server
 import (
 	javaworld "livingworld/internal/java/world"
 	"livingworld/internal/world"
+	"log"
 	"runtime"
 	"sort"
 	"sync"
@@ -10,6 +11,14 @@ import (
 	"github.com/Tnze/go-mc/data/packetid"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
+
+// debugChunkf logs a chunk-streaming diagnostic line when the --debug-chunks
+// flag is set. Gated and permanent: safe to leave the call sites in place.
+func (s *PlayerSession) debugChunkf(format string, args ...any) {
+	if s.Bridge != nil && s.Bridge.cfg != nil && s.Bridge.cfg.Java.DebugChunks {
+		log.Printf("[Java][chunk] "+format, args...)
+	}
+}
 
 func (s *PlayerSession) HandleMovePos(p pk.Packet) {
 	var x, y, z pk.Double
@@ -52,6 +61,7 @@ func (s *PlayerSession) applyMove(x, y, z float64, onGround bool) {
 
 	s.trackFall(oldY, y, onGround)
 	if oldCX != newCX || oldCZ != newCZ {
+		s.debugChunkf("boundary cross: old(%d,%d) -> new(%d,%d)", oldCX, oldCZ, newCX, newCZ)
 		s.updateChunks()
 	}
 }
@@ -113,7 +123,8 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 	s.mu.Unlock()
 
 	radius := int32(s.Bridge.cfg.Java.ViewDistance)
-	newChunks := make(map[world.ChunkPos]bool)
+
+	s.debugChunkf("update: center(%d,%d) radius=%d", cx, cz, radius)
 
 	// Send chunk cache center first so client knows where to expect chunks
 	_ = s.SendPacket(pk.Marshal(
@@ -129,30 +140,38 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 	}
 	s.mu.Unlock()
 
+	forgotten := 0
 	for _, pos := range loadedList {
 		dx := pos.X - int(cx)
 		dz := pos.Z - int(cz)
 		if dx < -int(radius) || dx > int(radius) || dz < -int(radius) || dz > int(radius) {
-			_ = s.SendPacket(pk.Marshal(
-				packetid.ClientboundGameForgetLevelChunk,
-				pk.Int(pos.X), pk.Int(pos.Z),
-			))
+			forgotten++
+			s.debugChunkf("forget: (%d,%d)", pos.X, pos.Z)
+			// ForgetLevelChunk uses packed-long [Z][X] encoding, NOT the [X,Z]
+			// pair used by LevelChunkWithLight — see BuildForgetLevelChunkPacket.
+			_ = s.SendPacket(javaworld.BuildForgetLevelChunkPacket(int32(pos.X), int32(pos.Z)))
 		}
 	}
+	s.debugChunkf("forget total: %d", forgotten)
 
 	// Collect the in-range chunks that still need sending. newChunks tracks the
 	// full in-range set (for the LoadedChunks diff); toSend holds only the missing
-	// ones so we can order them.
+	// ones so we can order them. finalLoaded starts with the in-range chunks that
+	// were already loaded (not forgotten this pass); successfully-sent chunks are
+	// added below. Chunks that fail to send are left out so the next
+	// boundary-cross retries them instead of leaving a permanent hole.
+	finalLoaded := make(map[world.ChunkPos]bool)
 	var toSend []world.ChunkPos
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			pos := world.ChunkPos{X: int(cx + dx), Z: int(cz + dz)}
-			newChunks[pos] = true
 
 			s.mu.Lock()
 			isLoaded := s.LoadedChunks[pos]
 			s.mu.Unlock()
-			if !isLoaded {
+			if isLoaded {
+				finalLoaded[pos] = true
+			} else {
 				toSend = append(toSend, pos)
 			}
 		}
@@ -164,7 +183,6 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 		return chunkDistSq(toSend[i], cx, cz) < chunkDistSq(toSend[j], cx, cz)
 	})
 
-	newChunkCount := int32(len(toSend))
 	// Build the chunk packets concurrently (C2ME-style: chunk generation +
 	// serialization is the CPU-heavy part, so fan it out across cores), then send
 	// them in nearest-first order. world.LoadChunk is mutex-guarded, so parallel
@@ -186,21 +204,34 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 	}
 	wg.Wait()
 
-	if useBatch && newChunkCount > 0 {
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
-	}
-	for _, pkt := range packets {
-		_ = s.SendPacket(pkt)
-	}
-	if useBatch && newChunkCount > 0 {
-		_ = s.SendPacket(pk.Marshal(
-			packetid.ClientboundGameChunkBatchFinished,
-			pk.VarInt(newChunkCount),
-		))
+	// sendChunk sends one chunk packet and marks it loaded only on success so a
+	// failed send is retried on the next boundary-cross.
+	var sentOK, sentErr int
+	sendChunk := func(i int) {
+		if err := s.SendPacket(packets[i]); err != nil {
+			sentErr++
+			s.debugChunkf("send error (%d,%d): %v", toSend[i].X, toSend[i].Z, err)
+			return
+		}
+		finalLoaded[toSend[i]] = true
+		sentOK++
 	}
 
+	if useBatch && len(packets) > 0 {
+		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
+		for i := range packets {
+			sendChunk(i)
+		}
+		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchFinished, pk.VarInt(int32(len(packets)))))
+	} else {
+		for i := range packets {
+			sendChunk(i)
+		}
+	}
+	s.debugChunkf("send total: ok=%d err=%d (of %d)", sentOK, sentErr, len(packets))
+
 	s.mu.Lock()
-	s.LoadedChunks = newChunks
+	s.LoadedChunks = finalLoaded
 	s.mu.Unlock()
 }
 

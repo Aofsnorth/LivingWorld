@@ -58,6 +58,20 @@ func (h *Handler775) SendInitialPlayPackets(s Session) error {
 	}
 	log.Printf("[Java] Login packet sent")
 
+	// Size the client's chunk-storage + simulation radius to exactly what the
+	// server streams. Without these the client can keep its storage at a smaller
+	// default and DISCARD chunks beyond it; as the player walks those discarded
+	// chunks re-enter range but were never re-sent (server thinks they're loaded),
+	// so terrain vanishes on one side approaching the player.
+	_ = conn.WritePacket(pk.Marshal(
+		packetid.ClientboundGameSetChunkCacheRadius,
+		pk.VarInt(int32(s.Config().Java.ViewDistance)),
+	))
+	_ = conn.WritePacket(pk.Marshal(
+		packetid.ClientboundGameSetSimulationDistance,
+		pk.VarInt(int32(s.Config().Java.SimulationDistance)),
+	))
+
 	// Step 2: Send GameEvent - "Start waiting for level chunks" (event 13)
 	// Required in 1.20.2+ to signal the client to start accepting chunk data
 	_ = conn.WritePacket(pk.Marshal(

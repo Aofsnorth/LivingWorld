@@ -114,10 +114,35 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 
 // BuildLevelChunkWithLightPacket builds a LevelChunkWithLight packet using
 // go-mc's native serialization for protocol 775+.
+//
+// NOTE on chunk-position encoding: this packet sends the position as two plain
+// Ints in [X, Z] order (go-mc's level.ChunkPos). That is correct here — do NOT
+// reuse level.ChunkPos for ForgetLevelChunk below, which uses a different
+// encoding (see BuildForgetLevelChunkPacket).
 func BuildLevelChunkWithLightPacket(x, z int32, lChunk *level.Chunk) pk.Packet {
 	return pk.Marshal(
 		packetid.ClientboundGameLevelChunkWithLight,
 		level.ChunkPos{x, z},
 		lChunk,
+	)
+}
+
+// BuildForgetLevelChunkPacket builds a ForgetLevelChunk (unload chunk) packet.
+//
+// CONTRAST with BuildLevelChunkWithLightPacket: the vanilla client decodes this
+// packet's position as a single packed Long via ChunkPos.toLong(), where X is
+// the low 32 bits and Z is the high 32 bits. Written big-endian, the high bits
+// (Z) come out on the wire FIRST, so the byte layout is [Z][X] — the reverse of
+// LevelChunkWithLight's [X][Z]. Sending two Ints in [X, Z] order (as
+// level.ChunkPos would) makes the client unload the chunk mirrored across the
+// X=Z line, so chunks still in view get dropped ("void chases the player").
+//
+// We write the packed long directly rather than two swapped Ints to keep the
+// "this is one long, not a coordinate pair" intent obvious.
+func BuildForgetLevelChunkPacket(x, z int32) pk.Packet {
+	packed := (int64(z) << 32) | (int64(x) & 0xFFFFFFFF)
+	return pk.Marshal(
+		packetid.ClientboundGameForgetLevelChunk,
+		pk.Long(packed),
 	)
 }

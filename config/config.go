@@ -109,6 +109,11 @@ type JavaConfig struct {
 	// (most authlib-injector launchers do; strict/vanilla clients show the
 	// default skin instead, so it is OFF by default — flip it on and test).
 	BedrockHDSkins bool `yaml:"bedrockHDSkins"`
+
+	// DebugChunks gates verbose chunk-streaming logs (boundary crossings, chunk
+	// cache center, forget/send lists). Runtime-only: set via the --debug-chunks
+	// CLI flag, never read from or written to YAML. Default OFF.
+	DebugChunks bool `yaml:"-"`
 }
 
 type BedrockConfig struct {

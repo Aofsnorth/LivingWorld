@@ -222,6 +222,7 @@ func (m *SessionManager) ForEach(fn func(*PlayerSession)) {
 
 func (s *PlayerSession) ChunkWorker() {
 	for range s.chunkQueue {
+		s.debugChunkf("worker: consuming chunk-update signal")
 		s.updateChunksWithBatch(true)
 	}
 }

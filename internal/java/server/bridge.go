@@ -52,7 +52,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 		ListPingHandler: &javaListPing{ping: ping, playerList: playerList, sessions: j.sessions},
 		LoginHandler: &gmserver.MojangLoginHandler{
 			OnlineMode:   cfg.Java.OnlineMode,
-			Threshold:    -1,
+			Threshold:    256, // vanilla default: compress packets >=256B (chunks ~52KB raw -> a few KB)
 			LoginChecker: playerList,
 		},
 		ConfigHandler: &javaConfig{registries: registries, registrySizes: registrySizes},
