@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"log"
-	"log/slog"
 	"sync"
 
 	"livingworld/config"
@@ -65,7 +64,6 @@ func (s *Server) Start() error {
 		MaximumPlayers:         s.cfg.Bedrock.MaxPlayers,
 		AuthenticationDisabled: s.cfg.Bedrock.AuthDisabled,
 		StatusProvider:         minecraft.NewStatusProvider(s.cfg.ServerName, s.cfg.MOTD),
-		ErrorLog:               slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.addr, s.port)

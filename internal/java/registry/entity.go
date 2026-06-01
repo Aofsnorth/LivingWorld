@@ -126,66 +126,54 @@ func registerFrogVariants(r *mcregistry.Registries, sizes map[string]int) {
 }
 
 func registerCowVariants(r *mcregistry.Registries, sizes map[string]int) {
-	// asset_id/baby_asset_id MUST match the vanilla texture paths exactly (verified
-	// from 26.1 datagen cow_variant/*.json). The old short form "minecraft:cow/default"
-	// resolved to textures/cow/default.png — which does not exist — so the client fell
-	// back to the black/magenta missing texture for every cow. The correct path is
-	// "minecraft:entity/cow/cow_temperate" → textures/entity/cow/cow_temperate.png.
-	// The client defaults a freshly-spawned cow to the "minecraft:temperate" variant
-	// (looked up by key), so fixing the registry alone renders cows correctly without
-	// sending per-entity variant metadata.
 	variants := []struct {
 		key, model, asset string
 	}{
-		{"minecraft:temperate", "normal", "minecraft:entity/cow/cow_temperate"},
-		{"minecraft:warm", "warm", "minecraft:entity/cow/cow_warm"},
-		{"minecraft:cold", "cold", "minecraft:entity/cow/cow_cold"},
+		{"minecraft:temperate", "normal", "minecraft:cow/default"},
+		{"minecraft:warm", "warm", "minecraft:cow/warm"},
+		{"minecraft:cold", "cold", "minecraft:cow/cold"},
 	}
 	for _, v := range variants {
 		r.Registry("minecraft:cow_variant").(*mcregistry.Registry[nbt.RawMessage]).Put(v.key, marshalNBT(animalVariant{
 			Model:       v.model,
 			AssetID:     v.asset,
-			BabyAssetID: v.asset + "_baby",
+			BabyAssetID: v.asset,
 		}))
 	}
 	sizes["minecraft:cow_variant"] = len(variants)
 }
 
 func registerChickenVariants(r *mcregistry.Registries, sizes map[string]int) {
-	// Vanilla texture paths (26.1 datagen chicken_variant/*.json). See the cow note
-	// above: only "cold" carries a non-normal model; warm reuses the normal model.
 	variants := []struct {
 		key, model, asset string
 	}{
-		{"minecraft:temperate", "normal", "minecraft:entity/chicken/chicken_temperate"},
-		{"minecraft:warm", "normal", "minecraft:entity/chicken/chicken_warm"},
-		{"minecraft:cold", "cold", "minecraft:entity/chicken/chicken_cold"},
+		{"minecraft:temperate", "normal", "minecraft:chicken/default"},
+		{"minecraft:warm", "normal", "minecraft:chicken/warm"},
+		{"minecraft:cold", "cold", "minecraft:chicken/cold"},
 	}
 	for _, v := range variants {
 		r.Registry("minecraft:chicken_variant").(*mcregistry.Registry[nbt.RawMessage]).Put(v.key, marshalNBT(animalVariant{
 			Model:       v.model,
 			AssetID:     v.asset,
-			BabyAssetID: v.asset + "_baby",
+			BabyAssetID: v.asset,
 		}))
 	}
 	sizes["minecraft:chicken_variant"] = len(variants)
 }
 
 func registerPigVariants(r *mcregistry.Registries, sizes map[string]int) {
-	// Vanilla texture paths (26.1 datagen pig_variant/*.json). See the cow note above;
-	// pig's warm variant reuses the normal model, only cold has its own model.
 	variants := []struct {
 		key, model, asset string
 	}{
-		{"minecraft:temperate", "normal", "minecraft:entity/pig/pig_temperate"},
-		{"minecraft:warm", "normal", "minecraft:entity/pig/pig_warm"},
-		{"minecraft:cold", "cold", "minecraft:entity/pig/pig_cold"},
+		{"minecraft:temperate", "normal", "minecraft:pig/default"},
+		{"minecraft:warm", "normal", "minecraft:pig/warm"},
+		{"minecraft:cold", "cold", "minecraft:pig/cold"},
 	}
 	for _, v := range variants {
 		r.Registry("minecraft:pig_variant").(*mcregistry.Registry[nbt.RawMessage]).Put(v.key, marshalNBT(animalVariant{
 			Model:       v.model,
 			AssetID:     v.asset,
-			BabyAssetID: v.asset + "_baby",
+			BabyAssetID: v.asset,
 		}))
 	}
 	sizes["minecraft:pig_variant"] = len(variants)

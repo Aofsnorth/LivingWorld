@@ -21,9 +21,6 @@ func (s *Server) startMobSync() {
 			v.write(&packet.MoveActorAbsolute{
 				EntityRuntimeID: uint64(m.EntityID),
 				Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
-				// Rotation is {pitch, yaw, headYaw}; send the heading as both yaw and
-				// head yaw so the mob faces where it walks (parity with the Java side).
-				Rotation: mgl32.Vec3{0, float32(m.Yaw), float32(m.Yaw)},
 			})
 		})
 	})
@@ -36,8 +33,6 @@ func addMobActor(m mobs.Mob) *packet.AddActor {
 		EntityType:      m.Type, // Bedrock uses the namespaced identifier directly
 		Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
 		Velocity:        mgl32.Vec3{},
-		Yaw:             float32(m.Yaw),
-		HeadYaw:         float32(m.Yaw),
 	}
 }
 
