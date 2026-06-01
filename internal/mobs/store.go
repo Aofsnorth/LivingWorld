@@ -22,6 +22,13 @@ type Mob struct {
 	UUID     uuid.UUID // Java AddEntity needs a UUID
 	Type     string    // namespaced type, e.g. "minecraft:pig"
 	X, Y, Z  float64
+	// Yaw is the body/heading angle in Minecraft degrees (0=+Z south, 90=-X west).
+	// Wandering walks forward along Yaw and the bridges send it so the mob faces its
+	// movement direction instead of always staring south ("moonwalking").
+	Yaw float64
+	// walkTicks counts down a wander burst: >0 means "walking forward this many ticks".
+	// Unexported on purpose — it is internal AI state, not part of the rendered snapshot.
+	walkTicks int
 }
 
 // Store holds active mobs and notifies listeners on spawn/despawn.
@@ -94,23 +101,61 @@ func (s *Store) OnMove(fn func(Mob)) {
 	s.mu.Unlock()
 }
 
-// Tick advances simple mob AI: gravity (fall while the block below is air) and
-// random wander on X/Z. solidAt reports whether a block coordinate is non-air.
-// Moved mobs are reported to OnMove listeners. Minimal — no pathfinding/targeting.
+// Tick advances simple mob AI. solidAt reports whether a block coordinate is
+// non-air. Moved mobs are reported to OnMove listeners. Minimal — no
+// pathfinding/targeting — but it produces natural-looking motion:
+//
+//   - Gravity: fall while the block under the feet is air, then snap onto the
+//     surface on landing (no more sinking to a fractional Y).
+//   - Heading-based wander: a mob picks a heading (Yaw) and walks forward in short
+//     bursts, turning when it hits a wall and idling between bursts. Walking forward
+//     along Yaw (instead of jumping to random X/Z each tick) means the mob actually
+//     faces where it goes once the bridges send Yaw — fixing the "moves but sideways
+//     and jittery" look.
 func (s *Store) Tick(rng *rand.Rand, solidAt func(x, y, z int) bool) {
+	const (
+		gravity   = 0.4 // blocks/tick while falling (5 Hz loop)
+		walkSpeed = 0.1 // blocks/tick while wandering (~0.5 blocks/sec)
+		deg2rad   = math.Pi / 180
+	)
 	s.mu.Lock()
 	moved := make([]Mob, 0, len(s.mobs))
 	for _, m := range s.mobs {
 		changed := false
-		if !solidAt(int(math.Floor(m.X)), int(math.Floor(m.Y))-1, int(math.Floor(m.Z))) {
-			m.Y -= 0.5
+
+		fx, fz := int(math.Floor(m.X)), int(math.Floor(m.Z))
+		if !solidAt(fx, int(math.Floor(m.Y))-1, fz) {
+			// Airborne: fall.
+			m.Y -= gravity
 			changed = true
+		} else {
+			// On the ground. Snap to the top of the block if we landed mid-fall.
+			if m.Y != math.Floor(m.Y) {
+				m.Y = math.Floor(m.Y)
+				changed = true
+			}
+			switch {
+			case m.walkTicks > 0:
+				// Walk forward along the heading. Minecraft yaw: forward = (-sin, +cos).
+				rad := m.Yaw * deg2rad
+				nx := m.X - math.Sin(rad)*walkSpeed
+				nz := m.Z + math.Cos(rad)*walkSpeed
+				if solidAt(int(math.Floor(nx)), int(math.Floor(m.Y)), int(math.Floor(nz))) {
+					// Blocked by a wall/step — turn to a new heading instead of clipping in.
+					m.Yaw = rng.Float64()*360 - 180
+				} else {
+					m.X, m.Z = nx, nz
+				}
+				m.walkTicks--
+				changed = true
+			case rng.Float64() < 0.05:
+				// Idle → occasionally start a new walk burst in a fresh direction.
+				m.walkTicks = 20 + rng.Intn(40) // 4–12 s at 5 Hz
+				m.Yaw = rng.Float64()*360 - 180
+				changed = true // facing changed; broadcast so the client turns the mob
+			}
 		}
-		if rng.Float64() < 0.3 {
-			m.X += (rng.Float64()*2 - 1) * 0.3
-			m.Z += (rng.Float64()*2 - 1) * 0.3
-			changed = true
-		}
+
 		if changed {
 			moved = append(moved, *m)
 		}
