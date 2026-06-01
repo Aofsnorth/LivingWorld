@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"livingworld/internal/shared/constants/chat"
+	"livingworld/internal/version"
 )
 
 // RegisterBuiltins adds the core commands to r. Java vs Bedrock differences (e.g.
@@ -42,7 +43,38 @@ func RegisterBuiltins(r *Registry) {
 		Name: "summon", Description: "Spawn a mob", Usage: "summon <pig|cow|chicken|sheep|creeper|zombie|skeleton>",
 		Permission: PermOperator, MinArgs: 1, Handler: cmdSummon,
 	})
+	r.Register(&Command{
+		Name: "lwversion", Aliases: []string{"ver"}, Description: "Show LivingWorld + supported client versions",
+		Usage:      "lwversion",
+		Permission: PermAll, Handler: cmdLWVersion,
+	})
 	registerExtended(r)
+}
+
+// cmdLWVersion prints the LivingWorld version matrix the server is built
+// against. The "current" version is the first one returned by
+// version.Supported() (registration order is priority order). For every
+// supported version, the banner lists the Java + Bedrock protocol numbers
+// and the accepted client build identifiers. Capability bits are not
+// surfaced in chat (they're a developer surface); see docs/VERSION_MATRIX.md
+// for the full table.
+func cmdLWVersion(ctx *Ctx) error {
+	cur, ok := version.Current()
+	if !ok {
+		ctx.Sender.Reply(chat.ColorYellow + "LivingWorld (no supported versions registered)")
+		return nil
+	}
+	ctx.Sender.Reply(chat.ColorYellow + "LivingWorld version: " + chat.Reset + cur.Label)
+	ctx.Sender.Reply(fmt.Sprintf(chat.ColorGray+"Java protocol: %d (builds: %s)", cur.JavaProtocol, strings.Join(cur.JavaBuilds, ", ")))
+	ctx.Sender.Reply(fmt.Sprintf(chat.ColorGray+"Bedrock protocol: %d (builds: %s)", cur.BedrockProtocol, strings.Join(cur.BedrockBuilds, ", ")))
+	if cur.ChangelogURL != "" {
+		ctx.Sender.Reply(chat.ColorGray + "Changelog: " + cur.ChangelogURL)
+	}
+	all := version.Supported()
+	if len(all) > 1 {
+		ctx.Sender.Reply(chat.ColorGray + fmt.Sprintf("(%d version(s) supported; current is %s)", len(all), cur.Label))
+	}
+	return nil
 }
 
 var summonable = map[string]bool{

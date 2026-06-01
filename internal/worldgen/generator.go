@@ -23,6 +23,10 @@ var _ world.ChunkGenerator = (*Generator)(nil)
 // canonical world-Y the chunk now addresses, so blocks are written at world-Y
 // directly (no offset). Empty Air and carved CaveAir cells, and any name that
 // resolves to air, are left unset.
+//
+// Phase 4c: after the surface pass, applyOres overwrites stone cells with
+// the ore types from oreTable. The ore pass is deterministic in (seed,
+// cx, cz, x, y, z) so two runs with the same seed produce identical chunks.
 func (g *Generator) Generate(cx, cz int) *world.Chunk {
 	buf := terrain.Build(g.seed, cx, cz)
 	c := world.NewChunk()
@@ -45,5 +49,6 @@ func (g *Generator) Generate(cx, cz int) *world.Chunk {
 			}
 		}
 	}
+	applyOres(g.seed, cx, cz, c)
 	return c
 }

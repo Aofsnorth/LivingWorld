@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Region files group a 32×32 block of chunks (1024 chunks) into one file, the
@@ -69,6 +71,13 @@ func (r *RegionStorage) path(rp regionPos) string {
 }
 
 // ensureLoaded reads a region file (if present) into memory. Caller holds r.mu.
+//
+// On any error reading or decoding the file (other than ENOENT, which means
+// "this region hasn't been generated yet"), the file is moved to a sibling
+// `quarantine/` subdir so the next call starts fresh. The in-memory rf we
+// return is empty (a fresh region), not nil — LoadChunk then returns ok=false
+// for any specific chunk and the world regenerates the surface instead of
+// crashing (Phase 3: corrupt-chunk quarantine + recovery, Master_Plan §6).
 func (r *RegionStorage) ensureLoaded(rp regionPos) (*regionFile, error) {
 	if rf := r.regions[rp]; rf != nil && rf.loaded {
 		return rf, nil
@@ -76,28 +85,73 @@ func (r *RegionStorage) ensureLoaded(rp regionPos) (*regionFile, error) {
 	rf := &regionFile{chunks: make(map[uint16][]byte), loaded: true}
 	r.regions[rp] = rf
 
-	f, err := os.Open(r.path(rp))
+	// Read the entire file into memory FIRST, then close it. Quarantining a
+	// file that's still open fails on Windows (file-in-use). Reading the
+	// bytes up front is cheap (region files are gzip-compressed chunks) and
+	// lets us close the handle before we attempt a rename.
+	raw, err := os.ReadFile(r.path(rp))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return rf, nil // brand-new region
 		}
-		return nil, err
+		// Some other filesystem error (permission, IO, ...). Quarantine and
+		// return a fresh region so the world can keep going.
+		r.quarantineRegion(rp, fmt.Errorf("read: %w", err))
+		fresh := &regionFile{chunks: make(map[uint16][]byte), loaded: true}
+		r.regions[rp] = fresh
+		return fresh, nil
 	}
-	defer f.Close()
-
-	zr, err := gzip.NewReader(f)
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("gzip open region %v: %w", rp, err)
+		r.quarantineRegion(rp, fmt.Errorf("gzip: %w", err))
+		fresh := &regionFile{chunks: make(map[uint16][]byte), loaded: true}
+		r.regions[rp] = fresh
+		return fresh, nil
 	}
-	defer zr.Close()
-	raw, err := io.ReadAll(zr)
+	decoded, err := io.ReadAll(zr)
+	zr.Close()
 	if err != nil {
-		return nil, err
+		r.quarantineRegion(rp, fmt.Errorf("read gz: %w", err))
+		fresh := &regionFile{chunks: make(map[uint16][]byte), loaded: true}
+		r.regions[rp] = fresh
+		return fresh, nil
 	}
-	if err := decodeRegion(raw, rf); err != nil {
-		return nil, fmt.Errorf("decode region %v: %w", rp, err)
+	if err := decodeRegion(decoded, rf); err != nil {
+		r.quarantineRegion(rp, fmt.Errorf("decode: %w", err))
+		fresh := &regionFile{chunks: make(map[uint16][]byte), loaded: true}
+		r.regions[rp] = fresh
+		return fresh, nil
 	}
 	return rf, nil
+}
+
+// quarantineRegion moves the on-disk region file at rp to a sibling
+// `quarantine/` directory, appending a timestamp + reason. The original
+// file path is freed for the next save; the world's storage stays alive.
+//
+// The move is best-effort: if the move itself fails (e.g. the disk is
+// read-only), we log and continue rather than escalating to a panic. The
+// world always wins over a corrupt file: the in-memory state we return is
+// empty, and the surface chunk will be regenerated on the next access.
+func (r *RegionStorage) quarantineRegion(rp regionPos, reason error) {
+	src := r.path(rp)
+	if _, err := os.Stat(src); err != nil {
+		// Already gone; nothing to move.
+		return
+	}
+	quarantineDir := filepath.Join(r.dir, "quarantine")
+	if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
+		log.Printf("[World] quarantine: mkdir %s: %v (file left in place; surface will regenerate anyway)", quarantineDir, err)
+		return
+	}
+	stamp := time.Now().UTC().Format("20060102T150405")
+	base := filepath.Base(src)
+	dst := filepath.Join(quarantineDir, fmt.Sprintf("%s.%s.bad", stamp, base))
+	if err := os.Rename(src, dst); err != nil {
+		log.Printf("[World] quarantine: rename %s -> %s: %v", src, dst, err)
+		return
+	}
+	log.Printf("[World] quarantined region %v: %v (moved to %s)", rp, reason, dst)
 }
 
 func decodeRegion(data []byte, rf *regionFile) error {
@@ -177,7 +231,14 @@ func (r *RegionStorage) LoadChunk(cx, cz int) (*Chunk, bool, error) {
 	}
 	c, err := DecodeChunk(blob)
 	if err != nil {
-		return nil, false, err
+		// Chunk-level corruption inside an otherwise-valid region file.
+		// Drop just this bad blob from the in-memory map so the next
+		// SaveChunk writes a fresh version; don't kill the rest of the
+		// region's good chunks.
+		log.Printf("[World] chunk (%d,%d) in region %v failed to decode: %v (regenerating)", cx, cz, rp, err)
+		delete(rf.chunks, li)
+		rf.dirty = true
+		return nil, false, nil
 	}
 	return c, true, nil
 }

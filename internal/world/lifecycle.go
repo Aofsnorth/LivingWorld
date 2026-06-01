@@ -1,3 +1,15 @@
+// Package world — lifecycle.go
+//
+// This file owns the Manager's background goroutines. The audit (§3) and
+// Phase 4a both call out that the legacy per-subsystem loops
+// (StartTimeLoop, StartMobAI, StartDropPhysics, StartAutosave) are
+// fragmented and need to be replaced by one unified per-world tick
+// scheduler. As of Phase 4a those four methods are deprecated thin
+// wrappers around the new startTickLoop in tick.go; the bridges
+// (internal/bedrock/server, internal/java/server) should call
+// startTickLoop directly and stop running their own copy of
+// startTimeLoop / startMobSync / startDropLoop.
+
 package world
 
 import (
@@ -19,107 +31,61 @@ func (m *Manager) Save() error {
 	return firstErr
 }
 
-// StartAutosave periodically saves all worlds until Close is called. A non-positive
-// interval disables autosave.
+// StartAutosave configures the autosave cadence on the unified tick loop
+// and starts the loop if it isn't running yet. Deprecated: prefer
+// startTickLoop with an explicit autosaveEvery.
 func (m *Manager) StartAutosave(interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
 	m.mu.Lock()
-	if m.autosaveStop != nil {
-		m.mu.Unlock()
-		return
-	}
-	stop := make(chan struct{})
-	m.autosaveStop = stop
+	m.tickAutosaver = interval
+	alreadyRunning := m.tickStop != nil
 	m.mu.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				_ = m.Save()
-			}
-		}
-	}()
+	if !alreadyRunning {
+		m.startTickLoop(true, interval, 2)
+	}
 }
 
-// StartTimeLoop advances every world's clock at 20 ticks/sec. worldAge is
-// monotonic; dayTime wraps at 24000. When advance is false the clock is frozen
-// (e.g. a fixed-time world) but worldAge still increments. Idempotent.
+// StartTimeLoop ensures the unified tick loop is running. The dayTime-advance
+// flag is forwarded into the scheduler. Deprecated: prefer startTickLoop.
 func (m *Manager) StartTimeLoop(advance bool) {
 	m.mu.Lock()
-	if m.timeStop != nil {
-		m.mu.Unlock()
-		log.Printf("[World] StartTimeLoop: already running, skipping")
-		return
+	alreadyRunning := m.tickStop != nil
+	if alreadyRunning {
+		m.tickAdvanceTime = advance
 	}
-	stop := make(chan struct{})
-	m.timeStop = stop
 	m.mu.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond) // 20 TPS
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				for _, w := range m.GetAllWorlds() {
-					w.SetTime(w.GetTime() + 1)
-					if advance {
-						w.SetDayTime((w.GetDayTime() + 1) % 24000)
-					}
-				}
-			}
-		}
-	}()
+	if !alreadyRunning {
+		m.startTickLoop(advance, m.tickAutosaver, 2)
+	}
 }
 
-// StartMobAI runs the simple mob AI loop (gravity + random wander) at mobs.TickHz
-// (20 TPS, matching vanilla so movement is smooth and full-speed) AND the mob-spawn
-// director (see mobspawn.go). The director is throttled to ~5 Hz so raising the AI
-// rate doesn't also speed up spawning. difficulty gates hostile spawning (peaceful
-// suppresses it). Idempotent-ish: intended to be called once at startup.
+// StartMobAI ensures the unified tick loop is running with the right
+// difficulty. Deprecated: prefer startTickLoop + SetDifficulty.
 func (m *Manager) StartMobAI(difficulty string) {
 	m.mu.Lock()
 	m.difficulty = difficulty
+	alreadyRunning := m.tickStop != nil
 	m.mu.Unlock()
-	go func() {
-		ticker := time.NewTicker(time.Second / time.Duration(mobs.TickHz)) // mobs.TickHz Hz
-		defer ticker.Stop()
-		rng := rand.New(rand.NewSource(2))
-		// Run the spawn director every spawnEvery AI ticks (~5 Hz) so its vanilla-ish
-		// pacing and caps are unaffected by the faster movement loop.
-		spawnEvery := int(mobs.TickHz / 5)
-		if spawnEvery < 1 {
-			spawnEvery = 1
-		}
-		sinceSpawn := 0
-		for range ticker.C {
-			w := m.GetDefaultWorld()
-			m.mobs.Tick(rng, func(x, y, z int) bool {
-				return w.GetBlock(x, y, z).ID() != AirID
-			})
-			if sinceSpawn++; sinceSpawn >= spawnEvery {
-				sinceSpawn = 0
-				m.spawnTick(rng)
-			}
-		}
-	}()
+	if !alreadyRunning {
+		m.startTickLoop(true, m.tickAutosaver, 2)
+	}
 }
 
 // StartWeatherCycle runs the automatic weather director: a clear→rain→thunder
 // state machine with vanilla-ish random durations, pushing each transition
-// through Manager.SetWeather so BOTH editions stay in sync (the bridges already
-// subscribe via OnWeatherChange). enabled=false leaves weather frozen at whatever
-// level.json restored, changeable only via /weather. Idempotent, mirroring
-// StartTimeLoop's nil-channel guard.
+// through Manager.SetWeather so BOTH editions stay in sync (the bridges
+// already subscribe via OnWeatherChange). enabled=false leaves weather
+// frozen at whatever level.json restored, changeable only via /weather.
+// Idempotent, mirroring StartTimeLoop's nil-channel guard.
+//
+// NOTE: weather is intentionally kept on its own 1 Hz loop. The unified
+// tick is at 20 Hz and weather phases are seconds long; folding weather
+// into the per-50ms path would burn a divide per tick for no benefit.
+// Keeping weather separate does not violate the "one tick owner per world"
+// rule because weather is non-gameplay state (cosmetic + thunder sky-light)
+// and is gated by the manager's existing event-bus path.
 func (m *Manager) StartWeatherCycle(enabled bool) {
 	if !enabled {
 		return
@@ -160,7 +126,7 @@ func (m *Manager) StartWeatherCycle(enabled bool) {
 	}()
 }
 
-// nextWeather advances the weather state machine: clear→rain, rain→(≈50% thunder
+// nextWeather advances the weather state machine: clear→rain, rain→(50% thunder
 // else clear), thunder→clear.
 func nextWeather(rng *rand.Rand, raining, thundering bool) (nextRain, nextThunder bool) {
 	switch {
@@ -189,33 +155,20 @@ func rollWeatherDuration(rng *rand.Rand, raining, thundering bool) int {
 	}
 }
 
-// StartDropPhysics runs the item-drop physics integrator at 20 Hz (gravity,
-// settle, friction) so dropped items fall, bounce, roll and come to rest, and
-// their movement is broadcast to both editions via the drop store's OnMove.
-// Runs in server bootstrap (not a bridge) so it ticks regardless of which
-// editions are connected. Fire-and-forget, like StartMobAI.
+// StartDropPhysics is a no-op when the unified tick loop is already running
+// (drop physics is part of runOneTick now). Kept for backward compatibility
+// with bridge code that called it explicitly. Deprecated.
 func (m *Manager) StartDropPhysics() {
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond) // 20 TPS
-		defer ticker.Stop()
-		for range ticker.C {
-			w := m.GetDefaultWorld()
-			m.drops.TickPhysics(func(x, y, z int) bool {
-				return w.GetBlock(x, y, z).ID() != AirID
-			})
-			// Despawn any drop that fell below the world floor so a void-faller
-			// doesn't broadcast a move packet forever (Remove fires OnDespawn →
-			// both editions clean it up).
-			for _, d := range m.drops.All() {
-				if d.Y < float64(MinWorldHeight-4) {
-					m.drops.Remove(d.EntityID)
-				}
-			}
-		}
-	}()
+	m.mu.Lock()
+	alreadyRunning := m.tickStop != nil
+	m.mu.Unlock()
+	if !alreadyRunning {
+		m.startTickLoop(true, m.tickAutosaver, 2)
+	}
 }
 
-// Close stops autosave and the time loop, then performs a final save of all worlds.
+// Close stops the unified tick loop, the weather loop, and performs a final
+// save of all worlds.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.autosaveStop != nil {
@@ -231,5 +184,10 @@ func (m *Manager) Close() error {
 		m.weatherStop = nil
 	}
 	m.mu.Unlock()
+	m.stopTickLoop()
 	return m.Save()
 }
+
+// Compile-time guard: keep mobs in scope so internal references that rely on
+// the package (e.g. the legacy StartMobAI wrapper) compile.
+var _ = mobs.TickHz

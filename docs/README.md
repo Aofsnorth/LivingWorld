@@ -146,6 +146,7 @@ Built-in commands (operator-only except `help`), available from both editions:
 | `/time` | `time set <day\|night\|noon\|midnight\|ticks>` | Set time of day |
 | `/weather` | `weather <clear\|rain\|thunder>` | Set the weather (persisted, both editions) |
 | `/summon` | `summon <pig\|cow\|chicken\|sheep\|creeper\|zombie\|skeleton>` | Spawn a mob at your position |
+| `/lwversion` | `lwversion` | Show the supported LivingWorld + client version matrix (anyone can run) |
 
 Plugins register their own commands via the `player.command` event.
 
@@ -279,6 +280,24 @@ livingworld/
 go build ./...
 go test ./...
 ```
+
+A first-party test foundation lives next to the features it covers
+(`internal/{registry,combat,world,version,command}/*_test.go`).
+CI on `.github/workflows/ci.yml` enforces `build · vet · test · govulncheck`.
+
+## 🧭 Version matrix
+
+`internal/version` is the single source of truth for which clients the
+server accepts. The default registry ships `LWVersion "26 (A)"`
+(Java protocol `775`, Bedrock protocol `975`). The matrix is surfaced
+three ways:
+
+- `livingworld --version` — script-friendly, tab-separated, exits early.
+- `/lwversion` in-game — same data, any player can run it.
+- `livingworld-versioncheck` — polls the upstream Mojang manifest,
+  exits non-zero when the matrix has drifted behind an official client.
+
+See [VERSION_MATRIX.md](VERSION_MATRIX.md) for the full table.
 
 ## 📜 License
 

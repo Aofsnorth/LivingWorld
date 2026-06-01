@@ -77,6 +77,13 @@ type Player struct {
 	BedrockSkinURL    string
 	SkinParts         byte
 
+	// Phase 3 player model extension: explicit XP + gamemode fields. These
+	// are independent from `Creative` so a future Creative-mode-only refactor
+	// (or a Spectator-mode player) round-trips through persistence correctly.
+	XPLevel    int
+	XPProgress float32
+	Gamemode   int // 0 survival, 1 creative, 2 adventure, 3 spectator
+
 	// HeldItemSlot tracks currently held hotbar slot for equipment broadcasting
 	HeldItemSlot int
 }

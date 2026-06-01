@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"livingworld/internal/drops"
 	"livingworld/internal/loot"
@@ -24,6 +25,15 @@ type Manager struct {
 	autosaveStop chan struct{}
 	timeStop     chan struct{}
 	weatherStop  chan struct{}
+
+	// tickStop / tickAutosaver / tickAdvanceTime / tickRNG are the
+	// Phase-4a unified-tick fields. The legacy StartTimeLoop /
+	// StartAutosave fields above are kept for the deprecated wrapper
+	// paths; new callers should use startTickLoop.
+	tickStop        chan struct{}
+	tickAutosaver   time.Duration
+	tickAdvanceTime bool
+	tickRNG         *rand.Rand
 
 	// pickupCallback is called when a player picks up an item, for Bedrock inventory sync.
 	pickupCallback func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64)
