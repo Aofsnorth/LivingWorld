@@ -16,8 +16,8 @@
 
 - Go 1.26.1 or later
 - Git
-- Minecraft Java Edition (1.20.2+)
-- Minecraft Bedrock Edition (1.21+)
+- Minecraft Java Edition (26.1+)
+- Minecraft Bedrock Edition (26.21+)
 
 ### Clone and Build
 
