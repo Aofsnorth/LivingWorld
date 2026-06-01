@@ -38,9 +38,11 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 		chunkX := world.ChunkCoord(x)
 		chunkZ := world.ChunkCoord(z)
 		if chunkX != bs.lastChunkX || chunkZ != bs.lastChunkZ {
-			bs.lastChunkX = chunkX
-			bs.lastChunkZ = chunkZ
+			bs.setChunkCenter(chunkX, chunkZ) // under bs.mu (AOI reads it concurrently)
 			s.updateBedrockChunks(bs, chunkX, chunkZ)
+			// AOI: this viewer moved — re-evaluate which foreign players are now in /
+			// out of range (reads the just-updated lastChunkX/Z).
+			s.reconcileViewers(bs)
 		}
 	}
 }
@@ -81,22 +83,24 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			case protocol.PlayerActionStartBreak:
 				s.crackSwitch(bs, action.BlockPos) // clears crack on a previously-targeted block
 				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking)
-				// TODO: Broadcast to Java clients (ClientboundGameBlockBreakAck)
+				s.publishCrack(bs, action.BlockPos, 0) // start the overlay on Java viewers too
 			case protocol.PlayerActionContinueDestroyBlock:
 				// Holding break while the crosshair moves to a new block sends a
 				// continue (not a fresh start); detect that switch and move the
 				// crack overlay so it doesn't stick on the old block.
 				if s.crackSwitch(bs, action.BlockPos) {
 					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking)
+					s.publishCrack(bs, action.BlockPos, 0) // overlay moved to the new block on Java
 				} else {
 					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking)
 				}
 			case protocol.PlayerActionAbortBreak:
 				s.wm.CrackManager().StopBreaking(bs.id)
 				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStopBlockCracking)
+				s.publishCrack(bs, action.BlockPos, -1) // clear the overlay on Java too
 			case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
 				s.wm.CrackManager().StopBreaking(bs.id)
-				s.breakBedrockBlock(action.BlockPos)
+				s.breakBedrockBlock(bs, action.BlockPos)
 			}
 		}
 
@@ -121,6 +125,8 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 									if pl.Inventory.Items[pl.Inventory.HeldSlot].Count > 0 {
 										pl.Inventory.Items[pl.Inventory.HeldSlot].Count--
 										s.syncBedrockInventory(bs, pl)
+										// Held stack shrank: re-render the hand for others.
+										s.pm.PublishEquipmentChange(bs.id)
 									}
 								}
 								return
@@ -131,7 +137,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.resyncBedrockBlock(conn, data.BlockPosition)
 					s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
 				case protocol.UseItemActionBreakBlock:
-					s.breakBedrockBlock(data.BlockPosition)
+					s.breakBedrockBlock(bs, data.BlockPosition)
 				}
 			}
 		}
@@ -151,11 +157,13 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		case protocol.PlayerActionStartBreak:
 			s.crackSwitch(bs, p.BlockPosition)
 			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking)
+			s.publishCrack(bs, p.BlockPosition, 0)
 		case protocol.PlayerActionAbortBreak:
 			s.wm.CrackManager().StopBreaking(bs.id)
 			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStopBlockCracking)
+			s.publishCrack(bs, p.BlockPosition, -1)
 		case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock:
-			s.breakBedrockBlock(p.BlockPosition)
+			s.breakBedrockBlock(bs, p.BlockPosition)
 		case protocol.PlayerActionStartFlying, protocol.PlayerActionStopFlying:
 			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
 		}

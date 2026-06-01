@@ -12,9 +12,10 @@ import (
 
 // pickup tuning
 const (
-	javaPickupRadius   = 1.5 // blocks; 3D distance to collect
-	javaPickupDelayTks = 10  // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
+	javaPickupRadius   = 1.5  // blocks; 3D distance to collect
+	javaPickupDelayTks = 10   // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
 	javaPickupHz       = 20
+	javaDropDespawnTks = 6000 // store ticks (5 min at 20Hz) before an uncollected drop despawns — vanilla item lifetime
 )
 
 // startDropLoop wires the shared drop store to Java clients: new drops are spawned
@@ -45,6 +46,17 @@ func (j *javaBridge) startDropLoop() {
 			}
 		})
 	})
+	// Server-authoritative drop physics (StartDropPhysics) drives this: each move
+	// teleports the item to its exact position WITH its current velocity so the
+	// Java client interpolates in the right direction between the 20 Hz updates
+	// (zero-velocity teleports like moveMobPacket would make falling items stutter).
+	store.OnMove(func(d drops.Drop) {
+		j.sessions.ForEach(func(s *PlayerSession) {
+			if s.Ready {
+				_ = s.SendPacket(moveDropPacket(d))
+			}
+		})
+	})
 
 	go func() {
 		ticker := time.NewTicker(time.Second / javaPickupHz)
@@ -55,11 +67,34 @@ func (j *javaBridge) startDropLoop() {
 	}()
 }
 
+// moveDropPacket teleports a drop to its current position, carrying its real
+// velocity so the client interpolates smoothly between 20 Hz physics updates.
+// Mirrors moveMobPacket's field layout (the proven entity-teleport shape).
+func moveDropPacket(d drops.Drop) pk.Packet {
+	return pk.Marshal(
+		packetid.ClientboundGameTeleportEntity,
+		pk.VarInt(int32(d.EntityID)),
+		pk.Double(d.X), pk.Double(d.Y), pk.Double(d.Z),
+		pk.Double(d.VX), pk.Double(d.VY), pk.Double(d.VZ),
+		pk.Float(0), pk.Float(0), // yaw, pitch (items have no facing)
+		pk.Int(0),
+		pk.Boolean(d.OnGround),
+	)
+}
+
 // pickupTick advances the store clock and collects any drop a player is standing
 // on (after a short delay) into that player's inventory.
 func (j *javaBridge) pickupTick(store *drops.Store) {
 	now := store.Tick()
 	for _, d := range store.All() {
+		if now-d.SpawnTick > javaDropDespawnTks {
+			// Vanilla 5-minute despawn for uncollected items. Remove() fires
+			// OnDespawn so both editions send RemoveEntities/RemoveActor. This is the
+			// central drop loop (runs regardless of player count), so it covers
+			// Bedrock-spawned drops too.
+			store.Remove(d.EntityID)
+			continue
+		}
 		if now-d.SpawnTick < javaPickupDelayTks {
 			continue // pickup delay not elapsed
 		}
@@ -114,6 +149,12 @@ func (j *javaBridge) collectDrop(collector *player.Player, d drops.Drop) {
 	if cs := j.sessions.Get(collector.UUID); cs != nil {
 		cs.syncInventory()
 	}
+	// Re-render the collector's hand for every other player (both editions): a
+	// pickup that lands in (or stacks into) the held slot changes the visible
+	// equipment. This is the central pickup loop for BOTH editions, so it covers
+	// Bedrock collectors too. Cheap and idempotent — handlers only read the held
+	// slot — so it's safe to publish unconditionally.
+	j.pm.PublishEquipmentChange(collector.UUID)
 	// Notify Bedrock server about pickup for Bedrock players (animation + inventory sync).
 	j.wm.NotifyItemPickup(collector.UUID, d.EntityID, collector.EntityRuntimeID)
 }

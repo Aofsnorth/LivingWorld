@@ -87,8 +87,20 @@ func New(cfg *Config) *Server {
 
 	players := player.NewManager()
 	players.StartPushLoop() // cross-edition player-to-player pushing
+	// Let the world's mob-spawn director read live player positions (the world
+	// package can't import player directly — import cycle).
+	worlds.SetPlayerLocator(func() []world.Position {
+		all := players.GetAllPlayers()
+		pts := make([]world.Position, 0, len(all))
+		for _, p := range all {
+			pts = append(pts, p.Position)
+		}
+		return pts
+	})
 	worlds.StartTimeLoop(cfg.World.DayNightCycle)
-	worlds.StartMobAI()
+	worlds.StartMobAI(cfg.World.Difficulty)
+	worlds.StartWeatherCycle(cfg.World.WeatherCycle)
+	worlds.StartDropPhysics()
 	command.Bind(players, worlds)
 	command.RegisterBuiltins(command.Default())
 	skins := skinbridge.New()

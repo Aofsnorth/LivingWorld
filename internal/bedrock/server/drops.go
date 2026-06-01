@@ -54,6 +54,17 @@ func (s *Server) startDropLoop() {
 			bs.write(&packet.RemoveActor{EntityUniqueID: id})
 		})
 	})
+	// Server-authoritative drop physics (StartDropPhysics) drives this: the Bedrock
+	// client interpolates between absolute positions, so a 20 Hz MoveActorAbsolute
+	// stream renders falling/rolling items smoothly. Mirrors the mob OnMove path.
+	store.OnMove(func(d drops.Drop) {
+		s.forEachSession(func(bs *bedrockSession) {
+			bs.write(&packet.MoveActorAbsolute{
+				EntityRuntimeID: uint64(d.EntityID),
+				Position:        mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
+			})
+		})
+	})
 }
 
 // registerPickupHandler registers a callback with the world manager to handle
@@ -123,11 +134,10 @@ func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
 		if !ok {
 			continue
 		}
-		vel := mgl32.Vec3{
-			float32((d.EntityID%100 - 50)) * 0.002,
-			0.2,
-			float32((d.EntityID%73 - 36)) * 0.002,
-		}
+		// Use the drop's real current velocity (matching the OnSpawn handler) so a
+		// freshly-joined viewer sees the item with its true motion, not a fabricated
+		// one.
+		vel := mgl32.Vec3{float32(d.VX), float32(d.VY), float32(d.VZ)}
 		bs.write(&packet.AddItemActor{
 			EntityUniqueID:  d.EntityID,
 			EntityRuntimeID: uint64(d.EntityID),

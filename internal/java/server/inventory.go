@@ -114,10 +114,72 @@ func (s *PlayerSession) syncInventory() {
 	})
 }
 
+// HandleCreativeSlot processes ServerboundSetCreativeModeSlot: a creative-mode
+// client placing/clearing an item directly into a window-0 slot. Previously a
+// no-op, so creative items were never recorded and never rendered in the player's
+// hand for anyone else. We decode the stack, write it into the internal inventory,
+// echo the change back to the creator, and publish an equipment change so other
+// players (both editions) re-render the held item.
 func (s *PlayerSession) HandleCreativeSlot(p pk.Packet) {
-	var slot pk.Short
-	if err := p.Scan(&slot); err != nil {
+	slot, st, ok := readCreativeSlot(p.Data)
+	if !ok {
 		return
+	}
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl == nil || pl.Inventory == nil {
+		return
+	}
+	internal, ok := clientSlotToInternal(slot)
+	if !ok {
+		return // crafting result/grid/armor: not modeled by the flat inventory
+	}
+	pl.Inventory.SetItem(internal, st)
+	s.syncInventory() // keep the creator's own client in sync
+	// Only the held hotbar slot / offhand affect the rendered hand, so skip event
+	// spam for pure main-inventory edits.
+	if internal == pl.Inventory.HeldSlot || internal == 40 {
+		s.Bridge.pm.PublishEquipmentChange(s.UUID())
+	}
+}
+
+// readCreativeSlot decodes a ServerboundSetCreativeModeSlot body: Short slotIndex
+// then a network ItemStack (mirrors writeSlot: VarInt count; if count>0 VarInt
+// itemID + VarInt nAdd + VarInt nRemove). count<=0 means clear the slot. The
+// item id + count are read before the component counts, so this server's
+// simplified 0/0 component model is preserved and any component bytes are ignored.
+func readCreativeSlot(data []byte) (slot int16, st player.ItemStack, ok bool) {
+	r := bytes.NewReader(data)
+	var sh pk.Short
+	if _, err := sh.ReadFrom(r); err != nil {
+		return 0, player.ItemStack{}, false
+	}
+	var cnt pk.VarInt
+	if _, err := cnt.ReadFrom(r); err != nil {
+		return 0, player.ItemStack{}, false
+	}
+	if cnt <= 0 {
+		return int16(sh), player.ItemStack{}, true // empty / cleared slot
+	}
+	var id pk.VarInt
+	if _, err := id.ReadFrom(r); err != nil {
+		return 0, player.ItemStack{}, false
+	}
+	return int16(sh), player.ItemStack{ID: int32(id), Count: int8(cnt)}, true
+}
+
+// clientSlotToInternal maps a window-0 client slot index to the internal flat
+// 46-slot array — the inverse of syncInventory's remap. Slots that aren't stored
+// (crafting result/grid/armor) return ok=false.
+func clientSlotToInternal(client int16) (int, bool) {
+	switch {
+	case client >= 9 && client <= 35: // main inventory (identity)
+		return int(client), true
+	case client >= 36 && client <= 44: // hotbar -> internal 0-8
+		return int(client - 36), true
+	case client == 45: // offhand -> internal 40
+		return 40, true
+	default: // 0 result, 1-4 grid, 5-8 armor: not modeled
+		return 0, false
 	}
 }
 

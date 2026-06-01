@@ -30,7 +30,10 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 	var highestBlock [16][16]int
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
-			highestBlock[x][z] = -64
+			// Sentinel one below the world floor (-65), so a fully-air column yields
+			// heightmap 0 (val=-65+1+64) while a real block at the floor world-Y -64
+			// still updates (-64 > -65) and yields 1.
+			highestBlock[x][z] = -65
 		}
 	}
 
@@ -48,9 +51,8 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 		// of waste per chunk, which doubled every chunk packet to ~101 KB).
 
 		minSecY := -64 + secIdx*16
-		if minSecY+15 < 0 {
-			continue
-		}
+		// Sections -64..-1 are now valid (canonical Y unification): emit them so
+		// deepslate/bedrock and caves below Y=0 render instead of being skipped.
 
 		blockCount := int16(0)
 		for ly := 0; ly < 16; ly++ {

@@ -164,7 +164,7 @@ func anvilToLiving(ch *save.Chunk, living *world.Chunk) int {
 			}
 			blk := world.BlockByID(ids[0])
 			for p := 0; p < 4096; p++ {
-				living.SetBlock(p&15, base*16+(p>>8)&15, (p>>4)&15, blk)
+				living.SetBlock(p&15, int(sec.Y)*16+(p>>8)&15, (p>>4)&15, blk) // world-Y
 			}
 			nonAir = true
 		} else {
@@ -181,7 +181,7 @@ func anvilToLiving(ch *save.Chunk, living *world.Chunk) int {
 				if idx >= len(ids) || ids[idx] == world.AirID {
 					continue
 				}
-				living.SetBlock(p&15, base*16+(p>>8)&15, (p>>4)&15, world.BlockByID(ids[idx]))
+				living.SetBlock(p&15, int(sec.Y)*16+(p>>8)&15, (p>>4)&15, world.BlockByID(ids[idx])) // world-Y
 				nonAir = true
 			}
 		}
@@ -311,7 +311,8 @@ func livingSectionToAnvil(living *world.Chunk, i int) (save.Section, bool) {
 	indices := make([]int, 4096)
 	nonAir := false
 	for p := 0; p < 4096; p++ {
-		id := living.GetBlock(p&15, i*16+(p>>8)&15, (p>>4)&15).ID()
+		// World-Y of this section: section index i maps to Anvil/world Y (i+minSectionY)*16.
+		id := living.GetBlock(p&15, (i+minSectionY)*16+(p>>8)&15, (p>>4)&15).ID()
 		if id != world.AirID {
 			nonAir = true
 		}

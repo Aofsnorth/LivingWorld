@@ -57,15 +57,16 @@ func (h *Handler775) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 	_, _ = pk.UUID(p.UUID).WriteTo(&buf)
 	_, _ = pk.String(p.Username).WriteTo(&buf) // ByteBufCodecs.PLAYER_NAME
 	props := p.ProfileProperties
-	if p.Edition == player.EditionBedrock && p.BedrockSkinURL != "" {
-		// With HD enabled, prefer the full-resolution local skin (fixes the 64×64
-		// "burik" downscale). Otherwise use the local URL only as a fallback when
-		// there is no signed MineSkin property, since strict clients reject
-		// unsigned URLs and would show the default skin.
-		if s.Config().Java.BedrockHDSkins || len(props) == 0 {
-			name, val := skinbridge.TextureProperty(p.UUID, p.Username, p.BedrockSkinURL)
-			props = []player.ProfileProperty{{Name: name, Value: val}}
-		}
+	if p.Edition == player.EditionBedrock && !hasSignedTextures(props) && p.BedrockSkinURL != "" {
+		// Always keep the signed MineSkin "textures" property as the baseline for
+		// every viewer — vanilla Java only renders signed skins from Mojang's
+		// whitelisted domains, so discarding it (the old `bedrockHDSkins` branch)
+		// forced vanilla clients to the default Steve. Only when no signed property
+		// exists yet — MineSkin upload still pending, or no API key configured — do
+		// we fall back to the unsigned local HD URL, which only lenient
+		// (authlib-injector) launchers accept.
+		name, val := skinbridge.TextureProperty(p.UUID, p.Username, p.BedrockSkinURL)
+		props = upsertUnsignedTextures(props, name, val)
 	}
 	_, _ = pk.VarInt(len(props)).WriteTo(&buf)
 	for _, prop := range props {
@@ -90,6 +91,33 @@ func (h *Handler775) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 	_, _ = pk.Boolean(true).WriteTo(&buf)
 
 	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoUpdate), Data: buf.Bytes()})
+}
+
+// hasSignedTextures reports whether props already carries a SIGNED "textures"
+// property — the Mojang-whitelisted MineSkin skin that vanilla Java will render.
+func hasSignedTextures(props []player.ProfileProperty) bool {
+	for _, pr := range props {
+		if pr.Name == "textures" && pr.Signature != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// upsertUnsignedTextures returns props with an unsigned "textures" property set to
+// val (replacing any existing unsigned "textures" entry). It copies the slice so
+// it never mutates the PlayerSnapshot's backing array, which is shared across the
+// per-viewer fan-out in entity_sync.go.
+func upsertUnsignedTextures(props []player.ProfileProperty, name, val string) []player.ProfileProperty {
+	out := append([]player.ProfileProperty(nil), props...)
+	for i := range out {
+		if out[i].Name == name {
+			out[i].Value = val
+			out[i].Signature = ""
+			return out
+		}
+	}
+	return append(out, player.ProfileProperty{Name: name, Value: val})
 }
 
 func (h *Handler775) SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error {

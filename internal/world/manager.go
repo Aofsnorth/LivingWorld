@@ -8,6 +8,8 @@ import (
 	"livingworld/internal/drops"
 	"livingworld/internal/loot"
 	"livingworld/internal/mobs"
+
+	"github.com/google/uuid"
 )
 
 type Manager struct {
@@ -21,6 +23,7 @@ type Manager struct {
 	dropMu       sync.Mutex // guards dropRNG (math/rand is not concurrency-safe)
 	autosaveStop chan struct{}
 	timeStop     chan struct{}
+	weatherStop  chan struct{}
 
 	// pickupCallback is called when a player picks up an item, for Bedrock inventory sync.
 	pickupCallback func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64)
@@ -29,8 +32,23 @@ type Manager struct {
 	// crackManager tracks active block-breaking states for cross-edition crack animation.
 	crackManager *CrackManager
 
+	// effectEvents carries cross-edition action effects (crack overlay, break
+	// particles+sound) — see effects.go.
+	effectEvents *WorldEffectBus
+
 	weatherMu        sync.RWMutex
 	weatherCallbacks []func(raining, thundering bool)
+
+	// difficulty gates the mob-spawn director (peaceful suppresses hostiles). Set
+	// by StartMobAI; read under m.mu by the director tick.
+	difficulty string
+
+	// playerLocator returns the live world positions of connected players. The
+	// world package can't import player (cycle), so the server bootstrap wires the
+	// player.Manager in via SetPlayerLocator. Used by the mob-spawn director as the
+	// anchor set for candidate columns.
+	locatorMu     sync.RWMutex
+	playerLocator func() []Position
 }
 
 func NewManager() *Manager {
@@ -41,6 +59,7 @@ func NewManager() *Manager {
 		mobs:         mobs.New(),
 		dropRNG:      rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
 		crackManager: NewCrackManager(),
+		effectEvents: NewWorldEffectBus(),
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld
@@ -116,6 +135,25 @@ func (m *Manager) CrackManager() *CrackManager {
 	return m.crackManager
 }
 
+// SetPlayerLocator registers a function returning the live world positions of
+// connected players (wired from the player.Manager by the server bootstrap).
+func (m *Manager) SetPlayerLocator(fn func() []Position) {
+	m.locatorMu.Lock()
+	m.playerLocator = fn
+	m.locatorMu.Unlock()
+}
+
+// playerAnchors returns the current player positions, or nil if no locator is set.
+func (m *Manager) playerAnchors() []Position {
+	m.locatorMu.RLock()
+	fn := m.playerLocator
+	m.locatorMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
 func (m *Manager) GetAllWorlds() []*World {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -141,6 +179,34 @@ func (m *Manager) PublishBlockUpdate(source BlockUpdateSource, x, y, z int, bloc
 func (m *Manager) SetBlockAndPublish(source BlockUpdateSource, x, y, z int, block Block) {
 	m.GetDefaultWorld().SetBlock(x, y, z, block)
 	m.PublishBlockUpdate(source, x, y, z, block.ID())
+}
+
+func (m *Manager) SubscribeWorldEffects(id string, buffer int) <-chan WorldEffectEvent {
+	return m.effectEvents.Subscribe(id, buffer)
+}
+
+func (m *Manager) UnsubscribeWorldEffects(id string) {
+	m.effectEvents.Unsubscribe(id)
+}
+
+func (m *Manager) PublishWorldEffect(ev WorldEffectEvent) {
+	m.effectEvents.Publish(ev)
+}
+
+// PublishCrack publishes a crack-overlay update (stage>=0) or clear (stage<0) for
+// a block being broken by breaker, originating from source.
+func (m *Manager) PublishCrack(source BlockUpdateSource, breaker uuid.UUID, x, y, z int, stage int32) {
+	m.effectEvents.Publish(WorldEffectEvent{
+		Kind: EffectCrackProgress, Source: source, X: x, Y: y, Z: z, Stage: stage, Breaker: breaker,
+	})
+}
+
+// PublishBlockDestroy publishes a finished-break effect (particles+sound) for the
+// block of canonical id blockID at (x,y,z), originating from source.
+func (m *Manager) PublishBlockDestroy(source BlockUpdateSource, breaker uuid.UUID, x, y, z int, blockID int32) {
+	m.effectEvents.Publish(WorldEffectEvent{
+		Kind: EffectBlockDestroy, Source: source, X: x, Y: y, Z: z, BlockID: blockID, Breaker: breaker,
+	})
 }
 
 // EnablePersistence attaches a DiskStorage to every world, rooted at

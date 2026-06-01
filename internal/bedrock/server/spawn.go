@@ -9,7 +9,9 @@ import "livingworld/internal/world"
 func surfaceY(wm *world.Manager, x, z int) int {
 	w := wm.GetDefaultWorld()
 	w.LoadChunk(x>>4, z>>4)
-	for y := world.MaxWorldHeight - 1; y >= world.MinWorldHeight; y-- {
+	// Scan from the top placeable Y (319) — MaxWorldHeight is a HEIGHT (384), not a
+	// max-Y, so the old MaxWorldHeight-1 (383) scanned 64 rows above the column.
+	for y := world.MinWorldHeight + world.SectionsPerChunk*16 - 1; y >= world.MinWorldHeight; y-- {
 		if w.GetBlock(x, y, z).ID() != 0 {
 			return y + 1
 		}

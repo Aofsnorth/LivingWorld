@@ -26,9 +26,10 @@ func (s *Server) bootstrapWorld(conn *minecraft.Conn, radius int, bs *bedrockSes
 	_ = conn.WritePacket(&packet.ChunkRadiusUpdated{ChunkRadius: int32(radius)})
 	_ = conn.WritePacket(&packet.NetworkChunkPublisherUpdate{Position: spawn, Radius: uint32(radius * 16)})
 
-	// Initialize lastChunk coordinates so first move checks against spawn chunk
-	bs.lastChunkX = centerX
-	bs.lastChunkZ = centerZ
+	// Initialize lastChunk coordinates so first move checks against spawn chunk.
+	// Use the locked setter — the AOI reconcile may read these from the
+	// player-event-loop goroutine while this join goroutine is still bootstrapping.
+	bs.setChunkCenter(centerX, centerZ)
 
 	// Load spawn area chunks and register them as loaded for this session
 	s.updateBedrockChunks(bs, centerX, centerZ)

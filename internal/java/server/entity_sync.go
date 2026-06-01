@@ -14,11 +14,14 @@ func (j *javaBridge) startPlayerEventLoop() {
 			p := ev.Player
 			switch ev.Type {
 			case player.EventJoin:
-				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.spawnForeignAvatar(p) }) })
+				// AOI: spawn only if the joining player is already in range; the
+				// move-driven diff spawns it later if they approach.
+				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.reconcileViewerFor(p) }) })
 			case player.EventMove:
-				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.moveForeignAvatar(p) }) })
+				// AOI: spawn-if-entered / move-if-spawned / despawn-if-left.
+				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.reconcileViewerFor(p) }) })
 			case player.EventLeave:
-				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.removeForeignAvatar(p) }) })
+				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.despawnViewer(p) }) })
 			case player.EventSwing:
 				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.swingForeignAvatar(p) }) })
 			case player.EventSneak:
@@ -28,23 +31,19 @@ func (j *javaBridge) startPlayerEventLoop() {
 			case player.EventHurt:
 				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.hurtForeignAvatar(p) }) })
 			case player.EventSkin:
-				j.sessions.ForEach(func(s *PlayerSession) {
-					s.enqueue(func() {
-						s.removeForeignAvatar(p)
-						s.spawnForeignAvatar(p)
-					})
-				})
+				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.refreshViewer(p) }) })
 			}
 		}
 	}()
 }
 
+// spawnExistingForeignPlayers runs the initial AOI sweep on join: spawn every
+// already-online player that is within view distance (out-of-range ones spawn
+// later via the move-driven diff). Enqueued onto the sendLoop so it is serialized
+// with the event-driven reconciles — otherwise the join goroutine and the
+// event-loop goroutine could spawn the same target concurrently.
 func (s *PlayerSession) spawnExistingForeignPlayers() {
-	for _, p := range s.Bridge.pm.GetAllPlayers() {
-		if p.UUID != s.UUID() {
-			s.spawnForeignAvatar(p.Snapshot())
-		}
-	}
+	s.enqueue(func() { s.reconcileViewers() })
 }
 
 func (s *PlayerSession) spawnForeignAvatar(p player.PlayerSnapshot) {

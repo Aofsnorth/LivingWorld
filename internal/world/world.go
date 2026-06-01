@@ -171,7 +171,9 @@ func (w *World) UnloadChunk(cx, cz int) {
 // (generated if needed); falls back to 64 for an all-air column.
 func (w *World) HighestSolidY(x, z int) int {
 	w.LoadChunk(x>>4, z>>4)
-	for y := 318; y >= 0; y-- {
+	// Scan the full canonical column from the top placeable Y (319) down to the
+	// world floor (-64) so both overworld surfaces and any sub-0 floor are found.
+	for y := MinWorldHeight + SectionsPerChunk*16 - 1; y >= MinWorldHeight; y-- {
 		if w.GetBlock(x, y, z).ID() != AirID {
 			return y + 1
 		}

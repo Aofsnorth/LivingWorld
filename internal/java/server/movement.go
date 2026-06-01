@@ -63,6 +63,9 @@ func (s *PlayerSession) applyMove(x, y, z float64, onGround bool) {
 	if oldCX != newCX || oldCZ != newCZ {
 		s.debugChunkf("boundary cross: old(%d,%d) -> new(%d,%d)", oldCX, oldCZ, newCX, newCZ)
 		s.updateChunks()
+		// AOI: this viewer moved, so re-evaluate which foreign players are now in /
+		// out of range. Enqueued so it stays ordered with the other relays.
+		s.enqueue(func() { s.reconcileViewers() })
 	}
 }
 

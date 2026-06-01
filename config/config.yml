@@ -14,7 +14,7 @@ world:
   persistence: true # save edited chunks to disk
   directory: worlds # base folder; each world saves under <directory>/<name>
   autosaveSeconds: 300 # periodic autosave; 0 = only save on shutdown
-  difficulty: easy # peaceful | easy | normal | hard
+  difficulty: peaceful # peaceful | easy | normal | hard
   dayNightCycle: true # advance the sun/moon (false = fixed time)
 
 java:

@@ -57,6 +57,11 @@ type WorldConfig struct {
 
 	// DayNightCycle enables the advancing time-of-day (sun/moon movement).
 	DayNightCycle bool `yaml:"dayNightCycle"`
+
+	// WeatherCycle enables the automatic clear→rain→thunder weather director.
+	// (Vanilla's doWeatherCycle gamerule.) With it off, weather stays at whatever
+	// was last set (persisted) and only changes via the /weather command.
+	WeatherCycle bool `yaml:"weatherCycle"`
 }
 
 // DifficultyByte maps the configured difficulty name to the Minecraft 0-3 value
@@ -102,12 +107,12 @@ type JavaConfig struct {
 	// can see them. Required for cross-edition skins to work.
 	MineSkinAPIKey string `yaml:"mineSkinAPIKey"`
 
-	// BedrockHDSkins, when true, serves a Bedrock player's FULL-resolution
-	// (128×128) skin to Java via the local skin bridge instead of the MineSkin
-	// 64×64 signed property — fixing the downscaled "burik" look. This only
-	// renders on clients that accept unsigned skin URLs from arbitrary hosts
-	// (most authlib-injector launchers do; strict/vanilla clients show the
-	// default skin instead, so it is OFF by default — flip it on and test).
+	// BedrockHDSkins is retained for backward compatibility. The signed MineSkin
+	// (64×64) property is now ALWAYS sent as the baseline so vanilla Java renders
+	// Bedrock skins; the unsigned local HD URL is only used as a fallback when no
+	// signed property is available yet (upload pending or no MineSkinAPIKey). This
+	// flag no longer discards the signed property, so it has no effect on the
+	// current selection logic.
 	BedrockHDSkins bool `yaml:"bedrockHDSkins"`
 
 	// DebugChunks gates verbose chunk-streaming logs (boundary crossings, chunk
@@ -144,6 +149,7 @@ func Default() *Config {
 			AutosaveSeconds: int(system.DefaultAutosaveInterval.Seconds()),
 			Difficulty:      gameplay.DifficultyNormal,
 			DayNightCycle:   true,
+			WeatherCycle:    true,
 		},
 		Java: JavaConfig{
 			Bind:               network.DefaultBindAddress,

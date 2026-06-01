@@ -12,7 +12,13 @@ import (
 
 // chunkFormatVersion is the on-disk chunk encoding version. Bump when the layout
 // changes so older files can be detected/migrated.
-const chunkFormatVersion byte = 1
+//
+// v2: canonical Y unification (-64..319). The byte layout is unchanged, but
+// section bytes are now interpreted as -64-based world sections. Pre-v2 superflat
+// worlds stored their floor in section 0 (world-Y -64..-49) instead of section 4
+// (world-Y 0..15), so loading them as v2 would drop the surface; the version
+// mismatch makes DecodeChunk reject them and World.LoadChunk regenerates instead.
+const chunkFormatVersion byte = 2
 
 // Encode serializes a chunk's block data into a compact binary blob.
 //

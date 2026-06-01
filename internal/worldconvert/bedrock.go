@@ -86,8 +86,9 @@ func bedrockChunkToLiving(c *chunk.Chunk, living *world.Chunk) int {
 	r := c.Range()
 	touched := map[int]bool{}
 	for y := r.Min(); y <= r.Max(); y++ {
-		ly := y - minSectionY*16 // Bedrock world Y (-64..) -> LivingWorld Y index (0..)
-		if ly < 0 || ly >= world.SectionsPerChunk*16 {
+		// Bedrock and LivingWorld now share canonical world-Y (-64..319), so write
+		// world-Y straight into the chunk.
+		if y < world.MinWorldHeight || y >= world.MinWorldHeight+world.SectionsPerChunk*16 {
 			continue
 		}
 		for x := 0; x < 16; x++ {
@@ -100,8 +101,8 @@ func bedrockChunkToLiving(c *chunk.Chunk, living *world.Chunk) int {
 				if id == world.AirID {
 					continue // air or a Bedrock-only name we can't map
 				}
-				living.SetBlock(x, ly, z, world.BlockByID(id))
-				touched[ly>>4] = true
+				living.SetBlock(x, y, z, world.BlockByID(id))
+				touched[(y-world.MinWorldHeight)>>4] = true
 			}
 		}
 	}

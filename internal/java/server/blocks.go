@@ -21,21 +21,20 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 		return
 	}
 
-	// Track crack state for cross-edition animation
+	// Track crack state and broadcast the action's effect to the OTHER edition via
+	// the world effect bus (the Java breaker already predicts its own crack/break;
+	// the bus only feeds Bedrock viewers — the subscriber skips Java-source events).
 	switch status {
 	case 0: // start digging
 		hadPrev, prevX, prevY, prevZ := s.Bridge.wm.CrackManager().StartBreaking(s.UUID(), pos.X, pos.Y, pos.Z)
 		if hadPrev {
-			// Player switched to a new block - stop crack on old block
-			// TODO: Send stop crack to Bedrock clients
-			_ = prevX
-			_ = prevY
-			_ = prevZ
+			// Switched to a new block: clear the crack overlay on the old one.
+			s.Bridge.wm.PublishCrack(world.BlockUpdateSourceJava, s.UUID(), prevX, prevY, prevZ, -1)
 		}
-		// TODO: Broadcast start crack to Bedrock clients
+		s.Bridge.wm.PublishCrack(world.BlockUpdateSourceJava, s.UUID(), pos.X, pos.Y, pos.Z, 0)
 	case 1: // cancel digging
 		s.Bridge.wm.CrackManager().StopBreaking(s.UUID())
-		// TODO: Broadcast stop crack to Bedrock clients
+		s.Bridge.wm.PublishCrack(world.BlockUpdateSourceJava, s.UUID(), pos.X, pos.Y, pos.Z, -1)
 	case 2: // finish digging
 		s.Bridge.wm.CrackManager().StopBreaking(s.UUID())
 		current := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
@@ -51,6 +50,11 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(current.ID())))
 			return
 		}
+		// Clear any crack overlay this break opened on the other edition (a
+		// block-update-to-air does NOT clear the Java BlockDestruction overlay), then
+		// play the break particles + sound on Bedrock viewers.
+		s.Bridge.wm.PublishCrack(world.BlockUpdateSourceJava, s.UUID(), pos.X, pos.Y, pos.Z, -1)
+		s.Bridge.wm.PublishBlockDestroy(world.BlockUpdateSourceJava, s.UUID(), pos.X, pos.Y, pos.Z, current.ID())
 		// Roll vanilla loot for the broken block and spawn item entities BEFORE the
 		// block becomes air (the loot lookup needs the block's id).
 		s.Bridge.wm.DropBlockLoot(current.ID(), pos.X, pos.Y, pos.Z)
@@ -119,6 +123,8 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 		if pl.Inventory.Items[s.SelectedSlot].Count > 0 {
 			pl.Inventory.Items[s.SelectedSlot].Count--
 			s.syncInventory()
+			// The held stack shrank (or emptied): re-render the hand for others.
+			s.Bridge.pm.PublishEquipmentChange(s.UUID())
 		}
 	}
 }

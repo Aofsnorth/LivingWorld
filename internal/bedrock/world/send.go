@@ -36,7 +36,9 @@ func (c *ChunkConverter) SendChunk(
 
 		for x := 0; x < 16; x++ {
 			for z := 0; z < 16; z++ {
-				for y := 0; y <= maxY; y++ {
+				// Canonical Y: scan the full -64..319 column (dragonfly's chunk is
+				// already -64-based, so world-Y passes straight to ch.SetBlock).
+				for y := int(rng.Min()); y <= maxY; y++ {
 					id := wchunk.GetBlock(x, y, z).ID()
 					if id == 0 {
 						continue
@@ -138,7 +140,8 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 			ch = dfchunk.New(airRID, rng)
 			for x := 0; x < 16; x++ {
 				for z := 0; z < 16; z++ {
-					for y := 0; y <= maxY; y++ {
+					// Canonical Y: scan the full -64..319 column (see SendChunk).
+					for y := int(rng.Min()); y <= maxY; y++ {
 						id := wchunk.GetBlock(x, y, z).ID()
 						if id == 0 {
 							continue

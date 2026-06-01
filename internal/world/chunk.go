@@ -64,24 +64,30 @@ func NewChunk() *Chunk {
 	}
 }
 
+// GetBlock/SetBlock address the chunk by CANONICAL world-Y in
+// [MinWorldHeight, MinWorldHeight+SectionsPerChunk*16) = [-64, 320), i.e. top
+// placeable Y is 319. Section index and local-Y are both derived from
+// (y - MinWorldHeight) so sub-0 Y maps correctly: section 0 holds world-Y
+// -64..-49, section 4 holds 0..15, etc. (The previous `y>>4` rejected y<0 and was
+// off by 64 against the protocol converters — DESIGN §canonical-Y.)
 func (c *Chunk) GetBlock(x, y, z int) Block {
-	chunkY := y >> 4
-	if chunkY < 0 || chunkY >= SectionsPerChunk {
+	sectionIndex := (y - MinWorldHeight) >> 4
+	if sectionIndex < 0 || sectionIndex >= SectionsPerChunk {
 		return BlockAir{}
 	}
-	section := c.sections[chunkY]
+	section := c.sections[sectionIndex]
 	if section.IsEmpty() {
 		return BlockAir{}
 	}
-	return section.GetBlock(x, y&15, z)
+	return section.GetBlock(x, (y-MinWorldHeight)&15, z)
 }
 
 func (c *Chunk) SetBlock(x, y, z int, block Block) {
-	chunkY := y >> 4
-	if chunkY < 0 || chunkY >= SectionsPerChunk {
+	sectionIndex := (y - MinWorldHeight) >> 4
+	if sectionIndex < 0 || sectionIndex >= SectionsPerChunk {
 		return
 	}
-	c.sections[chunkY].SetBlock(x, y&15, z, block)
+	c.sections[sectionIndex].SetBlock(x, (y-MinWorldHeight)&15, z, block)
 	c.dirty.Store(true)
 }
 

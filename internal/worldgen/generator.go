@@ -19,9 +19,10 @@ func NewGenerator(seed int64) *Generator { return &Generator{seed: seed} }
 var _ world.ChunkGenerator = (*Generator)(nil)
 
 // Generate builds chunk (cx,cz): it runs the terrain pipeline, then translates
-// the name buffer into blocks. terrain's world-Y range [MinY,MaxY] maps onto the
-// chunk's 0-based column via y-MinY (bedrock at MinY -> chunk Y 0). Empty Air
-// and carved CaveAir cells, and any name that resolves to air, are left unset.
+// the name buffer into blocks. terrain's world-Y range [MinY,MaxY] is the SAME
+// canonical world-Y the chunk now addresses, so blocks are written at world-Y
+// directly (no offset). Empty Air and carved CaveAir cells, and any name that
+// resolves to air, are left unset.
 func (g *Generator) Generate(cx, cz int) *world.Chunk {
 	buf := terrain.Build(g.seed, cx, cz)
 	c := world.NewChunk()
@@ -39,7 +40,7 @@ func (g *Generator) Generate(cx, cz int) *world.Chunk {
 					idCache[name] = id
 				}
 				if id != world.AirID {
-					c.SetBlock(x, y-terrain.MinY, z, world.BlockByID(id))
+					c.SetBlock(x, y, z, world.BlockByID(id)) // world-Y directly (canonical -64..319)
 				}
 			}
 		}

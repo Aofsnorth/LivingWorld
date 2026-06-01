@@ -55,6 +55,11 @@ func (s *Server) Start() error {
 	s.running = true
 	s.mu.Unlock()
 
+	// Replace the "raknet" network with one that forces the pong gamemode to
+	// Survival (the LAN/friends list reads it from the pong, which gophertunnel
+	// otherwise hardcodes to "Creative"). Must run before cfg.Listen("raknet",…).
+	registerSurvivalNetwork()
+
 	cfg := minecraft.ListenConfig{
 		MaximumPlayers:         s.cfg.Bedrock.MaxPlayers,
 		AuthenticationDisabled: s.cfg.Bedrock.AuthDisabled,
@@ -73,6 +78,7 @@ func (s *Server) Start() error {
 		protocol.CurrentVersion, protocol.CurrentProtocol)
 	bedrockworld.LogBlockPaletteVersion()
 	s.startBlockEventLoop()
+	s.startEffectEventLoop()
 	s.startPlayerEventLoop()
 	s.startTimeLoop()
 	s.startMobSync()
@@ -117,5 +123,6 @@ func (s *Server) Stop() {
 	}
 	s.pm.Unsubscribe("bedrock-server")
 	s.wm.UnsubscribeBlockUpdates("bedrock-server")
+	s.wm.UnsubscribeWorldEffects("bedrock-effects")
 	s.wg.Wait()
 }

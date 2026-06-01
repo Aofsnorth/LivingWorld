@@ -26,11 +26,13 @@ func (s *Server) startPlayerEventLoop() {
 				}
 				switch ev.Type {
 				case player.EventJoin:
-					s.spawnPlayerFor(viewer, ev.Player)
+					// AOI: spawn only if the joining player is already in range.
+					s.reconcileViewerFor(viewer, ev.Player, false)
 				case player.EventMove:
-					s.movePlayerFor(viewer, ev.Player, ev.Teleport)
+					// AOI: spawn-if-entered / move-if-spawned / despawn-if-left.
+					s.reconcileViewerFor(viewer, ev.Player, ev.Teleport)
 				case player.EventLeave:
-					s.removePlayerFor(viewer, ev.Player)
+					s.despawnViewer(viewer, ev.Player)
 				case player.EventSwing:
 					s.swingPlayerFor(viewer, ev.Player)
 				case player.EventSneak:
@@ -45,13 +47,11 @@ func (s *Server) startPlayerEventLoop() {
 	}()
 }
 
+// spawnExistingForeignPlayers runs the initial AOI sweep on join (after
+// bootstrapWorld has seeded lastChunkX/Z): spawn every already-online player
+// within view distance; out-of-range ones spawn later via the move-driven diff.
 func (s *Server) spawnExistingForeignPlayers(viewer *bedrockSession) {
-	for _, p := range s.pm.GetAllPlayers() {
-		if p.UUID == viewer.id {
-			continue
-		}
-		s.spawnPlayerFor(viewer, p.Snapshot())
-	}
+	s.reconcileViewers(viewer)
 }
 
 func (s *Server) spawnPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {

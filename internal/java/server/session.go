@@ -43,6 +43,10 @@ type PlayerSession struct {
 	SelectedSlot int32
 	LoadedChunks map[world.ChunkPos]bool
 	lastSentPos  map[uuid.UUID]world.Position
+	// viewers tracks which foreign players are currently spawned on this client,
+	// for the Area-Of-Interest spawn/despawn diff (#9). Has its own mutex — never
+	// guarded by s.mu, which is held across chunk loops and network writes.
+	viewers *viewerTracker
 
 	chunkQueue chan struct{}
 	// sendQueue serializes foreign-avatar relays (spawn/move/skin/...) on a
@@ -81,6 +85,7 @@ func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *j
 		GameModeVal:  0, // survival — required for hunger drain and fall damage
 		LoadedChunks: make(map[world.ChunkPos]bool),
 		lastSentPos:  make(map[uuid.UUID]world.Position),
+		viewers:      newViewerTracker(),
 		chunkQueue:   make(chan struct{}, 1),
 		sendQueue:    make(chan func(), 1024),
 	}

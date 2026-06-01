@@ -40,6 +40,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	log.Printf("[Java] Using default protocol version: %d (ProtocolVersion=%d). Supported: %v", j.protocol, gmserver.ProtocolVersion, protocol.GetSupportedProtocols())
 	j.startPlayerEventLoop()
 	j.startBlockEventLoop()
+	j.startEffectEventLoop()
 	j.startTimeLoop()
 	j.startDropLoop()
 	j.startMobSync()

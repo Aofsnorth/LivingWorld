@@ -40,7 +40,7 @@ func (s *Server) resyncBedrockBlock(conn *minecraft.Conn, pos protocol.BlockPos)
 	})
 }
 
-func (s *Server) breakBedrockBlock(pos protocol.BlockPos) {
+func (s *Server) breakBedrockBlock(bs *bedrockSession, pos protocol.BlockPos) {
 	// Do not allow breaking bedrock or air. This is still a minimal survival
 	// placeholder; real hardness/drop logic belongs in a block service.
 	current := s.wm.GetDefaultWorld().GetBlock(int(pos[0]), int(pos[1]), int(pos[2]))
@@ -54,11 +54,23 @@ func (s *Server) breakBedrockBlock(pos protocol.BlockPos) {
 	// Bedrock runtime ID of the block being destroyed. Without this the block
 	// just blinked out of existence on Bedrock (no crack, no particles, no sound).
 	s.broadcastBlockBreakEffect(int32(pos[0]), int32(pos[1]), int32(pos[2]), current.ID())
+	// Clear any crack overlay this break opened on Java viewers (the overlay is
+	// keyed by entity id and isn't cleared by the block turning to air), then
+	// render the break particles+sound on Java (the effect bus subscriber skips
+	// Bedrock-source events, so no double on Bedrock).
+	s.publishCrack(bs, pos, -1)
+	s.wm.PublishBlockDestroy(world.BlockUpdateSourceBedrock, bs.id, int(pos[0]), int(pos[1]), int(pos[2]), current.ID())
 
 	// Roll vanilla loot and spawn item entities before the block becomes air.
 	s.wm.DropBlockLoot(current.ID(), int(pos[0]), int(pos[1]), int(pos[2]))
 
 	s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]), world.BlockAir{})
+}
+
+// publishCrack mirrors a Bedrock crack-overlay change to Java via the effect bus.
+// stage>=0 starts/updates the overlay, stage<0 clears it.
+func (s *Server) publishCrack(bs *bedrockSession, pos protocol.BlockPos, stage int32) {
+	s.wm.PublishCrack(world.BlockUpdateSourceBedrock, bs.id, int(pos[0]), int(pos[1]), int(pos[2]), stage)
 }
 
 // broadcastBlockBreakEffect plays the destroy-block particles + sound on every
@@ -92,6 +104,7 @@ func (s *Server) crackSwitch(bs *bedrockSession, pos protocol.BlockPos) bool {
 	hadPrev, px, py, pz := s.wm.CrackManager().StartBreaking(bs.id, int(pos[0]), int(pos[1]), int(pos[2]))
 	if hadPrev {
 		s.broadcastBlockCracking(protocol.BlockPos{int32(px), int32(py), int32(pz)}, packet.LevelEventStopBlockCracking)
+		s.wm.PublishCrack(world.BlockUpdateSourceBedrock, bs.id, px, py, pz, -1) // clear overlay on Java too
 	}
 	return hadPrev
 }

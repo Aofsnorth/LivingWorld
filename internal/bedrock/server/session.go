@@ -59,6 +59,10 @@ type bedrockSession struct {
 
 	health float32 // server-tracked health for cross-edition melee damage
 
+	// viewers tracks which foreign players are spawned on this client, for the
+	// Area-Of-Interest spawn/despawn diff (#9).
+	viewers *viewerTracker
+
 	mu sync.Mutex
 }
 
@@ -79,10 +83,27 @@ func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *mi
 		lastChunkZ:   -999999,
 		viewDistance: 0,
 		health:       20,
+		viewers:      newViewerTracker(),
 	}
 }
 
 func (s *bedrockSession) pmRef() *player.Manager { return s.pm }
+
+// chunkCenter returns the viewer's last known chunk coordinates under the session
+// lock. lastChunkX/Z are written by the move goroutine and read by the AOI
+// reconcile on the player-event-loop goroutine, so both sides take s.mu.
+func (s *bedrockSession) chunkCenter() (cx, cz int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastChunkX, s.lastChunkZ
+}
+
+// setChunkCenter records the viewer's current chunk under the session lock.
+func (s *bedrockSession) setChunkCenter(cx, cz int32) {
+	s.mu.Lock()
+	s.lastChunkX, s.lastChunkZ = cx, cz
+	s.mu.Unlock()
+}
 
 func (s *bedrockSession) write(pk packet.Packet) {
 	s.mu.Lock()
