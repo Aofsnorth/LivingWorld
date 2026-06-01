@@ -16,6 +16,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// AI movement tuning. The world loop (StartMobAI) MUST drive Tick at TickHz; the
+// effective ground speed a player sees is TickHz * WalkSpeed blocks/sec, so these
+// two are coupled — change one and re-check the product against vanilla.
+const (
+	TickHz    = 20.0  // AI ticks per second the world loop must honor (vanilla is 20 TPS)
+	WalkSpeed = 0.075 // blocks/tick while wandering → TickHz*WalkSpeed = 1.5 blocks/sec
+)
+
 // Mob is a live mob entity in the world.
 type Mob struct {
 	EntityID int64     // globally unique; clear of player + drop id spaces
@@ -114,9 +122,8 @@ func (s *Store) OnMove(fn func(Mob)) {
 //     and jittery" look.
 func (s *Store) Tick(rng *rand.Rand, solidAt func(x, y, z int) bool) {
 	const (
-		gravity   = 0.4 // blocks/tick while falling (5 Hz loop)
-		walkSpeed = 0.1 // blocks/tick while wandering (~0.5 blocks/sec)
-		deg2rad   = math.Pi / 180
+		gravity = 0.1 // blocks/tick while falling → 2.0 blocks/sec at 20 Hz
+		deg2rad = math.Pi / 180
 	)
 	s.mu.Lock()
 	moved := make([]Mob, 0, len(s.mobs))
@@ -138,8 +145,8 @@ func (s *Store) Tick(rng *rand.Rand, solidAt func(x, y, z int) bool) {
 			case m.walkTicks > 0:
 				// Walk forward along the heading. Minecraft yaw: forward = (-sin, +cos).
 				rad := m.Yaw * deg2rad
-				nx := m.X - math.Sin(rad)*walkSpeed
-				nz := m.Z + math.Cos(rad)*walkSpeed
+				nx := m.X - math.Sin(rad)*WalkSpeed
+				nz := m.Z + math.Cos(rad)*WalkSpeed
 				if solidAt(int(math.Floor(nx)), int(math.Floor(m.Y)), int(math.Floor(nz))) {
 					// Blocked by a wall/step — turn to a new heading instead of clipping in.
 					m.Yaw = rng.Float64()*360 - 180
@@ -148,9 +155,10 @@ func (s *Store) Tick(rng *rand.Rand, solidAt func(x, y, z int) bool) {
 				}
 				m.walkTicks--
 				changed = true
-			case rng.Float64() < 0.05:
+			case rng.Float64() < 0.0125:
 				// Idle → occasionally start a new walk burst in a fresh direction.
-				m.walkTicks = 20 + rng.Intn(40) // 4–12 s at 5 Hz
+				// 0.0125/tick at 20 Hz ≈ 0.25 walk-starts/sec (same cadence as the old 5 Hz loop).
+				m.walkTicks = 80 + rng.Intn(160) // 4–12 s at 20 Hz
 				m.Yaw = rng.Float64()*360 - 180
 				changed = true // facing changed; broadcast so the client turns the mob
 			}

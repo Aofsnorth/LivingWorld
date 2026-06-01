@@ -121,9 +121,10 @@ func randomOfCategory(rng *rand.Rand, cat mobCategory) (mobDef, bool) {
 	return candidates[rng.Intn(len(candidates))], true
 }
 
-// spawnTick is the director, called at 5 Hz from StartMobAI with a few candidate
-// attempts per call. Peaceful difficulty suppresses hostiles. No anchors → no
-// spawning (also avoids generating chunks with nobody online).
+// spawnTick is the director, called at ~5 Hz from StartMobAI (throttled off the
+// faster 20 Hz movement loop) with a few candidate attempts per call. Peaceful
+// difficulty suppresses hostiles. No anchors → no spawning (also avoids generating
+// chunks with nobody online).
 func (m *Manager) spawnTick(rng *rand.Rand) {
 	anchors := m.playerAnchors()
 	if len(anchors) == 0 {

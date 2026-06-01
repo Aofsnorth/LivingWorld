@@ -4,6 +4,8 @@ import (
 	"log"
 	"math/rand"
 	"time"
+
+	"livingworld/internal/mobs"
 )
 
 // Save persists all dirty chunks across every world.
@@ -79,23 +81,35 @@ func (m *Manager) StartTimeLoop(advance bool) {
 	}()
 }
 
-// StartMobAI runs the simple mob AI loop (gravity + random wander) at 5 Hz AND
-// the mob-spawn director (see mobspawn.go). difficulty gates hostile spawning
-// (peaceful suppresses it). Idempotent-ish: intended to be called once at startup.
+// StartMobAI runs the simple mob AI loop (gravity + random wander) at mobs.TickHz
+// (20 TPS, matching vanilla so movement is smooth and full-speed) AND the mob-spawn
+// director (see mobspawn.go). The director is throttled to ~5 Hz so raising the AI
+// rate doesn't also speed up spawning. difficulty gates hostile spawning (peaceful
+// suppresses it). Idempotent-ish: intended to be called once at startup.
 func (m *Manager) StartMobAI(difficulty string) {
 	m.mu.Lock()
 	m.difficulty = difficulty
 	m.mu.Unlock()
 	go func() {
-		ticker := time.NewTicker(200 * time.Millisecond)
+		ticker := time.NewTicker(time.Second / time.Duration(mobs.TickHz)) // mobs.TickHz Hz
 		defer ticker.Stop()
 		rng := rand.New(rand.NewSource(2))
+		// Run the spawn director every spawnEvery AI ticks (~5 Hz) so its vanilla-ish
+		// pacing and caps are unaffected by the faster movement loop.
+		spawnEvery := int(mobs.TickHz / 5)
+		if spawnEvery < 1 {
+			spawnEvery = 1
+		}
+		sinceSpawn := 0
 		for range ticker.C {
 			w := m.GetDefaultWorld()
 			m.mobs.Tick(rng, func(x, y, z int) bool {
 				return w.GetBlock(x, y, z).ID() != AirID
 			})
-			m.spawnTick(rng)
+			if sinceSpawn++; sinceSpawn >= spawnEvery {
+				sinceSpawn = 0
+				m.spawnTick(rng)
+			}
 		}
 	}()
 }
