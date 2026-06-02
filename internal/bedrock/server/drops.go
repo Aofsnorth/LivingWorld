@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/drops"
 	"livingworld/internal/item"
@@ -55,13 +57,28 @@ func (s *Server) startDropLoop() {
 		})
 	})
 	// Server-authoritative drop physics (StartDropPhysics) drives this: the Bedrock
-	// client interpolates between absolute positions, so a 20 Hz MoveActorAbsolute
-	// stream renders falling/rolling items smoothly. Mirrors the mob OnMove path.
+	// client interpolates between absolute positions, but plain MoveActorAbsolute
+	// carries no velocity so a falling item snaps each update and looks stuttery.
+	// Pairing every position update with SetActorMotion gives the client the live
+	// velocity vector to extrapolate from — items now arc, bounce-roll and settle
+	// the way they do on Java. The OnGround flag also tells the client to stop
+	// running its own gravity so resting items don't shiver against the floor.
 	store.OnMove(func(d drops.Drop) {
+		flags := byte(0)
+		if d.OnGround {
+			flags |= packet.MoveFlagOnGround
+		}
+		pos := mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)}
+		vel := mgl32.Vec3{float32(d.VX), float32(d.VY), float32(d.VZ)}
 		s.forEachSession(func(bs *bedrockSession) {
+			bs.write(&packet.SetActorMotion{
+				EntityRuntimeID: uint64(d.EntityID),
+				Velocity:        vel,
+			})
 			bs.write(&packet.MoveActorAbsolute{
 				EntityRuntimeID: uint64(d.EntityID),
-				Position:        mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
+				Flags:           flags,
+				Position:        pos,
 			})
 		})
 	})
@@ -71,23 +88,24 @@ func (s *Server) startDropLoop() {
 // item pickups for Bedrock players (animation + inventory sync).
 func (s *Server) registerPickupHandler() {
 	s.wm.OnItemPickup(func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
-		// Fly the item to the collector on every Bedrock viewer, whatever edition
-		// the collector is. TakeItemActor plays the take animation, but in our
-		// setup the drop has already been Claim()ed by the central Java pickup
-		// loop (no OnDespawn fires) — so without a defensive RemoveActor the
-		// rendered item entity stays in the client's world. Sending both gives
-		// us the animation AND guaranteed removal. (Java handles the same
-		// problem via the inventory sync that the take animation expects; the
-		// Bedrock client doesn't, hence the explicit remove.)
+		// TakeItemActor flies the dropped item to the collector — that IS the
+		// vanilla pickup "magnet" animation on Bedrock. Sending RemoveActor in the
+		// same write kills the entity before the client can play the tween, which
+		// is why pickups used to just blink out. Send TakeItemActor right away so
+		// the magnet plays, then queue a defensive RemoveActor ~10 ticks later so
+		// any client that didn't despawn after the animation gets cleaned up.
 		s.forEachSession(func(bs *bedrockSession) {
 			bs.write(&packet.TakeItemActor{
 				ItemEntityRuntimeID:  uint64(dropEntityID),
 				TakerEntityRuntimeID: playerEntityID,
 			})
-			bs.write(&packet.RemoveActor{
-				EntityUniqueID: dropEntityID,
-			})
 		})
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			s.forEachSession(func(bs *bedrockSession) {
+				bs.write(&packet.RemoveActor{EntityUniqueID: dropEntityID})
+			})
+		}()
 
 		// Inventory sync only when the collector is a Bedrock player.
 		uid, _ := uuid.FromBytes(playerUUID[:])
@@ -99,6 +117,47 @@ func (s *Server) registerPickupHandler() {
 			s.syncBedrockInventory(bs, pl)
 		}
 	})
+}
+
+// handleBedrockPlayerDrop spawns an item entity on the ground for the Q / Ctrl+Q
+// hotbar drop action and decrements the held slot authoritatively. The Bedrock
+// client doesn't always tell us "drop all" vs "drop one" in the transaction
+// itself — it just sends the slot, the old stack count, and the new stack count,
+// and the difference is the dropped count. So this helper is the single point
+// that turns the wire data into a thrown item entity.
+func (s *Server) handleBedrockPlayerDrop(bs *bedrockSession, hotbarSlot uint32, count int) {
+	if count <= 0 {
+		return
+	}
+	pl := s.pm.GetPlayer(bs.id)
+	if pl == nil || pl.Inventory == nil {
+		return
+	}
+	slot := int(hotbarSlot)
+	if slot < 0 || slot >= len(pl.Inventory.Items) {
+		return
+	}
+	held := pl.Inventory.Items[slot]
+	if held.ID == 0 || held.Count == 0 {
+		return
+	}
+	if int(count) > int(held.Count) {
+		count = int(held.Count)
+	}
+	// Resolve canonical item name for the drop store. Unknown runtime ids
+	// (modded / creative-only) silently no-op; vanilla would just bounce the
+	// item back into the slot too.
+	it, ok := item.ByID(held.ID)
+	if !ok {
+		return
+	}
+	pl.Inventory.Items[slot].Count -= int8(count)
+	if pl.Inventory.Items[slot].Count <= 0 {
+		pl.Inventory.Items[slot] = player.ItemStack{}
+	}
+	s.wm.PlayerDropItem(it.Name, count, pl.Position.X+0.5, pl.Position.Y+0.25, pl.Position.Z+0.5, float64(pl.Rotation.Yaw))
+	s.syncBedrockInventory(bs, pl)
+	s.pm.PublishEquipmentChange(bs.id)
 }
 
 // syncBedrockInventory sends the player's current inventory to their Bedrock client.

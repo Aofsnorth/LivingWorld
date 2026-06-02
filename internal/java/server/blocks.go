@@ -2,6 +2,7 @@ package server
 
 import (
 	"livingworld/internal/item"
+	"livingworld/internal/player"
 	"livingworld/internal/world"
 	"livingworld/plugin"
 
@@ -12,6 +13,15 @@ import (
 
 var airStateID = block.ToStateID[block.Air{}]
 
+// ackBlockChange confirms a client's predicted block change so the client lifts
+// its local prediction. Without this every break/place compounds prediction
+// drift (ghost blocks, re-broken blocks turning invisible, items appearing to
+// duplicate). Always called via defer right after parsing the sequence so any
+// reject/early-return path still acks.
+func (s *PlayerSession) ackBlockChange(sequence pk.VarInt) {
+	_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockChangedAck, sequence))
+}
+
 func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 	var status pk.VarInt
 	var pos pk.Position
@@ -20,6 +30,14 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 	if err := p.Scan(&status, &pos, &face, &sequence); err != nil {
 		return
 	}
+	// 1.19+ block-action prediction: the client predicts the result locally and
+	// stamps every action with a monotonically increasing sequence id. The server
+	// MUST echo that id back via ClientboundGameBlockChangedAck or the client
+	// keeps its prediction in place forever — causing ghost blocks, missing
+	// blocks after re-break, and the "duplicated item" feel reported when several
+	// break/place cycles pile up unconfirmed predictions. Acking is unconditional
+	// here so even rejected actions (no held item, target occupied, etc.) clear.
+	defer s.ackBlockChange(sequence)
 
 	// Track crack state and broadcast the action's effect to the OTHER edition via
 	// the world effect bus (the Java breaker already predicts its own crack/break;
@@ -59,7 +77,49 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 		// block becomes air (the loot lookup needs the block's id).
 		s.Bridge.wm.DropBlockLoot(current.ID(), pos.X, pos.Y, pos.Z)
 		s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, pos.X, pos.Y, pos.Z, world.BlockAir{})
+	case 3, 4: // Q / Ctrl+Q drop held item
+		s.handlePlayerDropItem(status == 3)
 	}
+}
+
+// handlePlayerDropItem implements the vanilla Q (drop whole stack) and Ctrl+Q
+// (drop single) hotbar actions. Spawns an item entity via the shared drop
+// store, decrements the held slot, and resyncs the Java inventory so the held
+// stack visibly shrinks.
+func (s *PlayerSession) handlePlayerDropItem(dropAll bool) {
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl == nil || pl.Inventory == nil {
+		return
+	}
+	slot := int(s.SelectedSlot)
+	if slot < 0 || slot >= 9 || slot >= len(pl.Inventory.Items) {
+		return
+	}
+	held := pl.Inventory.Items[slot]
+	if held.ID == 0 || held.Count == 0 {
+		return
+	}
+	dropCount := int(held.Count)
+	if !dropAll && dropCount > 0 {
+		dropCount = 1
+	}
+	// Resolve the canonical item name for the drop store. Unregistered ids
+	// (creative-only / modded) silently do nothing — matches vanilla behaviour
+	// where unknown items can't be dropped onto the world either.
+	it, ok := item.ByID(held.ID)
+	if !ok {
+		return
+	}
+	// Throw the item out of the player. The Minecraft player eye height is
+	// ~1.62, but a 0.25 offset above the feet is enough to clear their hitbox
+	// and look natural; physics will sort out the rest.
+	pl.Inventory.Items[slot].Count -= int8(dropCount)
+	if pl.Inventory.Items[slot].Count <= 0 {
+		pl.Inventory.Items[slot] = player.ItemStack{}
+	}
+	s.Bridge.wm.PlayerDropItem(it.Name, dropCount, pl.Position.X+0.5, pl.Position.Y+0.25, pl.Position.Z+0.5, float64(pl.Rotation.Yaw))
+	s.syncInventory()
+	s.Bridge.pm.PublishEquipmentChange(s.UUID())
 }
 
 func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
@@ -72,6 +132,10 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	if err := p.Scan(&hand, &pos, &face, &cursorX, &cursorY, &cursorZ, &insideBlock, &worldBorderHit, &sequence); err != nil {
 		return
 	}
+	// See HandlePlayerAction: every block action carries a prediction sequence
+	// that MUST be acked. Rejected placements (no item, occupied target, crouch
+	// gate) ack the same way so the client can roll back its prediction cleanly.
+	defer s.ackBlockChange(sequence)
 
 	stateID := s.getBlockStateForPlacement()
 	if stateID == 0 {

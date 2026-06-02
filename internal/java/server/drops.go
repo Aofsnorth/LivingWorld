@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"time"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -12,10 +13,22 @@ import (
 
 // pickup tuning
 const (
-	javaPickupRadius   = 1.5  // blocks; 3D distance to collect
-	javaPickupDelayTks = 10   // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
-	javaPickupHz       = 20
-	javaDropDespawnTks = 6000 // store ticks (5 min at 20Hz) before an uncollected drop despawns — vanilla item lifetime
+	// Vanilla ItemEntity pickup uses ServerPlayer.touch (player AABB inflated by
+	// 1.0 horizontally and 0.5 vertically, then intersected with the item AABB).
+	// Plain 3D-radius checks magnetised items from too far up/sideways and made
+	// pickups feel "snappy". We mirror the vanilla inflation here.
+	javaPickupInflateXZ = 1.0
+	javaPickupInflateY  = 0.5
+	javaPickupDelayTks  = 10   // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
+	javaPickupHz        = 20
+	javaDropDespawnTks  = 6000 // store ticks (5 min at 20Hz) before an uncollected drop despawns — vanilla item lifetime
+
+	// Player AABB used for pickup containment (vanilla width 0.6, height 1.8).
+	playerHalfWidth = 0.3
+	playerHeight    = 1.8
+	// Item entity is rendered ~0.25 tall; the pickup AABB treats it as a small
+	// box around the position so we keep the same half-extent both axes.
+	itemHalfExtent = 0.125
 )
 
 // startDropLoop wires the shared drop store to Java clients: new drops are spawned
@@ -111,16 +124,32 @@ func (j *javaBridge) pickupTick(store *drops.Store) {
 	}
 }
 
-// nearestPlayer returns a player within pickup radius of the drop, or nil.
+// nearestPlayer returns a player whose vanilla-inflated AABB intersects the
+// drop, or nil. The match is on AABB containment (not 3D distance) so an item
+// straight above the player at 1.4 blocks no longer magnetises — it has to fall
+// within the same touchable box vanilla uses.
 func (j *javaBridge) nearestPlayer(d drops.Drop) *player.Player {
 	var best *player.Player
-	bestSq := javaPickupRadius * javaPickupRadius
+	bestSq := math.MaxFloat64
 	for _, p := range j.pm.GetAllPlayers() {
 		dx := p.Position.X - d.X
-		dy := p.Position.Y - d.Y
+		dy := p.Position.Y - d.Y // player Y is feet
 		dz := p.Position.Z - d.Z
+		// AABB overlap test: player bb (centered at feet, half-width 0.3, height 1.8)
+		// inflated by (1.0, 0.5, 1.0) vs the drop's 0.25-box. Equivalent to checking
+		// |dx| < 0.3+1.0+0.125, dy in [-0.5-0.125, 1.8+0.5+0.125], |dz| < 0.3+1.0+0.125.
+		if math.Abs(dx) > playerHalfWidth+javaPickupInflateXZ+itemHalfExtent {
+			continue
+		}
+		if math.Abs(dz) > playerHalfWidth+javaPickupInflateXZ+itemHalfExtent {
+			continue
+		}
+		if -dy < -javaPickupInflateY-itemHalfExtent || -dy > playerHeight+javaPickupInflateY+itemHalfExtent {
+			continue
+		}
+		// Among multiple players inside the box, pick the closest by 3D distance.
 		sq := dx*dx + dy*dy + dz*dz
-		if sq <= bestSq {
+		if sq < bestSq {
 			bestSq = sq
 			best = p
 		}

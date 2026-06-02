@@ -173,6 +173,40 @@ func (s *Store) Spawn(item string, count int, x, y, z float64) Drop {
 	return d
 }
 
+// SpawnFromPlayer is a Spawn variant used when a player actively drops an item
+// (Q / Ctrl+Q). The item gets a stronger forward throw derived from the look
+// yaw so it visibly arcs away from the player instead of just popping up in
+// place like a broken-block drop. yaw is in degrees, 0 = +Z, 90 = -X.
+func (s *Store) SpawnFromPlayer(item string, count int, x, y, z, yaw float64) Drop {
+	rad := yaw * math.Pi / 180.0
+	// Vanilla Player.drop throws with horizontal speed ~0.3 blocks/tick along
+	// the look direction and 0.4 upward.
+	throwX := -math.Sin(rad) * 0.3
+	throwZ := math.Cos(rad) * 0.3
+	id := s.nextID.Add(1)
+	d := Drop{
+		EntityID:  id,
+		Item:      item,
+		Count:     count,
+		X:         x,
+		Y:         y,
+		Z:         z,
+		VX:        throwX,
+		VY:        0.4,
+		VZ:        throwZ,
+		SpawnTick: s.tick.Load(),
+		OnGround:  false,
+	}
+	s.mu.Lock()
+	s.drops[d.EntityID] = &d
+	cbs := append([]func(Drop){}, s.onSpawn...)
+	s.mu.Unlock()
+	for _, cb := range cbs {
+		cb(d)
+	}
+	return d
+}
+
 // Remove deletes a drop by id and notifies despawn listeners. Returns false if
 // it was already gone (e.g. two players reached it on the same tick).
 func (s *Store) Remove(id int64) bool {

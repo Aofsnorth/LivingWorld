@@ -116,6 +116,13 @@ func (m *Manager) DropBlockLoot(blockID int32, x, y, z int) {
 	}
 }
 
+// PlayerDropItem spawns a single item stack at the player as if the player hit
+// Q / Ctrl+Q. The throw arc is derived from yaw so the item visibly leaves the
+// player's hand instead of just popping up at their feet.
+func (m *Manager) PlayerDropItem(item string, count int, x, y, z, yaw float64) {
+	m.drops.SpawnFromPlayer(item, count, x, y, z, yaw)
+}
+
 func (m *Manager) GetWorld(name string) *World {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

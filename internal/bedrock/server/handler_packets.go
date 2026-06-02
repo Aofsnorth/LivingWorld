@@ -93,6 +93,12 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.publishCrack(bs, action.BlockPos, 0) // overlay moved to the new block on Java
 				} else {
 					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking)
+					// Progressive overlay update for Java viewers: Bedrock self-animates
+					// from LevelEventStartBlockCracking, but Java needs explicit stage
+					// transitions or the overlay freezes at stage 0.
+					if stage, changed := s.wm.CrackManager().AdvanceStage(bs.id, bedrockCrackBreakSeconds); changed {
+						s.publishCrack(bs, action.BlockPos, stage)
+					}
 				}
 			case protocol.PlayerActionAbortBreak:
 				s.wm.CrackManager().StopBreaking(bs.id)
@@ -107,6 +113,23 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 	case *packet.InventoryTransaction:
 		if p.TransactionData != nil {
 			switch data := p.TransactionData.(type) {
+			case *protocol.NormalTransactionData, *protocol.MismatchTransactionData:
+				// Q / Ctrl+Q drop: the client sends an InventoryTransaction where one
+				// action has SourceType=World (2), the hotbar slot, OldItem=the held
+				// stack, and NewItem=the held stack minus the dropped count. We do
+				// not try to "balance" the transaction (that would require tracking
+				// the full book-keeping of all client slots); we just spawn the drop
+				// entity and shrink the held slot authoritatively.
+				for _, act := range p.Actions {
+					if act.SourceType != protocol.InventoryActionSourceWorld {
+						continue
+					}
+					dropped := int(act.OldItem.Stack.Count) - int(act.NewItem.Stack.Count)
+					if dropped <= 0 {
+						continue
+					}
+					s.handleBedrockPlayerDrop(bs, act.InventorySlot, dropped)
+				}
 			case *protocol.UseItemTransactionData:
 				switch data.ActionType {
 				case protocol.UseItemActionClickBlock:

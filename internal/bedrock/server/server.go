@@ -91,6 +91,7 @@ func (s *Server) Start() error {
 	s.startMobSync()
 	s.startWeatherSync()
 	s.startDropLoop()
+	s.startCrackProgressLoop()
 	s.registerPickupHandler()
 
 	s.wg.Add(1)

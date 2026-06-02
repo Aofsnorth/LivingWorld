@@ -123,7 +123,10 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 
 	// Phase 1: consume player inputs. No-op today (see tickLoop comment).
 	// Phase 2: scheduled block ticks. No-op (Phase 4d).
-	// Phase 3: random ticks. No-op (Phase 4d).
+	// Phase 3: random ticks. Grass spread is the only consumer right now
+	// (see internal/world/grass.go); the function is cheap and runs over
+	// every loaded chunk at a fixed budget per tick.
+	m.grassTick(rng)
 
 	// Phase 3b: light propagation (Phase 4b). Process any queued light updates
 	// from block changes. This runs before mob AI so spawning decisions can use
