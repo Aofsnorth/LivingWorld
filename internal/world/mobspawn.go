@@ -9,19 +9,15 @@ import (
 
 // PROBLEM #6 — Mob spawning director.
 //
-// Nothing ever called mobs.Store.Spawn, so the world stayed empty (StartMobAI
-// only moved already-existing mobs). spawnTick runs inside the StartMobAI tick
-// loop: it picks candidate columns in a shell around players, checks per-category
-// caps, the surface block, and an APPROXIMATE light level, then spawns via
-// mobs.Store.Spawn. Cross-edition visibility is free — both bridges already
-// subscribe to the mob store's OnSpawn — and the AOI system (#9) re-spawns mobs
-// as viewers approach.
+// spawnTick runs inside the unified tick loop: it picks candidate columns
+// in a shell around players, checks per-category caps, the surface block,
+// and the REAL light level (Phase 4b), then spawns via mobs.Store.Spawn.
+// Cross-edition visibility is free — both bridges already subscribe to the
+// mob store's OnSpawn — and the AOI system re-spawns mobs as viewers approach.
 //
-// LIGHT IS APPROXIMATE (tech debt): there is no light-propagation engine, so we
-// use heightmap coverage + day/night only. Block light (torches/lava) is NOT
-// modeled, so lit areas and shallow caves can still spawn hostiles at night, and
-// deep caves won't spawn them in daytime. Caps are flat globals, not vanilla's
-// per-loaded-chunk scaling. Acceptable for v1; tune the constants below.
+// Phase 4b: light levels are now computed by the LightEngine and stored in
+// chunk sections. Hostile spawning checks block+sky light against the vanilla
+// threshold (light level 0 for hostile mobs in the overworld).
 
 type mobCategory int
 
@@ -93,6 +89,17 @@ func hasHeadroom(w *World, x, y, z int) bool {
 	return w.GetBlock(x, y, z).ID() == AirID && w.GetBlock(x, y+1, z).ID() == AirID
 }
 
+// getLightLevel returns the maximum of sky light and block light at the given position.
+// Phase 4b: used by the spawning director to enforce vanilla light-level thresholds.
+func getLightLevel(w *World, x, y, z int) uint8 {
+	sky := w.GetSkyLight(x, y, z)
+	block := w.GetBlockLight(x, y, z)
+	if sky > block {
+		return sky
+	}
+	return block
+}
+
 // pickSpawnColumn chooses a random column in the shell around a random player
 // anchor. ok=false when there are no anchors (nobody online → no spawning).
 func (m *Manager) pickSpawnColumn(rng *rand.Rand, anchors []Position) (x, z int, ok bool) {
@@ -152,9 +159,15 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 
 		switch {
 		case night && difficulty != gameplay.DifficultyPeaceful && counts[catHostile] < capHostile:
-			if def, ok := randomOfCategory(rng, catHostile); ok {
-				m.mobs.Spawn(def.Type, float64(x)+0.5, float64(y), float64(z)+0.5)
-				counts[catHostile]++
+			// Phase 4b: check real light level. Hostile mobs spawn at light level <= 7
+			// (Bedrock rule; Java is stricter at 0, but we use the more permissive rule
+			// for cross-edition compatibility).
+			lightLevel := getLightLevel(w, x, y, z)
+			if lightLevel <= 7 {
+				if def, ok := randomOfCategory(rng, catHostile); ok {
+					m.mobs.Spawn(def.Type, float64(x)+0.5, float64(y), float64(z)+0.5)
+					counts[catHostile]++
+				}
 			}
 		case !night && surface == "minecraft:grass_block" && counts[catPassive] < capPassive:
 			if def, ok := randomOfCategory(rng, catPassive); ok {

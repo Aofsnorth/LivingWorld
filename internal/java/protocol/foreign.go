@@ -167,22 +167,40 @@ func (h *Handler775) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) 
 	heldItem := pl.Inventory.GetHeldItem()
 
 	// Build equipment packet: ClientboundGameSetEquipment
-	// Format: VarInt entityID + equipment entries (slot Byte + ItemStack)
+	// Format (MC 26.1.2, decompiled from 26.1.2.jar):
+	//
+	//   VarInt   entityID
+	//   (Equipment entry) ...
+	//
+	// where each equipment entry is:
+	//
+	//   byte     slot (0=main hand, 1=offhand, 2..5=armor)
+	//   ItemStack:
+	//     VarInt  count            (0 → empty stack, no more fields)
+	//     VarInt  itemID           (only when count > 0)
+	//     VarInt  componentsAdded    (only when count > 0, then 0 for none)
+	//     VarInt  componentsRemoved  (only when count > 0, then 0 for none)
+	//
+	// The 26.1 wire format DOES NOT have an array-length prefix — the
+	// equipment array is terminated by the end of the packet. The 1.21.1+
+	// Mojang source claims a `readByte()` for length, but the actual 26.1.2
+	// vanilla decoder on the wire does not consume it (and adding the byte
+	// produces "found 1 bytes extra"). Sending the array without a length
+	// is the format the 26.1.2 client accepts.
 	var buf bytes.Buffer
 	_, _ = pk.VarInt(p.EntityRuntimeID).WriteTo(&buf)
 
-	// Slot 0 = main hand
+	// Slot 0 = main hand.
 	_, _ = pk.Byte(0).WriteTo(&buf)
 
-	// ItemStack: count VarInt + itemID VarInt + components (nAdd VarInt + nRemove VarInt)
-	if heldItem == nil || heldItem.ID == 0 {
-		// Empty hand
-		_, _ = pk.VarInt(0).WriteTo(&buf) // count = 0 (empty)
+	// ItemStack: count VarInt + (itemID + components if count > 0).
+	if heldItem == nil || heldItem.ID == 0 || heldItem.Count <= 0 {
+		_, _ = pk.VarInt(0).WriteTo(&buf) // count = 0 → empty stack
 	} else {
-		_, _ = pk.VarInt(heldItem.Count).WriteTo(&buf) // count
-		_, _ = pk.VarInt(heldItem.ID).WriteTo(&buf)    // itemID
-		_, _ = pk.VarInt(0).WriteTo(&buf)              // components: 0 add
-		_, _ = pk.VarInt(0).WriteTo(&buf)              // components: 0 remove
+		_, _ = pk.VarInt(int32(heldItem.Count)).WriteTo(&buf)
+		_, _ = pk.VarInt(heldItem.ID).WriteTo(&buf)
+		_, _ = pk.VarInt(0).WriteTo(&buf) // components added
+		_, _ = pk.VarInt(0).WriteTo(&buf) // components removed
 	}
 
 	return s.SendPacket(pk.Packet{

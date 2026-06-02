@@ -125,6 +125,15 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// Phase 2: scheduled block ticks. No-op (Phase 4d).
 	// Phase 3: random ticks. No-op (Phase 4d).
 
+	// Phase 3b: light propagation (Phase 4b). Process any queued light updates
+	// from block changes. This runs before mob AI so spawning decisions can use
+	// up-to-date light levels.
+	for _, w := range worlds {
+		if w.Light() != nil {
+			w.Light().ProcessUpdates()
+		}
+	}
+
 	// Phase 4: mob AI at 20 Hz. The legacy StartMobAI ticked mobs.TickHz
 	// times per second (also 20 Hz), so cadence is preserved.
 	for _, w := range worlds {

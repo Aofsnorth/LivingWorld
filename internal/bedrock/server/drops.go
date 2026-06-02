@@ -72,12 +72,20 @@ func (s *Server) startDropLoop() {
 func (s *Server) registerPickupHandler() {
 	s.wm.OnItemPickup(func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
 		// Fly the item to the collector on every Bedrock viewer, whatever edition
-		// the collector is. TakeItemActor both animates and removes the item, so
-		// the store no longer sends a RemoveActor on pickup (which cancelled it).
+		// the collector is. TakeItemActor plays the take animation, but in our
+		// setup the drop has already been Claim()ed by the central Java pickup
+		// loop (no OnDespawn fires) — so without a defensive RemoveActor the
+		// rendered item entity stays in the client's world. Sending both gives
+		// us the animation AND guaranteed removal. (Java handles the same
+		// problem via the inventory sync that the take animation expects; the
+		// Bedrock client doesn't, hence the explicit remove.)
 		s.forEachSession(func(bs *bedrockSession) {
 			bs.write(&packet.TakeItemActor{
 				ItemEntityRuntimeID:  uint64(dropEntityID),
 				TakerEntityRuntimeID: playerEntityID,
+			})
+			bs.write(&packet.RemoveActor{
+				EntityUniqueID: dropEntityID,
 			})
 		})
 

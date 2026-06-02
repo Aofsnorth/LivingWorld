@@ -273,6 +273,19 @@ func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 			light.BlockLight = append(light.BlockLight, v.BlockLight)
 		}
 	}
+	// Phase 4b: emit a full-sky "above world" section (bit maskBits-1) so the
+	// client's sky renderer sees open sky instead of an unlit void. The
+	// virtual section above the topmost real section is always open sky in
+	// vanilla; without this bit the client reads it from the empty-sky-light
+	// mask and renders the ceiling pitch black at noon.
+	if len(c.Sections) > 0 {
+		light.SkyLightMask.Set(maskBits-1, true)
+		fullSky := make([]byte, 2048)
+		for i := range fullSky {
+			fullSky[i] = 0xFF // every nibble = 15 (full sky)
+		}
+		light.SkyLight = append(light.SkyLight, fullSky)
+	}
 	// Protocol 774+ (MC 1.21.5 / 26.1): heightmaps are a VarInt-prefixed array
 	// of { VarInt type, prefixed Long array }, NOT an NBT compound. Type enum:
 	// 1 = WORLD_SURFACE, 4 = MOTION_BLOCKING (sendToClient heightmaps).

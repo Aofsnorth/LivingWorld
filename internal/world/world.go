@@ -37,16 +37,20 @@ type World struct {
 	raining    bool
 	thundering bool
 	worldDir   string // set when a disk RegionStorage is attached; holds level.json
+
+	light *LightEngine // Phase 4b: sky + block light propagation
 }
 
 func NewWorld(name string) *World {
-	return &World{
+	w := &World{
 		name:      name,
 		chunks:    make(map[ChunkPos]*Chunk),
 		players:   make(map[uint64]*Player),
 		dimension: DimensionOverworld,
 		storage:   NopStorage{},
 	}
+	w.light = NewLightEngine(w)
+	return w
 }
 
 // SetStorage attaches a persistence backend to the world. Pass NopStorage{} to
@@ -156,6 +160,10 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 		chunk = NewChunk()
 	}
 	w.chunks[pos] = chunk
+	// Phase 4b: compute light for newly loaded/generated chunks.
+	if w.light != nil {
+		w.light.ComputeChunkLight(chunk, cx, cz)
+	}
 	return chunk
 }
 
@@ -185,6 +193,12 @@ func (w *World) SetBlock(x, y, z int, block Block) {
 	chunkX, chunkZ := x>>4, z>>4
 	chunk := w.LoadChunk(chunkX, chunkZ)
 	chunk.SetBlock(x&15, y, z&15, block)
+	// Phase 4b: queue light recomputation for the affected chunk.
+	// Light is processed during the tick (phase 3), not synchronously,
+	// so multiple block changes in one tick only trigger one recompute.
+	if w.light != nil {
+		w.light.QueueUpdate(chunkX, chunkZ)
+	}
 }
 
 func (w *World) GetBlock(x, y, z int) Block {
@@ -196,6 +210,26 @@ func (w *World) GetBlock(x, y, z int) Block {
 		return BlockAir{}
 	}
 	return chunk.GetBlock(x&15, y, z&15)
+}
+
+// GetSkyLight returns the sky light level (0-15) at the given world coordinates.
+// Phase 4b: used by mob spawning, rendering, and gameplay systems.
+func (w *World) GetSkyLight(x, y, z int) uint8 {
+	chunk := w.GetChunk(x>>4, z>>4)
+	if chunk == nil {
+		return 15 // unloaded chunks default to full sky light
+	}
+	return chunk.GetSkyLight(x&15, y, z&15)
+}
+
+// GetBlockLight returns the block light level (0-15) at the given world coordinates.
+// Phase 4b: used by mob spawning, rendering, and gameplay systems.
+func (w *World) GetBlockLight(x, y, z int) uint8 {
+	chunk := w.GetChunk(x>>4, z>>4)
+	if chunk == nil {
+		return 0 // unloaded chunks default to no block light
+	}
+	return chunk.GetBlockLight(x&15, y, z&15)
 }
 
 func (w *World) SpawnPlayer(p *Player) {
@@ -225,3 +259,6 @@ func (w *World) SetTime(t int64)    { atomic.StoreInt64(&w.time, t) }
 func (w *World) GetTime() int64     { return atomic.LoadInt64(&w.time) }
 func (w *World) SetDayTime(t int64) { atomic.StoreInt64(&w.dayTime, t) }
 func (w *World) GetDayTime() int64  { return atomic.LoadInt64(&w.dayTime) }
+
+// Light returns the world's light engine (Phase 4b).
+func (w *World) Light() *LightEngine { return w.light }

@@ -41,14 +41,11 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 		sec := &lChunk.Sections[secIdx]
 		sec.Biomes = level.NewBiomesPaletteContainer(4*4*4, biome.Type(0))
 
+		// Phase 4b: read real sky light from the world chunk instead of hardcoding 0xFF.
+		// If the world chunk has light data, use it; otherwise fall back to full sky light.
 		sec.SkyLight = make([]byte, 2048)
-		for j := range sec.SkyLight {
-			sec.SkyLight[j] = 0xFF
-		}
-		// No block light: this world has no light-emitting blocks, so leaving
-		// BlockLight nil marks every section in the empty-block-light mask (client
-		// assumes zero) instead of shipping 2048 zero bytes × 24 sections (~49 KB
-		// of waste per chunk, which doubled every chunk packet to ~101 KB).
+		sec.BlockLight = make([]byte, 2048)
+		hasLight := false
 
 		minSecY := -64 + secIdx*16
 		// Sections -64..-1 are now valid (canonical Y unification): emit them so
@@ -61,6 +58,25 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 				for lx := 0; lx < 16; lx++ {
 					b := wChunk.GetBlock(lx, y, lz)
 					rawID := b.ID()
+
+					// Phase 4b: read light values from the chunk
+					skyLight := wChunk.GetSkyLight(lx, y, lz)
+					blockLight := wChunk.GetBlockLight(lx, y, lz)
+					if skyLight > 0 || blockLight > 0 {
+						hasLight = true
+					}
+
+					// Pack light values into nibble arrays
+					idx := (ly << 8) | (lz << 4) | lx
+					byteIdx := idx >> 1
+					if idx&1 == 0 {
+						sec.SkyLight[byteIdx] = (sec.SkyLight[byteIdx] & 0xF0) | (skyLight & 0x0F)
+						sec.BlockLight[byteIdx] = (sec.BlockLight[byteIdx] & 0xF0) | (blockLight & 0x0F)
+					} else {
+						sec.SkyLight[byteIdx] = (sec.SkyLight[byteIdx] & 0x0F) | ((skyLight & 0x0F) << 4)
+						sec.BlockLight[byteIdx] = (sec.BlockLight[byteIdx] & 0x0F) | ((blockLight & 0x0F) << 4)
+					}
+
 					if rawID == 0 {
 						continue
 					}
@@ -76,7 +92,6 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 					}
 
 					if stateID != airStateID {
-						idx := (ly << 8) | (lz << 4) | lx
 						sec.States.Set(idx, level.BlocksState(stateID))
 						blockCount++
 						if y > highestBlock[lx][lz] {
@@ -87,6 +102,13 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 			}
 		}
 		sec.BlockCount = blockCount
+
+		// Optimization: if the section has no light data (all zeros), clear the
+		// arrays so the empty-light-mask optimization applies (saves ~49KB/chunk).
+		if !hasLight {
+			sec.SkyLight = nil
+			sec.BlockLight = nil
+		}
 	}
 
 	chunkHeight := 24 * 16

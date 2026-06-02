@@ -75,31 +75,15 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 
 	stateID := s.getBlockStateForPlacement()
 	if stateID == 0 {
-		// Survival placeholder: until real held-item placement is implemented,
-		// don't conjure stone. Re-sync both clicked and target block to roll back
-		// client prediction.
-		currentID := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z).ID()
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(livingWorldBlockIDToJavaStateID(currentID))))
-		x, y, z := pos.X, pos.Y, pos.Z
-		switch face {
-		case 0:
-			y--
-		case 1:
-			y++
-		case 2:
-			z--
-		case 3:
-			z++
-		case 4:
-			x--
-		case 5:
-			x++
-		}
-		targetID := s.Bridge.wm.GetDefaultWorld().GetBlock(x, y, z).ID()
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pk.Position{X: x, Y: y, Z: z}, pk.VarInt(livingWorldBlockIDToJavaStateID(targetID))))
+		// No held block (hand empty, or held item is not placeable). Re-sync the
+		// clicked and target blocks to roll back the client's place prediction,
+		// otherwise the held stack gets visually decremented with nothing to show
+		// for it.
+		s.rollbackClientPlacePrediction(pos, int(face))
 		return
 	}
 
+	// Compute the target position (the cell the new block would occupy).
 	x, y, z := pos.X, pos.Y, pos.Z
 	switch face {
 	case 0:
@@ -115,11 +99,46 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	case 5:
 		x++
 	}
+
+	// Vanilla placement rules (1.21.1+ UseItemOn, see AbstractContainerMenu /
+	// PlayerGameMode.useItemOn):
+	//
+	//  1. If the *clicked* block is REPLACEABLE (air, tall grass, water, etc.)
+	//     we place at the clicked position, not the offset.
+	//  2. Otherwise, the target must be AIR (no overwrite) — overwriting an
+	//     existing block is not a valid vanilla action.
+	//  3. If the player is placing on TOP of a solid block (face=1, +Y) and is
+	//     NOT sneaking, the action is treated as USE-on-block (open chest,
+	//     etc.) not PLACE. The client predicts PLACE anyway, so the server
+	//     must reject + re-affirm the clicked block to undo the prediction.
+	clicked := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
+	clickedID := clicked.ID()
+	if isReplaceableBlock(clickedID) {
+		x, y, z = pos.X, pos.Y, pos.Z
+	}
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl == nil {
+		return
+	}
+	// Crouch gate: placing on top of a non-replaceable block without sneaking
+	// is USE, not PLACE.
+	if face == 1 && !isReplaceableBlock(clickedID) && !pl.Sneaking {
+		s.rollbackClientPlacePrediction(pos, int(face))
+		return
+	}
+	// Overwrite gate: if the final target isn't air, refuse.
+	targetID := s.Bridge.wm.GetDefaultWorld().GetBlock(x, y, z).ID()
+	if targetID != world.AirID {
+		s.rollbackClientPlacePrediction(pos, int(face))
+		return
+	}
+
 	s.Bridge.wm.SetBlockAndPublish(world.BlockUpdateSourceJava, x, y, z, world.BlockByID(int32(stateID)))
 
-	// Decrement held item count (survival item consumption)
-	pl := s.Bridge.pm.GetPlayer(s.UUID())
-	if pl != nil && pl.Inventory != nil && s.SelectedSlot >= 0 && s.SelectedSlot < 9 && int(s.SelectedSlot) < len(pl.Inventory.Items) {
+	// Decrement held item count (survival item consumption). This only runs
+	// for a fully-valid placement so the client's predicted decrement always
+	// matches the server's authoritative state.
+	if pl.Inventory != nil && s.SelectedSlot >= 0 && s.SelectedSlot < 9 && int(s.SelectedSlot) < len(pl.Inventory.Items) {
 		if pl.Inventory.Items[s.SelectedSlot].Count > 0 {
 			pl.Inventory.Items[s.SelectedSlot].Count--
 			s.syncInventory()
@@ -127,6 +146,45 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 			s.Bridge.pm.PublishEquipmentChange(s.UUID())
 		}
 	}
+}
+
+// rollbackClientPlacePrediction re-affirms the clicked and target blocks so
+// the client's optimistic place is undone when the server refuses the
+// action (no held block, crouch gate, target not air, etc.).
+func (s *PlayerSession) rollbackClientPlacePrediction(pos pk.Position, face int) {
+	wm := s.Bridge.wm.GetDefaultWorld()
+	currentID := wm.GetBlock(pos.X, pos.Y, pos.Z).ID()
+	_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(livingWorldBlockIDToJavaStateID(currentID))))
+	x, y, z := pos.X, pos.Y, pos.Z
+	switch face {
+	case 0:
+		y--
+	case 1:
+		y++
+	case 2:
+		z--
+	case 3:
+		z++
+	case 4:
+		x--
+	case 5:
+		x++
+	}
+	targetID := wm.GetBlock(x, y, z).ID()
+	_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pk.Position{X: x, Y: y, Z: z}, pk.VarInt(livingWorldBlockIDToJavaStateID(targetID))))
+}
+
+// isReplaceableBlock reports whether the block id can be replaced by a new
+// block placement (i.e. it's air, a plant, a fluid, etc.). The 26.1 client
+// predicts a PLACE on top of these, so the server should follow through.
+//
+// We treat the common cases the world can actually produce; the worldgen
+// pipeline (superflat, terrain) only ever writes air, stone, dirt, grass,
+// and ore, so the only replaceable block we see in practice is air. The
+// list is left open so other modules (plants, fluids in Phase 4d) can extend
+// it without changing the call site.
+func isReplaceableBlock(stateID int32) bool {
+	return stateID == world.AirID
 }
 
 func (s *PlayerSession) getBlockStateForPlacement() block.StateID {
