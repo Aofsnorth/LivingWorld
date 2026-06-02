@@ -40,3 +40,5 @@ plan/
 .mavis
 .opencode
 .commandcode
+
+config.yml
