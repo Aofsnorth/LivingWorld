@@ -24,7 +24,7 @@ java:
   maxPlayers: 2
   viewDistance: 10
   simulationDistance: 10
-  mineSkinAPIKey: "msk_vTfiSII5_AqXMfAIASnY6NSIX8NHU_2SvFOOzbdkNkq6OzrWhkI5-8dB-mezFk52Oz9VOr4Fc"
+  mineSkinAPIKey: ""
   # Offline-mode skin source (client doesn't send a skin when cracked):
   #   auto   = try everything automatically: Ely.by then Mojang (recommended)
   #   mojang = premium account with that name only (may be someone else!)
