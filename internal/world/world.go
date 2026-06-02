@@ -150,6 +150,15 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 			log.Printf("[World %s] load chunk (%d,%d) failed, regenerating: %v", w.name, cx, cz, err)
 		} else if ok {
 			w.chunks[pos] = c
+			// Persistence stores blocks only (see persistence.go: "light ...
+			// regenerated on load"). A disk-loaded chunk therefore has all-zero
+			// sky/block light; recompute it here, exactly as the generate branch
+			// below does. Without this the Java client — which trusts server
+			// light, unlike Bedrock which computes its own — receives sky light 0
+			// for every section and renders the surface pitch black at noon.
+			if w.light != nil {
+				w.light.ComputeChunkLight(c, cx, cz)
+			}
 			return c
 		}
 	}
