@@ -110,18 +110,49 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			case *protocol.UseItemTransactionData:
 				switch data.ActionType {
 				case protocol.UseItemActionClickBlock:
-					// Bedrock block placement: resolve held item â†’ block state â†’ place
+					// Bedrock block placement: resolve held item → block state → place
 					if data.HeldItem.Stack.ItemType.NetworkID != 0 {
 						itemName, ok := inventory.NameByRuntimeID(data.HeldItem.Stack.ItemType.NetworkID)
 						if ok {
 							stateID, placeable := item.BlockStateID(itemName)
 							if placeable {
+								// Vanilla placement rules for Bedrock (mirrors the Java
+								// path): only consume the held stack if the target is air
+								// (or a replaceable block) AND the player is sneaking when
+								// placing on top of a non-replaceable block. Without these
+								// guards, clicking an existing block or the side face of a
+								// solid decrements the stack with no block to show.
 								targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
-								s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(stateID))
-
-								// Decrement held item count (survival item consumption)
+								wm := s.wm.GetDefaultWorld()
 								pl := s.pm.GetPlayer(bs.id)
-								if pl != nil && pl.Inventory != nil && pl.Inventory.HeldSlot >= 0 && pl.Inventory.HeldSlot < len(pl.Inventory.Items) {
+								if pl == nil {
+									return
+								}
+								clickedID := wm.GetBlock(int(data.BlockPosition[0]), int(data.BlockPosition[1]), int(data.BlockPosition[2])).ID()
+								// For Bedrock, UseItemActionClickBlock covers both PLACE and
+								// USE; treat as USE (no decrement) if the player is pointing
+								// at the TOP face of a non-replaceable block without sneaking.
+								if data.BlockFace == 1 && clickedID != world.AirID && !pl.Sneaking {
+									s.resyncBedrockBlock(conn, data.BlockPosition)
+									return
+								}
+								targetID := wm.GetBlock(int(targetPos[0]), int(targetPos[1]), int(targetPos[2])).ID()
+								if targetID != world.AirID {
+									// Block at the target position: refuse the place and
+									// re-affirm the world so the client's prediction rolls
+									// back cleanly.
+									s.resyncBedrockBlock(conn, data.BlockPosition)
+									s.resyncBedrockBlock(conn, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+									return
+								}
+
+								s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(int32(stateID)))
+
+								// Decrement held item count (survival item consumption) —
+								// only on a fully-valid placement, so the server's
+								// authoritative state matches the client's predicted
+								// decrement.
+								if pl.Inventory != nil && pl.Inventory.HeldSlot >= 0 && pl.Inventory.HeldSlot < len(pl.Inventory.Items) {
 									if pl.Inventory.Items[pl.Inventory.HeldSlot].Count > 0 {
 										pl.Inventory.Items[pl.Inventory.HeldSlot].Count--
 										s.syncBedrockInventory(bs, pl)
@@ -129,6 +160,11 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 										s.pm.PublishEquipmentChange(bs.id)
 									}
 								}
+								// Replay the placer's arm swing on every other viewer so the
+								// place animation shows up. (The placer's own client plays it
+								// locally when it sent the UseItem; this fan-out is for
+								// foreign viewers via the shared player event bus.)
+								s.pm.PublishSwing(bs.id)
 								return
 							}
 						}
