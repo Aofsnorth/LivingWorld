@@ -63,6 +63,12 @@ type bedrockSession struct {
 	// Area-Of-Interest spawn/despawn diff (#9).
 	viewers *viewerTracker
 
+	// mobViewer (M0.7) tracks which mobs are currently spawned on this
+	// client's AOI. OnMove checks the per-mob distance and only sends
+	// MoveActorAbsolute for mobs within ~80 blocks. Cross-boundary
+	// entries are sent as AddActor; exits as RemoveActor.
+	mobViewer *mobTracker
+
 	mu sync.Mutex
 }
 
@@ -84,6 +90,7 @@ func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *mi
 		viewDistance: 0,
 		health:       20,
 		viewers:      newViewerTracker(),
+		mobViewer:    newMobTracker(),
 	}
 }
 

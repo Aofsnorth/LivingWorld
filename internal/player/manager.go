@@ -31,6 +31,13 @@ type Manager struct {
 	ctrlMu      sync.RWMutex
 	controllers map[uuid.UUID]Controller
 
+	// M6: bus publishes EffectStatus / EffectStatusRemove world events
+	// to the bridges when effects are added/expired. The pointer is
+	// read under busMu so a late SetEffectBus call from server.go
+	// never races a TickEffects in flight.
+	busMu      sync.RWMutex
+	effectBus  effectBus
+
 	dataMu  sync.RWMutex
 	dataDir string // player-data directory; empty disables persistence
 }

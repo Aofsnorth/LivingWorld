@@ -11,11 +11,17 @@ import (
 // crack animation broadcasting and proper cleanup when switching blocks.
 // LastStage is the most recently published crack stage (0..9) so progressive
 // updates only publish on a real stage transition; -1 means none published yet.
+// TotalSeconds is the per-block expected break duration (driven by
+// world.BreakTicks). It is captured at break-start so the crack overlay
+// progresses in sync with the Bedrock client's local break timer for the
+// specific block+tool combo — stone shouldn't finish in 0.75s just because
+// the previous block was grass.
 type CrackState struct {
-	PlayerUUID uuid.UUID
-	BlockPos   Position
-	StartTime  time.Time
-	LastStage  int32
+	PlayerUUID   uuid.UUID
+	BlockPos     Position
+	StartTime    time.Time
+	LastStage    int32
+	TotalSeconds float64
 }
 
 // CrackManager tracks all active block-breaking states across both editions.
@@ -32,8 +38,10 @@ func NewCrackManager() *CrackManager {
 
 // StartBreaking records that a player started breaking a block. Returns the
 // previous block position if the player was already breaking a different block
-// (caller should send stop-crack for the old position).
-func (cm *CrackManager) StartBreaking(playerUUID uuid.UUID, x, y, z int) (hadPrevious bool, prevX, prevY, prevZ int) {
+// (caller should send stop-crack for the old position). totalSeconds is the
+// per-block expected break duration (from world.BreakTicks); 0 disables
+// per-stage progression, treating the break as instantaneous.
+func (cm *CrackManager) StartBreaking(playerUUID uuid.UUID, x, y, z int, totalSeconds float64) (hadPrevious bool, prevX, prevY, prevZ int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -44,10 +52,11 @@ func (cm *CrackManager) StartBreaking(playerUUID uuid.UUID, x, y, z int) (hadPre
 	}
 
 	cm.states[playerUUID] = &CrackState{
-		PlayerUUID: playerUUID,
-		BlockPos:   Position{X: float64(x), Y: float64(y), Z: float64(z)},
-		StartTime:  time.Now(),
-		LastStage:  -1,
+		PlayerUUID:   playerUUID,
+		BlockPos:     Position{X: float64(x), Y: float64(y), Z: float64(z)},
+		StartTime:    time.Now(),
+		LastStage:    -1,
+		TotalSeconds: totalSeconds,
 	}
 	return
 }
@@ -78,16 +87,29 @@ func (cm *CrackManager) GetAllBreaking() []*CrackState {
 }
 
 // AdvanceStage computes the current crack stage (0..9) for a player based on
-// elapsed time since StartBreaking and a total break duration in seconds. If the
-// computed stage is higher than the last published one, it records the new stage
-// and returns (stage, true) so the caller can publish a progress update. If no
+// elapsed time since StartBreaking and the per-block total break duration
+// stored in CrackState.TotalSeconds. The totalSeconds arg is kept for
+// backwards compatibility — when > 0 it overrides the stored value (used by
+// the legacy Bedrock fixed-duration ticker; production code should pass 0
+// and let AdvanceStage read the per-block value). If the computed stage is
+// higher than the last published one, it records the new stage and returns
+// (stage, true) so the caller can publish a progress update. If no
 // transition happened (or the player isn't breaking), it returns (0, false).
 func (cm *CrackManager) AdvanceStage(playerUUID uuid.UUID, totalSeconds float64) (int32, bool) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	st := cm.states[playerUUID]
-	if st == nil || totalSeconds <= 0 {
+	if st == nil {
 		return 0, false
+	}
+	// Caller override wins; else use the per-block duration captured at
+	// break-start. Either way, <= 0 means "don't tick" (instant break or
+	// unbreakable).
+	if totalSeconds <= 0 {
+		if st.TotalSeconds <= 0 {
+			return 0, false
+		}
+		totalSeconds = st.TotalSeconds
 	}
 	elapsed := time.Since(st.StartTime).Seconds()
 	stage := int32(elapsed / totalSeconds * 10)

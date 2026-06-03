@@ -83,6 +83,21 @@ func Main(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load ops: %w", err)
 	}
+	// Bootstrap the file-backed ops list from the yml `ops:` field when
+	// ops.txt is missing (first-run, or the user just added a name to the
+	// yml file). Without this, ops declared in yml would be ignored on a
+	// server that's never seen ops.txt. LoadOps returns an empty list on a
+	// missing file; we seed it with the yml ops and immediately save so
+	// /op and /deop have something to mutate from then on. The yml field
+	// is one-way (we don't rewrite it from /op); ops.txt is the runtime
+	// source of truth once a player has been op'd in-game.
+	if ops.List() == nil || len(ops.List()) == 0 {
+		for _, name := range cfg.Ops {
+			if _, err := ops.Add(name); err != nil {
+				return fmt.Errorf("bootstrap ops: %w", err)
+			}
+		}
+	}
 	cfg.Ops = ops.List() // feed the login op-check (config.IsOp)
 
 	wl, err := LoadWhitelist(f.WhitelistPath)

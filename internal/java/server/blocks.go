@@ -44,7 +44,17 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 	// the bus only feeds Bedrock viewers — the subscriber skips Java-source events).
 	switch status {
 	case 0: // start digging
-		hadPrev, prevX, prevY, prevZ := s.Bridge.wm.CrackManager().StartBreaking(s.UUID(), pos.X, pos.Y, pos.Z)
+		// Capture the per-block break duration into CrackState so the
+		// Bedrock effect subscriber and any future per-stage broadcaster
+		// (notably for cross-edition observers) see the right crack rate
+		// for stone vs grass vs wood. Vanilla hand-mining time (hardness *
+		// 1.5) is the tool-agnostic default; tool-aware timing lives in
+		// the BlockBreakEvent plugins.
+		breakSecs := world.Hardness(s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z).ID()) * 1.5
+		if breakSecs < 0 {
+			breakSecs = 0
+		}
+		hadPrev, prevX, prevY, prevZ := s.Bridge.wm.CrackManager().StartBreaking(s.UUID(), pos.X, pos.Y, pos.Z, breakSecs)
 		if hadPrev {
 			// Switched to a new block: clear the crack overlay on the old one.
 			s.Bridge.wm.PublishCrack(world.BlockUpdateSourceJava, s.UUID(), prevX, prevY, prevZ, -1)
@@ -56,6 +66,17 @@ func (s *PlayerSession) HandlePlayerAction(p pk.Packet) {
 	case 2: // finish digging
 		s.Bridge.wm.CrackManager().StopBreaking(s.UUID())
 		current := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
+		// Creative mode: the client never waits for the crack to finish
+		// (vanilla's instant-break). The "finish digging" packet arriving
+		// means the client already destroyed the block on its side — drop
+		// any crack/break that the server queued earlier and just
+		// publish the break + loot, the same as a normally-mined block. We
+		// also refuse to break unbreakable blocks (hardness < 0) here so
+		// a creative client can't punch through bedrock by accident.
+		if s.GameMode() == 1 && world.Hardness(current.ID()) < 0 {
+			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameBlockUpdate, pos, pk.VarInt(current.ID())))
+			return
+		}
 		ev := &plugin.BlockBreakEvent{
 			BaseEvent:  plugin.BaseEvent{Type_: plugin.EventBlockBreak},
 			PlayerName: s.Username(),
@@ -133,8 +154,8 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 		return
 	}
 	// See HandlePlayerAction: every block action carries a prediction sequence
-	// that MUST be acked. Rejected placements (no item, occupied target, crouch
-	// gate) ack the same way so the client can roll back its prediction cleanly.
+	// that MUST be acked. Rejected placements (no item, occupied target) ack
+	// the same way so the client can roll back its prediction cleanly.
 	defer s.ackBlockChange(sequence)
 
 	stateID := s.getBlockStateForPlacement()
@@ -171,10 +192,15 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	//     we place at the clicked position, not the offset.
 	//  2. Otherwise, the target must be AIR (no overwrite) — overwriting an
 	//     existing block is not a valid vanilla action.
-	//  3. If the player is placing on TOP of a solid block (face=1, +Y) and is
-	//     NOT sneaking, the action is treated as USE-on-block (open chest,
-	//     etc.) not PLACE. The client predicts PLACE anyway, so the server
-	//     must reject + re-affirm the clicked block to undo the prediction.
+	//
+	// The crouch gate that vanilla applies on top of a non-replaceable block
+	// (snipe: top + not sneaking ⇒ USE, not PLACE) is intentionally NOT
+	// enforced here. LivingWorld has no block-USE semantics implemented yet, so
+	// the gate would just stop players from placing dirt/grass on the ground
+	// surface — a frustrating dead end that the Bedrock client doesn't even
+	// hint at. The future interaction service (Phase 4d) can add per-block
+	// USE semantics without touching this call site, mirroring the Bedrock
+	// handler.
 	clicked := s.Bridge.wm.GetDefaultWorld().GetBlock(pos.X, pos.Y, pos.Z)
 	clickedID := clicked.ID()
 	if isReplaceableBlock(clickedID) {
@@ -182,12 +208,6 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	}
 	pl := s.Bridge.pm.GetPlayer(s.UUID())
 	if pl == nil {
-		return
-	}
-	// Crouch gate: placing on top of a non-replaceable block without sneaking
-	// is USE, not PLACE.
-	if face == 1 && !isReplaceableBlock(clickedID) && !pl.Sneaking {
-		s.rollbackClientPlacePrediction(pos, int(face))
 		return
 	}
 	// Overwrite gate: if the final target isn't air, refuse.

@@ -27,21 +27,44 @@ type Drop struct {
 	OnGround  bool
 }
 
+// XPOrb is an experience orb lying in the world, dropped by a mob on death.
+// XP orbs follow vanilla pickup rules: any player within 1.5 blocks (0.5 +
+// 1.0 buffer) gets the closest one. Awarded amount is the Experience value;
+// multiple orbs at the same location stack (vanilla merges).
+//
+// M7: reuses the same physics integrator as item drops (gravity, ground
+// settle, drag) so the bridges can subscribe with one loop. Bridges keep
+// a separate renderer for orb packets (Java uses ThrownExperienceBottle /
+// ExperienceOrb entity, Bedrock uses packet.ActorEvent + AddActor with
+// entity_data_key=37 "xp_value").
+type XPOrb struct {
+	EntityID   int64
+	Experience int
+	X, Y, Z    float64
+	VX, VY, VZ float64
+	SpawnTick  int64
+	OnGround   bool
+}
+
 // Store holds all active drops and notifies listeners on spawn/despawn.
 type Store struct {
-	mu      sync.RWMutex
-	drops   map[int64]*Drop
-	nextID  atomic.Int64
-	tick    atomic.Int64
-	onSpawn []func(Drop)
-	oneDesp []func(id int64)
-	onMove  []func(Drop)
+	mu       sync.RWMutex
+	drops    map[int64]*Drop
+	orbs     map[int64]*XPOrb
+	nextID   atomic.Int64
+	tick     atomic.Int64
+	onSpawn  []func(Drop)
+	oneDesp  []func(id int64)
+	onMove   []func(Drop)
+	onOrbSp  []func(XPOrb)
+	onOrbDes []func(id int64)
+	onOrbMv  []func(XPOrb)
 }
 
 // New returns an empty drop store. Item entity ids start at 1<<20 to stay clear
 // of player entity ids (Java: small ints from 2; Bedrock: 100000+).
 func New() *Store {
-	s := &Store{drops: make(map[int64]*Drop)}
+	s := &Store{drops: make(map[int64]*Drop), orbs: make(map[int64]*XPOrb)}
 	s.nextID.Store(1 << 20)
 	return s
 }
@@ -64,6 +87,31 @@ func (s *Store) OnDespawn(fn func(id int64)) {
 func (s *Store) OnMove(fn func(Drop)) {
 	s.mu.Lock()
 	s.onMove = append(s.onMove, fn)
+	s.mu.Unlock()
+}
+
+// OnOrbSpawn registers a callback invoked when an XP orb appears. Bridges
+// subscribe to render the orb at the spawn position.
+func (s *Store) OnOrbSpawn(fn func(XPOrb)) {
+	s.mu.Lock()
+	s.onOrbSp = append(s.onOrbSp, fn)
+	s.mu.Unlock()
+}
+
+// OnOrbDespawn registers a callback invoked when an XP orb is removed
+// (player picked it up or despawn timeout). Bridges remove the orb entity
+// on the client.
+func (s *Store) OnOrbDespawn(fn func(id int64)) {
+	s.mu.Lock()
+	s.onOrbDes = append(s.onOrbDes, fn)
+	s.mu.Unlock()
+}
+
+// OnOrbMove registers a callback invoked when an XP orb changes position
+// (physics tick).
+func (s *Store) OnOrbMove(fn func(XPOrb)) {
+	s.mu.Lock()
+	s.onOrbMv = append(s.onOrbMv, fn)
 	s.mu.Unlock()
 }
 
@@ -134,11 +182,61 @@ func (s *Store) TickPhysics(solidAt func(x, y, z int) bool) {
 		}
 	}
 	cbs := append([]func(Drop){}, s.onMove...)
+	orbsMoved := make([]XPOrb, 0, len(s.orbs))
+	for _, o := range s.orbs {
+		startX, startY, startZ := o.X, o.Y, o.Z
+		// XP orbs have stronger gravity (0.03, no — vanilla is 0.05) and a
+		// weaker drag so they fly further. Pull toward the nearest player
+		// within ~8 blocks is handled by the pickup loop in Tick() (we don't
+		// have player positions here). Physics:
+		//   gravity  = 0.05
+		//   drag     = 0.98
+		//   friction = 0.6 on ground
+		o.VY -= 0.05
+		nextY := o.Y + o.VY
+		if o.VY < 0 && solidAt(int(math.Floor(o.X)), int(math.Floor(nextY)), int(math.Floor(o.Z))) {
+			o.Y = math.Floor(nextY) + 1
+			o.VY = 0
+			o.OnGround = true
+		} else {
+			o.Y = nextY
+			o.OnGround = false
+		}
+		if nextX := o.X + o.VX; !solidAt(int(math.Floor(nextX)), int(math.Floor(o.Y)), int(math.Floor(o.Z))) {
+			o.X = nextX
+		} else {
+			o.VX = 0
+		}
+		if nextZ := o.Z + o.VZ; !solidAt(int(math.Floor(o.X)), int(math.Floor(o.Y)), int(math.Floor(nextZ))) {
+			o.Z = nextZ
+		} else {
+			o.VZ = 0
+		}
+		o.VX *= drag
+		o.VZ *= drag
+		o.VY *= drag
+		if o.OnGround {
+			o.VX *= groundFriction
+			o.VZ *= groundFriction
+		}
+		if o.OnGround && math.Abs(o.VX) < settle && math.Abs(o.VY) < settle && math.Abs(o.VZ) < settle {
+			o.VX, o.VY, o.VZ = 0, 0, 0
+		}
+		if o.X != startX || o.Y != startY || o.Z != startZ {
+			orbsMoved = append(orbsMoved, *o)
+		}
+	}
+	orbCbs := append([]func(XPOrb){}, s.onOrbMv...)
 	s.mu.Unlock()
 
 	for _, d := range moved {
 		for _, cb := range cbs {
 			cb(d)
+		}
+	}
+	for _, o := range orbsMoved {
+		for _, cb := range orbCbs {
+			cb(o)
 		}
 	}
 }
@@ -205,6 +303,70 @@ func (s *Store) SpawnFromPlayer(item string, count int, x, y, z, yaw float64) Dr
 		cb(d)
 	}
 	return d
+}
+
+// SpawnXP drops an experience orb at the given position and notifies
+// orb-spawn listeners. Amount is the orb's `Experience` field; vanilla
+// awards stack the awarded total into the orb value rather than spawning
+// many small orbs. Bridges render the orb at the spawn position and
+// handle pickup server-side. Returns the new orb.
+func (s *Store) SpawnXP(amount int, x, y, z float64) XPOrb {
+	id := s.nextID.Add(1)
+	// Vanilla throws the orb toward the killer with a small forward velocity.
+	randX := (float64(id%200) - 100) / 666.0
+	randZ := (float64(id%173) - 86) / 666.0
+	o := XPOrb{
+		EntityID:   id,
+		Experience: amount,
+		X:          x,
+		Y:          y,
+		Z:          z,
+		VX:         randX,
+		VY:         0.2,
+		VZ:         randZ,
+		SpawnTick:  s.tick.Load(),
+		OnGround:   false,
+	}
+	s.mu.Lock()
+	s.orbs[o.EntityID] = &o
+	cbs := append([]func(XPOrb){}, s.onOrbSp...)
+	s.mu.Unlock()
+	for _, cb := range cbs {
+		cb(o)
+	}
+	return o
+}
+
+// RemoveOrb deletes an XP orb by id and notifies orb-despawn listeners.
+// Used for both pickup (after awarding XP to the player) and timeout
+// despawn. Returns false if the orb was already gone.
+func (s *Store) RemoveOrb(id int64) bool {
+	s.mu.Lock()
+	_, ok := s.orbs[id]
+	if ok {
+		delete(s.orbs, id)
+	}
+	cbs := append([]func(int64){}, s.onOrbDes...)
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	for _, cb := range cbs {
+		cb(id)
+	}
+	return true
+}
+
+// Orbs returns a snapshot of every active XP orb. Used by the pickup loop
+// to find the closest orb for a given player.
+func (s *Store) Orbs() []XPOrb {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]XPOrb, 0, len(s.orbs))
+	for _, o := range s.orbs {
+		out = append(out, *o)
+	}
+	return out
 }
 
 // Remove deletes a drop by id and notifies despawn listeners. Returns false if

@@ -21,6 +21,21 @@ import (
 // AirID is the canonical ID of air. In the vanilla global palette air is state 0.
 const AirID int32 = 0
 
+// WaterID is the canonical ID of a water source block. M1: used by
+// the enderman's water-damage probe (`def.WaterSensitive`).
+// Computed lazily through StateID so a future world re-mapping
+// (e.g. a different palette) doesn't need to update this
+// constant. Note: the canonical state 0 is air, state 1 is stone,
+// and water is one of the early states in the global palette
+// (≈ 33 for `minecraft:water` with default level=0). We resolve
+// it once at init via block.ToStateID.
+var WaterID = func() int32 {
+	if b, ok := block.FromID["minecraft:water"]; ok {
+		return int32(block.ToStateID[b])
+	}
+	return AirID
+}()
+
 // StateCount returns the number of known block states in the global palette.
 func StateCount() int { return len(block.StateList) }
 

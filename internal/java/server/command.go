@@ -39,7 +39,10 @@ func (s *PlayerSession) Reply(msg string) { s.sendSystemMessage(msg) }
 
 // SetGameMode updates the server-side gamemode and tells the client via the
 // GameEvent packet (event 3 = change gamemode; the byte+float structure is the
-// same one already used for the chunk-wait event).
+// same one already used for the chunk-wait event). It also keeps the shared
+// player.Manager's Creative / Gamemode fields in sync so the rest of the
+// server (loot rolls, fall damage, instant-break, etc.) sees the new mode
+// without each subsystem having to re-derive it from the session.
 func (s *PlayerSession) SetGameMode(mode int) error {
 	if mode < 0 || mode > 3 {
 		return fmt.Errorf("invalid gamemode %d", mode)
@@ -47,6 +50,10 @@ func (s *PlayerSession) SetGameMode(mode int) error {
 	s.mu.Lock()
 	s.GameModeVal = int32(mode)
 	s.mu.Unlock()
+	if pl := s.Bridge.pm.GetPlayer(s.UUIDVal); pl != nil {
+		pl.Gamemode = mode
+		pl.Creative = mode == 1
+	}
 	return s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameGameEvent,
 		pk.UnsignedByte(3), // event 3: change gamemode

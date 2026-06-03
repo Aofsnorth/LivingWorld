@@ -30,3 +30,13 @@ const (
 	// DifficultyByteHard adalah byte value untuk hard (3)
 	DifficultyByteHard byte = 3
 )
+
+// Gamemode values (Minecraft protocol, used by both Java and Bedrock GameType
+// fields and by the /gamemode command). 0=survival, 1=creative, 2=adventure,
+// 3=spectator. Java and Bedrock use the same numeric encoding on the wire.
+const (
+	GamemodeSurvival  = 0
+	GamemodeCreative  = 1
+	GamemodeAdventure = 2
+	GamemodeSpectator = 3
+)

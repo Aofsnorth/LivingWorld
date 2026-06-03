@@ -8,6 +8,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// M6: Java wire format for status effects. The vanilla packet ids
+// live in third_party/go-mc/data/packetid as
+// ClientboundGameUpdateMobEffect (132) and
+// ClientboundGameRemoveMobEffect (78). Effect ids follow the
+// vanilla 1.21 ordering (1..27) and are identical to the
+// gophertunnel EffectSpeed..EffectSlowFalling numbering, so a
+// single id flows through both bridges unchanged.
+//
+// ClientboundGameUpdateMobEffect wire format (Java 1.21):
+//   entity id: VarInt, effect id: VarInt, amplifier: VarInt
+//   duration: VarInt, flags: Byte
+// Flags: bit 0 = ambient, bit 1 = show particles, bit 2 = show icon.
+//
+// ClientboundGameRemoveMobEffect wire format:
+//   entity id: VarInt, effect id: VarInt.
+
 // startEffectEventLoop renders cross-edition action effects (crack overlay, break
 // particles+sound) that originated on the OTHER edition. Java-sourced events are
 // skipped — the acting Java client already predicted those locally, and replaying
@@ -43,7 +59,73 @@ func (j *javaBridge) broadcastEffect(ev world.WorldEffectEvent) {
 			pk.Int(livingWorldBlockIDToJavaStateID(ev.BlockID)),
 			pk.Boolean(false),
 		))
+	case world.EffectStatus:
+		j.broadcastStatusEffectAdd(ev)
+	case world.EffectStatusRemove:
+		j.broadcastStatusEffectRemove(ev)
 	}
+}
+
+// broadcastStatusEffectAdd sends a single ClientboundGameUpdateMobEffect
+// (packet id 132) to the targeted player.
+func (j *javaBridge) broadcastStatusEffectAdd(ev world.WorldEffectEvent) {
+	sess := j.sessions.Get(ev.Target)
+	if sess == nil {
+		return
+	}
+	_ = sess.SendPacket(javaUpdateMobEffectPacket(sess.EntityIDVal, ev.EffectID, ev.Data, ev.Aux))
+}
+
+// broadcastStatusEffectRemove sends a single
+// ClientboundRemoveMobEffect (packet id 78) to the targeted
+// player. The bridge doesn't need a flags byte — remove is just
+// (entity, effectId).
+func (j *javaBridge) broadcastStatusEffectRemove(ev world.WorldEffectEvent) {
+	sess := j.sessions.Get(ev.Target)
+	if sess == nil {
+		return
+	}
+	_ = sess.SendPacket(javaRemoveMobEffectPacket(sess.EntityIDVal, ev.EffectID))
+}
+
+// javaUpdateMobEffectPacket builds the wire bytes for
+// ClientboundGameUpdateMobEffect (id 132). Effect ids follow the
+// vanilla 1.21 ordering (1..27) and are identical to the
+// gophertunnel EffectSpeed..EffectSlowFalling numbering. amplifier
+// is 0-based (level 1 = amplifier 0), duration is in ticks.
+//
+// Wire layout (Java 1.21):
+//   packet id 132   (VarInt, 2 bytes: 0x84 0x01)
+//   entity id       (VarInt)
+//   effect id       (VarInt)
+//   amplifier       (VarInt)
+//   duration (ticks)(VarInt)
+//   flags           (Byte)
+//
+// Flags 0x06 = bit 1 (show particles) | bit 2 (show icon). Bit 0
+// (ambient) is off — v1 effects are always sourced from a mob hit.
+func javaUpdateMobEffectPacket(entityID int32, effectID, amplifier, duration int32) pk.Packet {
+	return pk.Marshal(
+		packetid.ClientboundGameUpdateMobEffect,
+		pk.VarInt(entityID),
+		pk.VarInt(effectID),
+		pk.VarInt(amplifier),
+		pk.VarInt(duration),
+		pk.Byte(0x06),
+	)
+}
+
+// javaRemoveMobEffectPacket builds the wire bytes for
+// ClientboundRemoveMobEffect (id 78). Layout:
+//   packet id 78    (VarInt, 1 byte: 0x4E)
+//   entity id       (VarInt)
+//   effect id       (VarInt)
+func javaRemoveMobEffectPacket(entityID int32, effectID int32) pk.Packet {
+	return pk.Marshal(
+		packetid.ClientboundGameRemoveMobEffect,
+		pk.VarInt(entityID),
+		pk.VarInt(effectID),
+	)
 }
 
 // javaBlockDestructionPacket sets the crack overlay (stage 0..9) for entityID at a

@@ -2,6 +2,21 @@ serverName: LivingWorld Server
 motd: LivingWorld Server
 pluginsDir: ./plugins
 
+# Default gamemode assigned to brand-new players on first join. 0=survival,
+# 1=creative, 2=adventure, 3=spectator. Returning players keep whatever
+# gamemode they had last (this field only affects first-time joins), and
+# the operator can always override per-player via /gamemode.
+defaultGamemode: 0
+
+# Operators / admins. The first listed name is automatically granted op on
+# the very first start (bootstrapping) and is also written to config/ops.txt
+# so /op and /deop have a starting set to work with. Add your own username
+# here on a fresh install, or run "/op <name>" in-game to persist via ops.txt
+# (which is the file /op and /deop actually write to; this yml field is
+# mirrored into ops.txt at startup so the two never drift).
+ops:
+  - Aofsnorth
+
 world:
   type: superflat # superflat | overworld
   seed: 12345
@@ -13,9 +28,22 @@ world:
     pitch: 0
   persistence: true # save edited chunks to disk
   directory: worlds # base folder; each world saves under <directory>/<name>
-  autosaveSeconds: 300 # periodic autosave; 0 = only save on shutdown
+  autosaveSeconds: 300 # periodic autosave; 0 = save on shutdown only
   difficulty: peaceful # peaceful | easy | normal | hard
   dayNightCycle: true # advance the sun/moon (false = fixed time)
+  weatherCycle: true # automatic clear->rain->thunder director (vanilla doWeatherCycle)
+  # Per-phase duration ranges, in seconds. Each phase rolls an integer in
+  # [min, max] then runs that long before transitioning. Set min==max to pin
+  # the phase to a fixed duration; 0 falls back to the vanilla default for
+  # that range. Defaults below match vanilla-ish:
+  #   clear   5-15 min, rain 10-20 min, thunder 3-10 min
+  weatherDurations:
+    clearMinSeconds: 300
+    clearMaxSeconds: 900
+    rainMinSeconds: 600
+    rainMaxSeconds: 1200
+    thunderMinSeconds: 180
+    thunderMaxSeconds: 600
 
 java:
   bind: 0.0.0.0

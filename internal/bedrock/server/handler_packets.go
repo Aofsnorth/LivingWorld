@@ -81,28 +81,31 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		for _, action := range p.BlockActions {
 			switch action.Action {
 			case protocol.PlayerActionStartBreak:
-				s.crackSwitch(bs, action.BlockPos) // clears crack on a previously-targeted block
-				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking)
+				breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID())
+				s.crackSwitch(bs, action.BlockPos, breakSecs) // clears crack on a previously-targeted block
+				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking, breakSecs)
 				s.publishCrack(bs, action.BlockPos, 0) // start the overlay on Java viewers too
 			case protocol.PlayerActionContinueDestroyBlock:
 				// Holding break while the crosshair moves to a new block sends a
 				// continue (not a fresh start); detect that switch and move the
 				// crack overlay so it doesn't stick on the old block.
-				if s.crackSwitch(bs, action.BlockPos) {
-					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking)
+				if s.crackSwitch(bs, action.BlockPos, 0) {
+					breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID())
+					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking, breakSecs)
 					s.publishCrack(bs, action.BlockPos, 0) // overlay moved to the new block on Java
 				} else {
-					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking)
+					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking, 0)
 					// Progressive overlay update for Java viewers: Bedrock self-animates
 					// from LevelEventStartBlockCracking, but Java needs explicit stage
-					// transitions or the overlay freezes at stage 0.
-					if stage, changed := s.wm.CrackManager().AdvanceStage(bs.id, bedrockCrackBreakSeconds); changed {
+					// transitions or the overlay freezes at stage 0. Pass 0 here so
+					// AdvanceStage reads the per-block duration captured at break-start.
+					if stage, changed := s.wm.CrackManager().AdvanceStage(bs.id, 0); changed {
 						s.publishCrack(bs, action.BlockPos, stage)
 					}
 				}
 			case protocol.PlayerActionAbortBreak:
 				s.wm.CrackManager().StopBreaking(bs.id)
-				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStopBlockCracking)
+				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStopBlockCracking, 0)
 				s.publishCrack(bs, action.BlockPos, -1) // clear the overlay on Java too
 			case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
 				s.wm.CrackManager().StopBreaking(bs.id)
@@ -141,22 +144,21 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 							if placeable {
 								// Vanilla placement rules for Bedrock (mirrors the Java
 								// path): only consume the held stack if the target is air
-								// (or a replaceable block) AND the player is sneaking when
-								// placing on top of a non-replaceable block. Without these
-								// guards, clicking an existing block or the side face of a
-								// solid decrements the stack with no block to show.
+								// (or a replaceable block). Bedrock's UseItemActionClickBlock
+								// covers both PLACE and USE; in vanilla, the crouch gate
+								// (sneak-to-place on top of a solid) exists so a right-click
+								// on a chest/door/furnace opens the UI instead of placing
+								// a block on it. LivingWorld has no block-USE semantics
+								// implemented yet, so the crouch gate would just stop
+								// players from placing dirt/grass on the ground surface —
+								// a frustrating dead end. Drop the crouch check and let
+								// the player place on top of anything; the future
+								// interaction service (Phase 4d) can add the gate per
+								// block without touching this call site.
 								targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
 								wm := s.wm.GetDefaultWorld()
 								pl := s.pm.GetPlayer(bs.id)
 								if pl == nil {
-									return
-								}
-								clickedID := wm.GetBlock(int(data.BlockPosition[0]), int(data.BlockPosition[1]), int(data.BlockPosition[2])).ID()
-								// For Bedrock, UseItemActionClickBlock covers both PLACE and
-								// USE; treat as USE (no decrement) if the player is pointing
-								// at the TOP face of a non-replaceable block without sneaking.
-								if data.BlockFace == 1 && clickedID != world.AirID && !pl.Sneaking {
-									s.resyncBedrockBlock(conn, data.BlockPosition)
 									return
 								}
 								targetID := wm.GetBlock(int(targetPos[0]), int(targetPos[1]), int(targetPos[2])).ID()
@@ -183,10 +185,67 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 										s.pm.PublishEquipmentChange(bs.id)
 									}
 								}
+								// Echo the placed block back to the placer inline so the
+								// new block appears in the same network round-trip as
+								// the placement confirm — no waiting for the block-event
+								// bus goroutine to flush. The bus will still fan the
+								// change out to foreign viewers, so this is purely a
+								// latency win for the placer.
+								//
+								// Flags is intentionally just BlockUpdateNetwork. The
+								// gophertunnel doc says "typically sending only the
+								// BlockUpdateNetwork flag is sufficient" — adding
+								// BlockUpdateNeighbours tells the client this is a
+								// neighbour/light update (redstone-style), which in
+								// some client builds suppresses the player-side place
+								// sound and arm animation context, leaving the block
+								// "placed silently".
+								conn.WritePacket(&packet.UpdateBlock{
+									Position:          protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])},
+									NewBlockRuntimeID: bedrockworld.LivingWorldBlockIDToBedrockRID(int32(stateID)),
+									Flags:             packet.BlockUpdateNetwork,
+									Layer:             0,
+								})
+								// Guaranteed place-sound. Bedrock has no generic
+								// `LevelEvent` for "block placed", and the client-side
+								// place sound is tied to the placement *prediction*,
+								// not the server's UpdateBlock — if the client's
+								// prediction is suppressed (e.g. late-joining the
+								// session, the client got the UseItem transaction
+								// out of order, etc.) the place happens silently. The
+								// vanilla place SFX is `step.<material>` for most
+								// blocks; we use a category-keyed lookup so grass/dirt
+								// gets `step.grass`, stone-family gets `step.stone`,
+								// wood gets `step.wood`, etc., and a generic
+								// `step.stone` as the catch-all. Pitch 0.79/Volume 1
+								// match vanilla's block-place call.
+								s.playBlockPlaceSound(conn, itemName, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+								// Play the placer's own arm-swing animation. Bedrock's
+								// client only auto-swings for PlayerActionStartBreak; a
+								// placement arriving through UseItemActionClickBlock does
+								// NOT trigger a local swing, so without this the placer
+								// sees the new block appear with no arm follow-through
+								// (the "no animation" reported in single-player testing).
+								//
+								// The EntityRuntimeID MUST be `bedrockLocalRuntime` (1),
+								// not `pl.EntityRuntimeID`. The local Bedrock client
+								// identifies its own player as runtime id 1 — the
+								// per-session id (bs.runtimeID) is what foreign viewers
+								// see, but addressing the local client with the
+								// per-session id silently no-ops the packet. Same
+								// gotcha as Push() (see session.go).
+								//
+								// SwingSource=Build is the second half: vanilla uses
+								// that hint to pick the swing timing and the "place"
+								// SFX; SwingSource=0 (none) makes many client versions
+								// drop the packet.
+								conn.WritePacket(&packet.Animate{
+									ActionType:      packet.AnimateActionSwingArm,
+									EntityRuntimeID: bedrockLocalRuntime,
+									SwingSource:     packet.AnimateSwingSourceBuild,
+								})
 								// Replay the placer's arm swing on every other viewer so the
-								// place animation shows up. (The placer's own client plays it
-								// locally when it sent the UseItem; this fan-out is for
-								// foreign viewers via the shared player event bus.)
+								// place animation shows up for foreign viewers too.
 								s.pm.PublishSwing(bs.id)
 								return
 							}
@@ -197,6 +256,15 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
 				case protocol.UseItemActionBreakBlock:
 					s.breakBedrockBlock(bs, data.BlockPosition)
+				}
+			case *protocol.UseItemOnEntityTransactionData:
+				// M5: player attacks on Bedrock arrive as
+				// InventoryTransaction{UseItemOnEntityTransactionData}.
+				// ActionType: 0=Interact, 1=Attack. We only act on
+				// Attack; Interact is a no-op for now (M0 didn't
+				// implement interact-on-entity either).
+				if data.ActionType == protocol.UseItemOnEntityActionAttack {
+					s.routeBedrockAttack(bs.id, int64(data.TargetEntityRuntimeID))
 				}
 			}
 		}
@@ -214,12 +282,13 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		case protocol.PlayerActionStopSneak:
 			s.pm.UpdateSneak(bs.id, false)
 		case protocol.PlayerActionStartBreak:
-			s.crackSwitch(bs, p.BlockPosition)
-			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking)
+			breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID())
+			s.crackSwitch(bs, p.BlockPosition, breakSecs)
+			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking, breakSecs)
 			s.publishCrack(bs, p.BlockPosition, 0)
 		case protocol.PlayerActionAbortBreak:
 			s.wm.CrackManager().StopBreaking(bs.id)
-			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStopBlockCracking)
+			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStopBlockCracking, 0)
 			s.publishCrack(bs, p.BlockPosition, -1)
 		case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock:
 			s.breakBedrockBlock(bs, p.BlockPosition)

@@ -86,6 +86,19 @@ type Player struct {
 
 	// HeldItemSlot tracks currently held hotbar slot for equipment broadcasting
 	HeldItemSlot int
+
+	// M6: per-player active effect bag. See effects.go for the data
+	// model; the bag is owned by the player manager (Manager.mu
+	// guards concurrent Add/Remove), the per-tick engine lives in
+	// Manager.TickEffects.
+	effects effectBag
+
+	// M7: invulnerability frames after a melee hit. Decremented
+	// once per 20 Hz tick by Manager.IFramesTick (called from
+	// Phase 4e in the world tick, alongside the effect tick). A
+	// swing landing while IFrames > 0 is reduced to 0 damage
+	// (vanilla 1-second window). Per-mob I-frames are M7.x.
+	IFrames int
 }
 
 // Player construction + event defaults (player-internal; distinct from the

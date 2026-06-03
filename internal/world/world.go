@@ -116,6 +116,16 @@ func (w *World) Save() error {
 func (w *World) Name() string                  { return w.name }
 func (w *World) SetGenerator(g ChunkGenerator) { w.generator = g }
 
+// Dimension returns this world's dimension (overworld | nether | end).
+// M2: used by the natural-spawning director to filter mob rules by
+// dimension (e.g. piglin only spawns in the nether, ghast only in
+// the nether, wither skeleton only in the nether).
+func (w *World) Dimension() Dimension {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.dimension
+}
+
 func (w *World) GetChunk(cx, cz int) *Chunk {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -239,6 +249,31 @@ func (w *World) GetBlockLight(x, y, z int) uint8 {
 		return 0 // unloaded chunks default to no block light
 	}
 	return chunk.GetBlockLight(x&15, y, z&15)
+}
+
+// SetSkyLight sets the sky light level at the given world
+// coordinates. Loads the chunk if needed. M2: used by tests
+// and the future M2.2 night-cycle rule helper to seed
+// dark-canyon / open-sky columns.
+func (w *World) SetSkyLight(x, y, z int, val uint8) {
+	chunk := w.GetChunk(x>>4, z>>4)
+	if chunk == nil {
+		return
+	}
+	chunk.SetSkyLight(x&15, y, z&15, val)
+}
+
+// SetBlockLight sets the block light level at the given world
+// coordinates. Loads the chunk if needed. M2: used by tests
+// to seed a column with block light (e.g. to make sure the
+// "RequireDark" rule still sees dark sky light even with
+// block light > 0).
+func (w *World) SetBlockLight(x, y, z int, val uint8) {
+	chunk := w.GetChunk(x>>4, z>>4)
+	if chunk == nil {
+		return
+	}
+	chunk.SetBlockLight(x&15, y, z&15, val)
 }
 
 func (w *World) SpawnPlayer(p *Player) {

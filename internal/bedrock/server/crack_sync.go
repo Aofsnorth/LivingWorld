@@ -34,6 +34,12 @@ func (s *Server) startCrackProgressLoop() {
 // computed stage advances. PublishCrack carries BlockUpdateSourceBedrock so the
 // Bedrock effect subscriber skips it (Bedrock self-animates from the start
 // event) and only the Java bridge renders the BlockDestruction packet.
+//
+// Passing 0 to AdvanceStage makes it read the per-block break duration
+// captured into CrackState.TotalSeconds at break-start, so a 1.5s stone
+// block progresses at 1.5s/total rather than the legacy fixed 0.75s. The
+// periodic tick itself still fires every 75ms so that stage transitions for
+// short break-times (e.g. glass at 0.3s) still happen at sub-tick resolution.
 func (s *Server) tickCrackProgress() {
 	cm := s.wm.CrackManager()
 	s.forEachSession(func(bs *bedrockSession) {
@@ -41,7 +47,7 @@ func (s *Server) tickCrackProgress() {
 		if st == nil {
 			return
 		}
-		stage, changed := cm.AdvanceStage(bs.id, bedrockCrackBreakSeconds)
+		stage, changed := cm.AdvanceStage(bs.id, 0)
 		if !changed {
 			return
 		}

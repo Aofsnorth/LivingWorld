@@ -48,6 +48,10 @@ type PlayerSession struct {
 	// guarded by s.mu, which is held across chunk loops and network writes.
 	viewers *viewerTracker
 
+	// mobViewer (M0.7) tracks which mobs are currently spawned on this
+	// client's AOI. Same per-session AOI pattern as the Bedrock side.
+	mobViewer *javaMobTracker
+
 	chunkQueue chan struct{}
 	// sendQueue serializes foreign-avatar relays (spawn/move/skin/...) on a
 	// per-session goroutine so a slow client backs up only its own queue, never
@@ -86,6 +90,7 @@ func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *j
 		LoadedChunks: make(map[world.ChunkPos]bool),
 		lastSentPos:  make(map[uuid.UUID]world.Position),
 		viewers:      newViewerTracker(),
+		mobViewer:    newJavaMobTracker(),
 		chunkQueue:   make(chan struct{}, 1),
 		sendQueue:    make(chan func(), 1024),
 	}

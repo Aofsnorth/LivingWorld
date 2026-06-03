@@ -1,0 +1,6 @@
+# LivingWorld operator list
+# Add one username per line. Operators can run /gamemode, /time, /weather,
+# /setblock, /fill, /op, /deop, /kick, /give, /summon, /tp. Changes take
+# effect on the next join (or use /op <name> in-game to mutate this file
+# from a running server).
+Aofsnorth

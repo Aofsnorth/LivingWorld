@@ -20,6 +20,14 @@ func (s *PlayerSession) trackFall(oldY, newY float64, onGround bool) {
 	}
 	s.mu.Unlock()
 
+	// Creative (and Spectator) never take fall damage. The session's
+	// GameModeVal is the authoritative mode — `/gamemode creative` and
+	// /gamemode spectator both set it to a non-survival value. Falling
+	// while in creative was the most visible creative-mode bug reported.
+	if s.GameMode() != 0 {
+		return
+	}
+
 	if landed {
 		if dmg := dist - fallSafeBlocks; dmg > 0 {
 			s.damage(float32(dmg))

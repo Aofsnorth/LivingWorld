@@ -19,9 +19,20 @@ type Config struct {
 	MOTD       string `yaml:"motd"`
 	PluginsDir string `yaml:"pluginsDir"`
 
-	// Ops lists the usernames (case-insensitive) allowed to run operator/cheat
-	// commands like /gamemode and /time. Loaded from ops.txt.
-	Ops []string `yaml:"-"`
+	// DefaultGamemode is the gamemode assigned to players who join with no
+	// persisted state (first join) or whose saved gamemode is out of range
+	// (corrupt save). 0=survival, 1=creative, 2=adventure, 3=spectator.
+	// Players with a valid saved gamemode keep it — set DefaultGamemode
+	// changes only affect NEW players and persist for the rest of the
+	// session (it is not broadcast on every join).
+	DefaultGamemode int `yaml:"defaultGamemode"`
+
+	// Ops lists the canonical operator usernames (case-insensitive). The yaml
+	// field is the bootstrap source — add your own name here on a fresh
+	// install to grant yourself op on the first start. /op and /deop also
+	// mutate a sidecar file (config/ops.txt, see Load), and the two are
+	// merged at load time so neither one has to be hand-edited once running.
+	Ops []string `yaml:"ops"`
 
 	World   WorldConfig   `yaml:"world"`
 	Java    JavaConfig    `yaml:"java"`
@@ -62,6 +73,24 @@ type WorldConfig struct {
 	// (Vanilla's doWeatherCycle gamerule.) With it off, weather stays at whatever
 	// was last set (persisted) and only changes via the /weather command.
 	WeatherCycle bool `yaml:"weatherCycle"`
+
+	// WeatherDurations controls how long each phase of the weather director
+	// runs. Each phase picks a random integer in [Min, Max] seconds, then runs
+	// for that long before transitioning. Setting Min==Max pins the phase to a
+	// fixed duration (useful for deterministic testing). Defaults match
+	// vanilla-ish ranges (clear 5-15 min, rain 10-20 min, thunder 3-10 min).
+	WeatherDurations WeatherDurationsConfig `yaml:"weatherDurations"`
+}
+
+// WeatherDurationsConfig is the per-phase duration range, in seconds, used by
+// StartWeatherCycle. Zero values fall back to vanilla defaults.
+type WeatherDurationsConfig struct {
+	ClearMinSeconds   int `yaml:"clearMinSeconds"`
+	ClearMaxSeconds   int `yaml:"clearMaxSeconds"`
+	RainMinSeconds    int `yaml:"rainMinSeconds"`
+	RainMaxSeconds    int `yaml:"rainMaxSeconds"`
+	ThunderMinSeconds int `yaml:"thunderMinSeconds"`
+	ThunderMaxSeconds int `yaml:"thunderMaxSeconds"`
 }
 
 // DifficultyByte maps the configured difficulty name to the Minecraft 0-3 value
@@ -131,9 +160,10 @@ type BedrockConfig struct {
 
 func Default() *Config {
 	return &Config{
-		ServerName: system.DefaultServerName,
-		MOTD:       system.DefaultMOTD,
-		PluginsDir: system.DefaultPluginsDirectory,
+		ServerName:     system.DefaultServerName,
+		MOTD:           system.DefaultMOTD,
+		PluginsDir:     system.DefaultPluginsDirectory,
+		DefaultGamemode: gameplay.GamemodeSurvival,
 		World: WorldConfig{
 			Type: system.WorldTypeDefault,
 			Seed: system.DefaultWorldSeed,
@@ -150,6 +180,14 @@ func Default() *Config {
 			Difficulty:      gameplay.DifficultyNormal,
 			DayNightCycle:   true,
 			WeatherCycle:    true,
+			WeatherDurations: WeatherDurationsConfig{
+				ClearMinSeconds:   300,  // 5 min
+				ClearMaxSeconds:   900,  // 15 min
+				RainMinSeconds:    600,  // 10 min
+				RainMaxSeconds:    1200, // 20 min
+				ThunderMinSeconds: 180,  // 3 min
+				ThunderMaxSeconds: 600,  // 10 min
+			},
 		},
 		Java: JavaConfig{
 			Bind:               network.DefaultBindAddress,

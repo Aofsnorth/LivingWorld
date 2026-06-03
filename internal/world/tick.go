@@ -3,6 +3,7 @@ package world
 import (
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"livingworld/internal/mobs"
@@ -106,6 +107,19 @@ func (m *Manager) advanceDayTime() bool {
 	return m.tickAdvanceTime
 }
 
+// isWoodenDoorID reports whether a block state is a wooden door that a
+// zombie-family mob may break. Iron and copper doors are explicitly excluded:
+// vanilla zombies only break wooden doors on hard difficulty. The AI checks
+// ctx.Difficulty == "hard" before invoking OnBreakDoor, preserving the vanilla
+// difficulty gate while keeping block-name logic in the world package.
+func isWoodenDoorID(id int32) bool {
+	name := StateName(id)
+	if name == "minecraft:iron_door" || strings.Contains(name, "copper_door") {
+		return false
+	}
+	return strings.HasSuffix(name, "_door")
+}
+
 // runOneTick runs one 20 Hz tick through the 7 documented phases. Designed
 // to be cheap to call from tests (it never spawns a goroutine and never
 // blocks on I/O unless Save is actually due).
@@ -140,9 +154,118 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// Phase 4: mob AI at 20 Hz. The legacy StartMobAI ticked mobs.TickHz
 	// times per second (also 20 Hz), so cadence is preserved.
 	for _, w := range worlds {
-		m.mobs.Tick(rng, func(x, y, z int) bool {
-			return w.GetBlock(x, y, z).ID() != AirID
+		m.mobs.Tick(mobs.AIContext{
+			RNG:           rng,
+			SolidAt:       func(x, y, z int) bool { return w.GetBlock(x, y, z).ID() != AirID },
+			SkyLightAt:    func(x, y, z int) uint8 { return w.GetSkyLight(x, y, z) },
+			Players:       m.aiPlayerList,
+			OnMeleeAttack: m.aiMeleeAttack,
+			OnShootArrow:  m.aiShootArrow,
+			OnExplode:     m.aiExplode,
+			OnFireDamage:  m.aiFireDamage,
+			OnSound:       m.aiSound,
+			OnHitEffect:   m.aiHitEffect,
+			OnThrow:       m.aiThrow,
+			OnShootProjectile: m.aiShootProjectile,
+			WaterAt:       m.aiWaterAt,
+			IsDay:         func() bool { return isDay(w.GetDayTime()) },
+			DoorAt: func(x, y, z int) bool {
+				return isWoodenDoorID(w.GetBlock(x, y, z).ID())
+			},
+			OnBreakDoor: func(x, y, z int) bool {
+				if !isWoodenDoorID(w.GetBlock(x, y, z).ID()) {
+					return false
+				}
+				w.SetBlock(x, y, z, BlockByID(AirID))
+				m.PublishBlockUpdate(BlockUpdateSourceServer, x, y, z, AirID)
+				return true
+			},
+			Difficulty: m.Difficulty(),
 		})
+		// Phase 4 cleanup: any mob whose AI set Despawn (e.g. creeper
+		// post-explosion) is removed here. Remove() fires OnDespawn so
+		// bridges drop the entity.
+		//
+		// M1: SplitsOnDeath (slime / magma cube) is handled here:
+		// when a despawning mob has def.SplitsOnDeath && Size > 1, we
+		// spawn 2 children at the parent's last position with
+		// Size-1. The bridge receives OnSpawn via SpawnAtSize.
+		//
+		// M1: drops are also spawned here for the despawning mob.
+		for _, id := range m.mobs.PendingDespawns() {
+			if m.mobSpawnSplits != nil {
+				m.mobSpawnSplits(w, id)
+			}
+			if m.mobSpawnDrops != nil {
+				m.mobSpawnDrops(w, id)
+			}
+			m.mobs.Remove(id)
+		}
+	}
+
+	// Phase 4c: skeleton-arrow physics. Projectiles fired in earlier ticks
+	// (or just now, by the AI tick above) are integrated, tested for block
+	// and player collision, and despawned on impact. Bridges get notified
+	// via the projectile store's own OnSpawn/OnDespawn listeners.
+	m.projectiles.Tick(mobs.ProjectileTickContext{
+		SolidAt: func(x, y, z int) bool {
+			w := worlds[0]
+			return w.GetBlock(x, y, z).ID() != AirID
+		},
+		Players: func() []mobs.ProjectileTarget {
+			if m.aiPlayerList == nil {
+				return nil
+			}
+			src := m.aiPlayerList()
+			out := make([]mobs.ProjectileTarget, len(src))
+			for i, p := range src {
+				out[i] = mobs.ProjectileTarget{UUID: p.UUID, X: p.X, Y: p.Y, Z: p.Z}
+			}
+			return out
+		},
+		OnHitPlayer: func(p mobs.Projectile, target [16]byte) {
+			if m.aiProjectileHit != nil {
+				m.aiProjectileHit(p.EntityID, target)
+			}
+		},
+	})
+
+	// Phase 4b: mob spawn director. Throttled to ~4 Hz (every 5 ticks) so it
+	// doesn't burn through the cap set on every 20 Hz cycle. spawnTick is
+	// the function defined in mobspawn.go; it was originally called from the
+	// legacy StartMobAI loop and lost its call site when Phase 4a folded
+	// everything into the unified scheduler. Without this call, mobs never
+	// appear in freshly explored chunks — the AI ticks but the population
+	// stays at whatever count was on disk (often zero on a fresh world). The
+	// director is cheap (3 candidate columns per attempt, capped by per-cat
+	// population) so running it every 5 ticks is well within budget.
+	tickNum := m.tickCounter.Add(1)
+	if tickNum%5 == 0 {
+		m.spawnTick(rng)
+	}
+
+	// Phase 4e: per-player status-effect ticking. M6 — the player
+	// manager walks every connected player's effect bag, applies
+	// per-tick damage (poison 0.5 HP / 0.5s, wither 0.5 HP / s),
+	// decrements TicksLeft, and publishes EffectStatusRemove for
+	// any effect that just hit 0. The callback is set by
+	// server.go's SetMobAICallbacks; if the world tick runs before
+	// that wire-up completes (e.g. unit tests), the field stays nil
+	// and the phase is a no-op.
+	if m.aiTickEffects != nil {
+		m.aiTickEffects()
+	}
+
+	// Phase 4e (continued): M7 invulnerability-frame countdown.
+	// Every connected player's IFrames counter is decremented
+	// once per 20 Hz tick; reaches 0 after combat.IFramesTicks
+	// (20) ticks = 1 second of vanilla post-hit immunity. The
+	// bridge routeAttack path stamps a fresh window on every
+	// successful hit (see players.HitIFrames). Cheap O(n) over
+	// the player map; the world tick owns the cadence so
+	// off-edition clients agree on the window length.
+	if m.aiTickIFrames != nil {
+		m.aiTickIFrames()
 	}
 
 	// Phase 5: drop physics at 20 Hz. Matches StartDropPhysics cadence.

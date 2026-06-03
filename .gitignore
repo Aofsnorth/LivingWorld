@@ -34,8 +34,10 @@ worlds-nether/
 worlds-end/
 .kiro
 
+docs/
 plan/
 
+VANILLA_FEATURE_INVENTORY.md
 .github
 .mavis
 .opencode

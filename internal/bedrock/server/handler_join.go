@@ -38,18 +38,27 @@ func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
 	})
 }
 
-func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64) {
-	// Reassert survival gamemode.
-	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: packet.GameTypeSurvival})
-
-	// Send UpdateAbilities so the Bedrock client always uses the correct
-	// survival walk/fly speeds.  Without this the client may drift into a
-	// faster default speed after a gamemode/ability request cycle.
+// sendBedrockGameMode re-asserts the given gamemode on the client, plus the
+// ability data and movement attribute that the client resets whenever
+// SetPlayerGameType fires. mode is the Java-style int (0 survival, 1 creative,
+// 2 adventure, 3 spectator); use javaModeToBedrock to translate from
+// config.DefaultGamemode / pl.Gamemode.
+func (s *Server) sendBedrockGameMode(conn *minecraft.Conn, runtimeID uint64, mode int) {
+	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: javaModeToBedrock(mode)})
 	_ = conn.WritePacket(&packet.UpdateAbilities{AbilityData: bedrockSurvivalAbilityData(runtimeID)})
+	_ = conn.WritePacket(&packet.UpdateAttributes{
+		EntityRuntimeID: runtimeID,
+		Attributes:      []protocol.Attribute{bedrockMovementAttribute()},
+	})
+}
 
-	// Bedrock's actual walking speed is driven by the movement attribute. If it
-	// is omitted, some clients keep a stale/non-survival value and move far too
-	// fast even though the gamemode is survival.
+// sendBedrockSurvivalState is the legacy hardcoded-survival entry point.
+// Kept for the one call site that needs to forcibly snap a non-op client
+// back from a self-gamemode change — there we WANT survival regardless of
+// the configured default, since the player tried to leave survival.
+func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64) {
+	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: packet.GameTypeSurvival})
+	_ = conn.WritePacket(&packet.UpdateAbilities{AbilityData: bedrockSurvivalAbilityData(runtimeID)})
 	_ = conn.WritePacket(&packet.UpdateAttributes{
 		EntityRuntimeID: runtimeID,
 		Attributes:      []protocol.Attribute{bedrockMovementAttribute()},

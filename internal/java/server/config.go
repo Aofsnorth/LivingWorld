@@ -12,12 +12,14 @@ import (
 	gmnet "github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/registry"
+	gmcommand "github.com/Tnze/go-mc/server/command"
 	gmserver "github.com/Tnze/go-mc/server"
 )
 
 type javaConfig struct {
 	registries    registry.Registries
 	registrySizes map[string]int
+	commands      *gmcommand.Graph
 }
 
 type javaListPing struct {
@@ -192,6 +194,15 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		log.Printf("[Java] AcceptConfig: error sending UpdateTags: %v", err)
 		return err
 	}
+
+	// NOTE: do NOT send ClientboundGameCommands from the configuration phase.
+	// In the play-state packet id table that packet is 0x10, but in the
+	// configuration-state table 0x10 is ClientboundConfigServerLinks, whose
+	// payload is a non-null NBT compound tag. Sending the command graph here
+	// causes the 26.1 client to try to decode it as a compound tag and crash
+	// with "Failed to decode packet 'clientbound/minecraft:server_links'
+	//  Caused by: Expected non-null compound tag". The Commands packet is a
+	// play-state packet and is sent by SendInitialPlayPackets instead.
 
 	// Send FinishConfiguration to transition client to play state
 	if err := conn.WritePacket(pk.Marshal(packetid.ClientboundConfigFinishConfiguration)); err != nil {

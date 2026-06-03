@@ -6,9 +6,10 @@ import (
 )
 
 // HandleInteract processes ServerboundInteract. Only the ATTACK action is acted
-// on: it knocks the target player back (cross-edition) so melee hits register.
-// Interact packet: targetEntityID(VarInt), type(VarInt: 0=interact, 1=attack,
-// 2=interact_at), then type-specific trailing fields we don't need here.
+// on: it routes through routeAttack which decides whether the target is a mob
+// (M5) or a player (M0). Interact packet: targetEntityID(VarInt),
+// type(VarInt: 0=interact, 1=attack, 2=interact_at), then type-specific
+// trailing fields we don't need here.
 func (s *PlayerSession) HandleInteract(p pk.Packet) {
 	var targetID, action pk.VarInt
 	if err := p.Scan(&targetID, &action); err != nil {
@@ -17,7 +18,7 @@ func (s *PlayerSession) HandleInteract(p pk.Packet) {
 	if action != 1 { // not ATTACK
 		return
 	}
-	s.Bridge.pm.MeleeAttack(s.UUID(), int32(targetID))
+	s.Bridge.routeAttack(s.UUID(), int32(targetID))
 }
 
 // Hurt implements player.Controller: apply melee damage to this Java player —

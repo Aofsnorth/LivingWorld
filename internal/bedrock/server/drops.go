@@ -64,6 +64,24 @@ func (s *Server) startDropLoop() {
 	// the way they do on Java. The OnGround flag also tells the client to stop
 	// running its own gravity so resting items don't shiver against the floor.
 	store.OnMove(func(d drops.Drop) {
+		// Re-entrancy guard against pickup: store.TickPhysics snapshots each
+		// moved drop into a local slice OUTSIDE the lock and fires OnMove
+		// after releasing it. If the central pickup loop Claims the drop
+		// between the snapshot and the OnMove callback (it iterates the
+		// store in its own goroutine, so this is the common case for a
+		// pickup that lands on the same 50 ms tick as a physics step), the
+		// OnMove still fires with the pre-Claim position data and pushes
+		// MoveActorAbsolute+SetActorAbsolute to the client — which then
+		// briefly re-places the entity at the original position WHILE the
+		// TakeItemActor magnet is playing, producing the "ghost stuck drop
+		// + magnet" visual the user reported. A quick "is this drop still
+		// alive in the store?" check before broadcasting kills the ghost:
+		// either the drop is still settling (broadcast the update) or it
+		// was just claimed by a pickup (skip, the RemoveActor/TakeItemActor
+		// path owns the entity from here on).
+		if _, ok := store.Get(d.EntityID); !ok {
+			return
+		}
 		flags := byte(0)
 		if d.OnGround {
 			flags |= packet.MoveFlagOnGround
@@ -94,10 +112,26 @@ func (s *Server) registerPickupHandler() {
 		// is why pickups used to just blink out. Send TakeItemActor right away so
 		// the magnet plays, then queue a defensive RemoveActor ~10 ticks later so
 		// any client that didn't despawn after the animation gets cleaned up.
+		//
+		// The TakerEntityRuntimeID is the runtime id of the player who is doing
+		// the collecting. Foreign viewers (other Bedrock sessions) see the
+		// collector as `playerEntityID` (the per-session runtime id that the
+		// player-spawn code assigned them). The local collector's own client
+		// however identifies itself as `bedrockLocalRuntime` (1), NOT
+		// `playerEntityID` — addressing the wrong id silently no-ops the magnet
+		// (the item sits still, then the delayed RemoveActor makes it blink out).
+		// So for the collector's own session we use the local-runtime id; for
+		// everyone else we use the per-session id.
+		uid, _ := uuid.FromBytes(playerUUID[:])
+		collectorSession, _ := s.getSession(uid)
 		s.forEachSession(func(bs *bedrockSession) {
+			taker := playerEntityID
+			if bs == collectorSession {
+				taker = bedrockLocalRuntime
+			}
 			bs.write(&packet.TakeItemActor{
 				ItemEntityRuntimeID:  uint64(dropEntityID),
-				TakerEntityRuntimeID: playerEntityID,
+				TakerEntityRuntimeID: taker,
 			})
 		})
 		go func() {
@@ -108,13 +142,12 @@ func (s *Server) registerPickupHandler() {
 		}()
 
 		// Inventory sync only when the collector is a Bedrock player.
-		uid, _ := uuid.FromBytes(playerUUID[:])
 		pl := s.pm.GetPlayer(uid)
 		if pl == nil || pl.Edition != player.EditionBedrock {
 			return
 		}
-		if bs, ok := s.getSession(uid); ok {
-			s.syncBedrockInventory(bs, pl)
+		if collectorSession != nil {
+			s.syncBedrockInventory(collectorSession, pl)
 		}
 	})
 }

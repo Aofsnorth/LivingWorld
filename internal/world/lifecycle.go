@@ -73,6 +73,17 @@ func (m *Manager) StartMobAI(difficulty string) {
 	}
 }
 
+// WeatherDurations captures the configurable per-phase duration ranges, in
+// seconds, for the weather director. Zero values fall back to vanilla-ish
+// defaults (clear 5-15 min, rain 10-20 min, thunder 3-10 min). The struct
+// shape mirrors config.WeatherDurationsConfig so the server can hand it
+// through directly; it lives here (not in config) to avoid a circular import.
+type WeatherDurations struct {
+	ClearMin, ClearMax       int
+	RainMin, RainMax         int
+	ThunderMin, ThunderMax   int
+}
+
 // StartWeatherCycle runs the automatic weather director: a clear→rain→thunder
 // state machine with vanilla-ish random durations, pushing each transition
 // through Manager.SetWeather so BOTH editions stay in sync (the bridges
@@ -80,13 +91,15 @@ func (m *Manager) StartMobAI(difficulty string) {
 // frozen at whatever level.json restored, changeable only via /weather.
 // Idempotent, mirroring StartTimeLoop's nil-channel guard.
 //
+// Durations may be the zero value, in which case vanilla defaults are used.
+//
 // NOTE: weather is intentionally kept on its own 1 Hz loop. The unified
 // tick is at 20 Hz and weather phases are seconds long; folding weather
 // into the per-50ms path would burn a divide per tick for no benefit.
 // Keeping weather separate does not violate the "one tick owner per world"
 // rule because weather is non-gameplay state (cosmetic + thunder sky-light)
 // and is gated by the manager's existing event-bus path.
-func (m *Manager) StartWeatherCycle(enabled bool) {
+func (m *Manager) StartWeatherCycle(enabled bool, d WeatherDurations) {
 	if !enabled {
 		return
 	}
@@ -107,7 +120,7 @@ func (m *Manager) StartWeatherCycle(enabled bool) {
 
 		// Resume from the persisted/current phase so a restart doesn't reset weather.
 		raining, thundering := m.GetDefaultWorld().Weather()
-		secsLeft := rollWeatherDuration(rng, raining, thundering)
+		secsLeft := rollWeatherDuration(rng, raining, thundering, d)
 
 		for {
 			select {
@@ -120,7 +133,7 @@ func (m *Manager) StartWeatherCycle(enabled bool) {
 				}
 				raining, thundering = nextWeather(rng, raining, thundering)
 				m.SetWeather(raining, thundering) // off the m.mu critical path
-				secsLeft = rollWeatherDuration(rng, raining, thundering)
+				secsLeft = rollWeatherDuration(rng, raining, thundering, d)
 			}
 		}
 	}()
@@ -143,16 +156,42 @@ func nextWeather(rng *rand.Rand, raining, thundering bool) (nextRain, nextThunde
 }
 
 // rollWeatherDuration returns how many seconds the given phase should last (the
-// director ticks at 1 Hz). Ranges are tunable, vanilla-ish.
-func rollWeatherDuration(rng *rand.Rand, raining, thundering bool) int {
+// director ticks at 1 Hz). The ranges come from the config; zero values fall
+// back to vanilla-ish defaults (clear 5-15 min, rain 10-20 min, thunder 3-10
+// min). Min==Max pins the phase to a fixed duration; if Min>Max the function
+// returns Max so the director never gets a negative range.
+func rollWeatherDuration(rng *rand.Rand, raining, thundering bool, d WeatherDurations) int {
+	min, max := 0, 0
 	switch {
 	case thundering:
-		return 180 + rng.Intn(420) // 3–10 min
+		min, max = d.ThunderMin, d.ThunderMax
+		if min == 0 {
+			min = 180
+		}
+		if max == 0 {
+			max = 600
+		}
 	case raining:
-		return 600 + rng.Intn(600) // 10–20 min
+		min, max = d.RainMin, d.RainMax
+		if min == 0 {
+			min = 600
+		}
+		if max == 0 {
+			max = 1200
+		}
 	default:
-		return 300 + rng.Intn(600) // 5–15 min clear
+		min, max = d.ClearMin, d.ClearMax
+		if min == 0 {
+			min = 300
+		}
+		if max == 0 {
+			max = 900
+		}
 	}
+	if min > max {
+		return max
+	}
+	return min + rng.Intn(max-min+1)
 }
 
 // StartDropPhysics is a no-op when the unified tick loop is already running

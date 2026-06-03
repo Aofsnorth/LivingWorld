@@ -93,6 +93,11 @@ func (s *Server) Start() error {
 	s.startDropLoop()
 	s.startCrackProgressLoop()
 	s.registerPickupHandler()
+	// UX (M0.7): mob sound fan-out. The world tick publishes a
+	// []mobs.SoundEmit per tick and this listener translates each
+	// into the per-edition packet (LevelSoundEvent for combat /
+	// hurt / death, PlaySound with namespaced id for ambients).
+	s.wm.OnMobSound(s.publishMobSounds)
 
 	s.wg.Add(1)
 	go s.acceptLoop()

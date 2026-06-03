@@ -41,6 +41,29 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 		if saved.Food > 0 {
 			session.Food = int32(saved.Food)
 		}
+		// Sync the session's gamemode with the persisted gamemode BEFORE
+		// sendInitialPlayPackets — that packet's Login.SpawnInfo.gamemode
+		// is read from session.GameMode(). Without this rejoin, players
+		// would log back in as survival even if their saved state was
+		// creative (so fall damage, instant-break, placeable blocks all
+		// misbehave on the first packet of the session).
+		if saved.Gamemode >= 0 && saved.Gamemode <= 3 {
+			session.mu.Lock()
+			session.GameModeVal = int32(saved.Gamemode)
+			session.mu.Unlock()
+		}
+	} else {
+		// First-time join (no saved data): honour the configured default
+		// gamemode. The session's GameModeVal defaults to 0 in
+		// NewPlayerSession, so without this the first-join experience is
+		// hardcoded survival even when the operator set DefaultGamemode
+		// to creative. Bounds-check defensively in case the yml is
+		// hand-edited to something invalid.
+		if d := j.cfg.DefaultGamemode; d >= 0 && d <= 3 {
+			session.mu.Lock()
+			session.GameModeVal = int32(d)
+			session.mu.Unlock()
+		}
 	}
 
 	go session.ChunkWorker()

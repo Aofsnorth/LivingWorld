@@ -24,6 +24,20 @@ const (
 	bedrockLocalRuntime = system.BedrockLocalRuntime
 )
 
+// playerPerms maps the server-side operator flag to Bedrock's PlayerPermissions
+// game-rule value. Bedrock uses 0=visitor, 1=member, 2=operator. 2 is the value
+// that flips the in-game "Cheats are not enabled on this world" banner OFF and
+// unlocks the gamemode/time/weather selectors the server is willing to honour.
+// Vanilla Bedrock servers (and Realms) send 2 to ops and 1 to everyone else;
+// the previous hardcoded 1 silently downgraded ops to member and the client
+// refused to show the cheat controls.
+func playerPerms(isOp bool) int32 {
+	if isOp {
+		return 2
+	}
+	return 1
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -39,6 +53,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		playerID = uuid.New()
 	}
 	log.Printf("[Bedrock] Player joining: %s", playerName)
+
+	// Resolve op status BEFORE StartGame: PlayerPermissions is part of the
+	// initial GameData and cannot be changed post-join without a re-handshake.
+	// The Player struct is built later, so do the lookup now and reuse it.
+	isOp := s.cfg.IsOp(playerName)
 
 	spawn := s.cfg.World.Spawn
 	spawnBlockY := int32(spawn.Y)
@@ -56,13 +75,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		Difficulty:       int32(s.cfg.World.DifficultyByte()),
 		EntityUniqueID:   int64(bedrockLocalRuntime),
 		EntityRuntimeID:  bedrockLocalRuntime,
-		PlayerGameMode:   packet.GameTypeSurvival,
+		PlayerGameMode:   javaModeToBedrock(s.cfg.DefaultGamemode),
 		PlayerPosition:   spawnClientPos,
 		Pitch:            spawn.Pitch,
 		Yaw:              spawn.Yaw,
 		Dimension:        0,
 		WorldSpawn:       protocol.BlockPos{int32(spawn.X), spawnBlockY, int32(spawn.Z)},
-		WorldGameMode:    packet.GameTypeSurvival,
+		WorldGameMode:    javaModeToBedrock(s.cfg.DefaultGamemode),
 		Hardcore:         false,
 		XBLBroadcastMode: 0,
 		Time:             s.wm.GetDefaultWorld().GetDayTime(),
@@ -76,7 +95,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			ServerAuthoritativeBlockBreaking: true,
 		},
 		ChunkRadius:         int32(s.cfg.Bedrock.ViewDistance),
-		PlayerPermissions:   1, // member, not operator: prevents settings/commands gamemode changes.
+		// PlayerPermissions drives Bedrock's "Cheats are not enabled on this
+		// world" UI banner AND the in-game cheats toggle. Hardcoding 1 (member)
+		// here is what kept ops from opening the gamemode selector, time controls,
+		// etc. — the server was saying "this player can run /gamemode" (via
+		// SetCommandsEnabled below) but the client thought "cheats are off,
+		// don't show the selector". Mirror the actual op status so ops see
+		// the controls the server is willing to honour.
+		PlayerPermissions:   playerPerms(isOp),
 		BaseGameVersion:     protocol.CurrentVersion,
 		Items:               inventory.VanillaItemEntries(),
 		PersonaDisabled:     false,
@@ -101,7 +127,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer s.removeSession(playerID)
 	pl := player.NewPlayer(playerID, playerName, player.EditionBedrock)
 	pl.EntityRuntimeID = bs.runtimeID
-	pl.Op = s.cfg.IsOp(playerName)
+	pl.Op = isOp // resolved before StartGame (PlayerPermissions needs it)
 	pl.Position.X = float64(spawnFeet[0])
 	pl.Position.Y = float64(spawnFeet[1])
 	pl.Position.Z = float64(spawnFeet[2])
@@ -110,6 +136,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	pl.OnGround = true
 	if hasSavedBedrock {
 		pl.ApplyPersisted(savedBedrock) // restore inventory/health/gamemode
+	} else {
+		// First-time Bedrock join: apply the configured default gamemode.
+		// ApplyPersisted would have set pl.Gamemode for returning players,
+		// but brand-new ones keep the zero-value (survival) without this.
+		if d := s.cfg.DefaultGamemode; d >= 0 && d <= 3 {
+			pl.Gamemode = d
+			pl.Creative = d == 1
+		}
 	}
 	if s.skins != nil {
 		sk := skin.SkinFromClientData(bs.clientData)
@@ -147,7 +181,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.bootstrapWorld(mcConn, s.cfg.Bedrock.ViewDistance, bs)
 
 	teleportPlayer(mcConn, spawnClientPos, spawn.Pitch, spawn.Yaw)
-	s.sendBedrockSurvivalState(mcConn, bedrockLocalRuntime)
+	// Re-assert the configured default gamemode (with abilities + movement
+	// attribute) AFTER StartGame so the client can't be stuck on a stale
+	// survival mode if DefaultGamemode is creative/adventure.
+	s.sendBedrockGameMode(mcConn, bedrockLocalRuntime, s.cfg.DefaultGamemode)
 	s.sendLocalPlayerActorData(mcConn)
 	sendInitialInventories(mcConn)
 	_ = bedrockworld.SendSetTime(mcConn, int32(s.wm.GetDefaultWorld().GetDayTime()))

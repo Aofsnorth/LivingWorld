@@ -76,6 +76,16 @@ func (s *bedrockSession) SetGameMode(mode int) error {
 	if mode < 0 || mode > 3 {
 		return fmt.Errorf("invalid gamemode %d", mode)
 	}
+	// Mirror the new mode into the player object so /gamemode is observed by
+	// the rest of the server (loot rolls, fall damage, the next SetPlayerGameType
+	// rejection when the client tries to self-change). The Bedrock client
+	// gets SetPlayerGameType below; abilities + movement attribute also need
+	// a re-assert, but /gamemode's reply text is the user-visible signal so
+	// we don't follow up with sendBedrockGameMode here.
+	if pl := s.pmRef().GetPlayer(s.id); pl != nil {
+		pl.Gamemode = mode
+		pl.Creative = mode == 1
+	}
 	s.write(&packet.SetPlayerGameType{GameType: javaModeToBedrock(mode)})
 	return nil
 }
