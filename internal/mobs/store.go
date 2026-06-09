@@ -68,12 +68,22 @@ type Mob struct {
 	// collects these via PendingDespawns() and calls Remove on each.
 	Despawn bool
 
+	// --- AI engine (rombak): goal-selector + brain, built lazily on first
+	// Tick from the mob's MobDef via buildAI. goalSel drives behaviour
+	// (move/look/attack/wander); targetSel drives target acquisition; brain
+	// holds short-lived sensor memories. nil until the first aiStep. ---
+	goalSel   *goalSelector
+	targetSel *goalSelector
+	brain     *aiBrain
+	aiTick    int64 // monotonic per-mob tick counter (memory expiry clock)
+
 	// --- per-mob AI state (unexported; reset on Tick, never serialised) ---
 	state          AIState
 	walkTicks      int      // >0: walking forward for this many ticks
 	cooldownTicks  int      // generic per-mob cooldown (used for attack reuse)
 	target         [16]byte // current target player UUID; zero if none
 	hurtBy         [16]byte // last attacker; cleared after panic ends
+	hurtByTick     int64    // aiTick at which hurtBy was last set (retaliation recency)
 	panicTicks     int      // remaining ticks in StateFlee
 	fuseTicks      int      // creeper-only: counts down StateFuse → boom
 	wasInRange     bool     // creeper-only: was target in range last tick (resets fuse if so)
@@ -337,6 +347,7 @@ func (s *Store) Hurt(mobID int64, attacker [16]byte) {
 		return
 	}
 	m.hurtBy = attacker
+	m.hurtByTick = m.aiTick
 	// Mob took damage from a player. If hostile and has no current target,
 	// lock on to the attacker. If passive, enter panic.
 	def := defFor(m.Type)
@@ -424,6 +435,7 @@ func (s *Store) HurtDirectWithKnockback(mobID int64, attacker [16]byte, damage f
 		return
 	}
 	m.hurtBy = attacker
+	m.hurtByTick = m.aiTick
 	def := defFor(m.Type)
 	if def.IsHostile {
 		var zero [16]byte
