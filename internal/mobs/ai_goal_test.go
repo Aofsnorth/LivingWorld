@@ -1,6 +1,7 @@
 package mobs
 
 import (
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -186,5 +187,28 @@ func TestCreeper_SwellsAndExplodes(t *testing.T) {
 	}
 	if !exploded {
 		t.Errorf("creeper next to player should detonate within 60 ticks; fuse=%d", s.Get(cr.EntityID).fuseTicks)
+	}
+}
+
+func TestLookAt_ClampsHeadYawToBody(t *testing.T) {
+	m := &Mob{Type: "minecraft:zombie", X: 0, Y: 64, Z: 0, Yaw: 0, HeadYaw: 0}
+
+	lookAt(m, 10, 65, -10, false)
+	if diff := math.Abs(wrapDegrees(m.HeadYaw - m.Yaw)); diff > maxHeadBodyYaw {
+		t.Fatalf("head yaw should stay within body clamp: diff=%.2f max=%.2f", diff, maxHeadBodyYaw)
+	}
+
+	lookAt(m, -10, 65, -10, false)
+	if diff := math.Abs(wrapDegrees(m.HeadYaw - m.Yaw)); diff > maxHeadBodyYaw {
+		t.Fatalf("head yaw should stay clamped after target crosses behind: diff=%.2f max=%.2f", diff, maxHeadBodyYaw)
+	}
+}
+
+func TestSpawn_InitialHeadYawMatchesBodyYaw(t *testing.T) {
+	s := New()
+	z := s.Spawn("minecraft:zombie", 0, 64, 0)
+
+	if z.HeadYaw != z.Yaw {
+		t.Fatalf("spawn should initialise head yaw to body yaw: head=%.2f body=%.2f", z.HeadYaw, z.Yaw)
 	}
 }

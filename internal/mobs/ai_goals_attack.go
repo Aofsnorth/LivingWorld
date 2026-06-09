@@ -99,7 +99,7 @@ func (rangedAttackGoal) Tick(m *Mob, ctx *AIContext) {
 	dx, dz := p.X-m.X, p.Z-m.Z
 	dist := math.Hypot(dx, dz)
 	yaw := math.Atan2(-dx, dz) * 180 / math.Pi
-	m.HeadYaw = yaw
+	lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, false)
 
 	if dist > maxRange {
 		// Too far — approach.
@@ -145,7 +145,7 @@ func (rangedAttackGoal) Tick(m *Mob, ctx *AIContext) {
 	case ctx.OnShootArrow != nil:
 		ctx.OnShootArrow(m.EntityID, m.X, m.Y+1.6, m.Z, yaw, pitch)
 	}
-	m.Yaw = yaw
+	setBodyYaw(m, yaw)
 	m.cooldownTicks = def.AttackCooldown
 }
 
@@ -200,7 +200,7 @@ func (leapAtTargetGoal) Tick(m *Mob, ctx *AIContext) {}
 // "committed fuse" approximation). At zero it detonates via OnExplode.
 type swellGoal struct{ baseGoal }
 
-func (swellGoal) Flags() GoalFlag { return FlagMove }
+func (swellGoal) Flags() GoalFlag { return FlagMove | FlagLook }
 
 func (swellGoal) CanUse(m *Mob, ctx *AIContext) bool {
 	p := targetPlayer(m, ctx)
@@ -231,9 +231,7 @@ func (swellGoal) Tick(m *Mob, ctx *AIContext) {
 	if p != nil {
 		dx, dz := p.X-m.X, p.Z-m.Z
 		inRange = math.Hypot(dx, dz) < def.ExplosionRadius
-		if dx != 0 || dz != 0 {
-			m.Yaw = math.Atan2(-dx, dz) * 180 / math.Pi
-		}
+		lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, true)
 	}
 	if inRange {
 		m.state = StateFuse

@@ -33,15 +33,15 @@ const TickHz = 20.0
 type AIState int
 
 const (
-	StateIdle     AIState = iota // wandering aimlessly
-	StatePursue                  // hostile: chasing a target
-	StateFlee                    // passive: panic-running from a recent attacker
-	StateMelee                   // hostile: in attack range, swinging on cooldown
-	StateShoot                   // skeleton: bow drawn, will fire on next AI tick
-	StateFuse                    // creeper: hissing, will explode at fuse == 0
-	StateGraze                   // passive: standing still, head down eating
-	StateAlert                   // passive: standing still, tracking player
-	StateFollow                  // passive: following player who holds food
+	StateIdle   AIState = iota // wandering aimlessly
+	StatePursue                // hostile: chasing a target
+	StateFlee                  // passive: panic-running from a recent attacker
+	StateMelee                 // hostile: in attack range, swinging on cooldown
+	StateShoot                 // skeleton: bow drawn, will fire on next AI tick
+	StateFuse                  // creeper: hissing, will explode at fuse == 0
+	StateGraze                 // passive: standing still, head down eating
+	StateAlert                 // passive: standing still, tracking player
+	StateFollow                // passive: following player who holds food
 )
 
 // Mob is a live mob entity in the world. The exported fields are the
@@ -83,20 +83,20 @@ type Mob struct {
 	aiTick    int64       // monotonic per-mob tick counter (memory expiry clock)
 
 	// --- per-mob AI state (unexported; reset on Tick, never serialised) ---
-	state          AIState
-	walkTicks      int      // >0: walking forward for this many ticks
-	lookTicks      int      // >0: holding an idle random glance for this many ticks
-	lookYawTarget  float64  // head-yaw target for the current idle glance
-	cooldownTicks  int      // generic per-mob cooldown (used for attack reuse)
-	target         [16]byte // current target player UUID; zero if none
-	hurtBy         [16]byte // last attacker; cleared after panic ends
-	hurtByTick     int64    // aiTick at which hurtBy was last set (retaliation recency)
-	panicTicks     int      // remaining ticks in StateFlee
-	fuseTicks      int      // creeper-only: counts down StateFuse → boom
-	wasInRange     bool     // creeper-only: was target in range last tick (resets fuse if so)
-	jumpCooldown   int      // 2 ticks after a jump so we don't double-bounce
-	vy             float64  // vertical velocity (jumping / falling) — M0.2
-	ambientCD      int      // UX (M0.7 sound): ticks until next ambient sound candidate
+	state         AIState
+	walkTicks     int      // >0: walking forward for this many ticks
+	lookTicks     int      // >0: holding an idle random glance for this many ticks
+	lookYawTarget float64  // head-yaw target for the current idle glance
+	cooldownTicks int      // generic per-mob cooldown (used for attack reuse)
+	target        [16]byte // current target player UUID; zero if none
+	hurtBy        [16]byte // last attacker; cleared after panic ends
+	hurtByTick    int64    // aiTick at which hurtBy was last set (retaliation recency)
+	panicTicks    int      // remaining ticks in StateFlee
+	fuseTicks     int      // creeper-only: counts down StateFuse → boom
+	wasInRange    bool     // creeper-only: was target in range last tick (resets fuse if so)
+	jumpCooldown  int      // 2 ticks after a jump so we don't double-bounce
+	vy            float64  // vertical velocity (jumping / falling) — M0.2
+	ambientCD     int      // UX (M0.7 sound): ticks until next ambient sound candidate
 
 	// M0.3: cached A* path toward the current target. Replanned every
 	// 20 ticks or when the target moves >2 cells. `pathIdx` is the
@@ -260,8 +260,7 @@ func (s *Store) SpawnAtSize(mobType string, x, y, z float64, size int) Mob {
 		UUID:     uuid.New(),
 		Type:     mobType,
 		X:        x, Y: y, Z: z,
-		Yaw:     rand.Float64()*360 - 180,
-		HeadYaw: 0,
+		Yaw:      rand.Float64()*360 - 180,
 		OnGround: true,
 		// M0.6: HP. The vanilla values are per-mob-attribute; for v1
 		// we use 20 (zombie) / 20 (skeleton) / 20 (creeper) / 10
@@ -273,6 +272,7 @@ func (s *Store) SpawnAtSize(mobType string, x, y, z float64, size int) Mob {
 		Size:  size,
 		state: StateIdle,
 	}
+	m.HeadYaw = m.Yaw
 	s.mu.Lock()
 	s.mobs[m.EntityID] = &m
 	cbs := append([]func(Mob){}, s.onSpawn...)

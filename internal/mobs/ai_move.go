@@ -16,6 +16,7 @@ const speedToBlocksPerTick = 0.62
 const (
 	maxHeadYawTurn   = 40.0
 	maxHeadPitchTurn = 40.0
+	maxHeadBodyYaw   = 75.0
 	// mobEyeHeight is the fallback eye height used to compute look pitch when a
 	// mob type has no entry in mobEyeHeightFor. Per-type heights live there;
 	// using a flat 1.6 for everything made short mobs (pig/chicken) compute a
@@ -130,7 +131,7 @@ func stepHorizontal(m *Mob, def MobDef, ctx *AIContext, dx, dz, speed float64, f
 		m.X += dx / dl * step
 		m.Z += dz / dl * step
 		if face {
-			m.Yaw = math.Atan2(-dx, dz) * 180 / math.Pi
+			setBodyYaw(m, math.Atan2(-dx, dz)*180/math.Pi)
 		}
 		return
 	}
@@ -156,7 +157,7 @@ func stepHorizontal(m *Mob, def MobDef, ctx *AIContext, dx, dz, speed float64, f
 	nx := m.X + dx/dl*step
 	nz := m.Z + dz/dl*step
 	if face {
-		m.Yaw = math.Atan2(-dx, dz) * 180 / math.Pi
+		setBodyYaw(m, math.Atan2(-dx, dz)*180/math.Pi)
 	}
 
 	// Spider wall-climb: if the step is into a wall, inject a small upward vy.
@@ -187,7 +188,7 @@ func stepHorizontal(m *Mob, def MobDef, ctx *AIContext, dx, dz, speed float64, f
 		} else {
 			m.stuckTicks++
 			if m.stuckTicks >= 3 {
-				m.Yaw += 90
+				setBodyYaw(m, m.Yaw+90)
 				m.stuckTicks = 0
 			}
 		}
@@ -211,7 +212,7 @@ func wanderStep(m *Mob, def MobDef, ctx *AIContext) {
 	}
 	if m.walkTicks <= 0 && ctx.RNG.Float64() < walkChance {
 		m.walkTicks = walkLen + ctx.RNG.Intn(walkJitter)
-		m.Yaw = ctx.RNG.Float64()*360 - 180
+		setBodyYaw(m, ctx.RNG.Float64()*360-180)
 	}
 	// Hop movement (slime/magma cube): force a jump on a size-scaled cadence.
 	if def.Movement == "hop" && m.OnGround && m.jumpCooldown == 0 {
@@ -257,8 +258,29 @@ func lookAt(m *Mob, tx, ty, tz float64, turnBody bool) {
 	m.HeadYaw = approachAngle(m.HeadYaw, yaw, maxHeadYawTurn)
 	m.HeadPitch = approachAngle(m.HeadPitch, pitch, maxHeadPitchTurn)
 	if turnBody {
-		m.Yaw = m.HeadYaw
+		setBodyYaw(m, m.HeadYaw)
+	} else {
+		clampHeadYawToBody(m)
 	}
+}
+
+func setBodyYaw(m *Mob, yaw float64) {
+	m.Yaw = normalizeAngle(yaw)
+	clampHeadYawToBody(m)
+}
+
+func clampHeadYawToBody(m *Mob) {
+	m.HeadYaw = normalizeAngle(m.Yaw + clamp(wrapDegrees(m.HeadYaw-m.Yaw), -maxHeadBodyYaw, maxHeadBodyYaw))
+}
+
+func clamp(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 // approachAngle moves cur toward target by at most maxStep degrees, taking the
@@ -270,7 +292,11 @@ func approachAngle(cur, target, maxStep float64) float64 {
 	} else if d < -maxStep {
 		d = -maxStep
 	}
-	return cur + d
+	return normalizeAngle(cur + d)
+}
+
+func normalizeAngle(a float64) float64 {
+	return wrapDegrees(a)
 }
 
 // wrapDegrees normalises an angle delta to (-180, 180].
