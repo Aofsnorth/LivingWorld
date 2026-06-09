@@ -47,13 +47,22 @@ func (s *Server) startMobSync() {
 			inRange := mobInAOI(bs.x, bs.z, m.X, m.Z)
 			if inRange {
 				if v.mobViewer.isSpawned(m.EntityID) {
+					// OnGround flag: without it the client treats the entity as
+					// airborne and plays the falling animation — most visible on
+					// chickens, which flap their wings continuously.
+					var moveFlags byte
+					if m.OnGround {
+						moveFlags |= packet.MoveFlagOnGround
+					}
 					v.write(&packet.MoveActorAbsolute{
 						EntityRuntimeID: uint64(m.EntityID),
+						Flags:           moveFlags,
 						Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
 						// Rotation = {pitch, body yaw, head yaw}. The rombak AI
 						// decouples HeadYaw so the head can track a player while
-						// the body faces its movement heading.
-						Rotation: mgl32.Vec3{0, float32(m.Yaw), float32(m.HeadYaw)},
+						// the body faces its movement heading; HeadPitch tilts
+						// the head up/down toward the look target.
+						Rotation: mgl32.Vec3{float32(m.HeadPitch), float32(m.Yaw), float32(m.HeadYaw)},
 					})
 					// On-fire flag only on transition (sun-burn etc.).
 					if v.mobViewer.fireChanged(m.EntityID, m.FireTicks > 0) {
@@ -129,6 +138,7 @@ func addMobActor(m mobs.Mob) *packet.AddActor {
 		EntityType:      m.Type,
 		Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
 		Velocity:        mgl32.Vec3{},
+		Pitch:           float32(m.HeadPitch),
 		Yaw:             float32(m.Yaw),
 		HeadYaw:         float32(m.HeadYaw),
 		EntityMetadata:  mobEntityMetadata(m),

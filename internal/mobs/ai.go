@@ -166,7 +166,7 @@ func (s *Store) Tick(ctx AIContext) {
 		before := *m
 		aiStep(m, &ctx)
 		if m.X != before.X || m.Y != before.Y || m.Z != before.Z ||
-			m.Yaw != before.Yaw || m.HeadYaw != before.HeadYaw {
+			m.Yaw != before.Yaw || m.HeadYaw != before.HeadYaw || m.HeadPitch != before.HeadPitch {
 			moved = append(moved, *m)
 		}
 	}

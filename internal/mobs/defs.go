@@ -40,8 +40,8 @@ type MobDef struct {
 	IsHostile bool
 
 	FollowRange float64 // vanilla: zombie 35, skel/creeper 16, passive 16
-	WanderSpeed float64 // attribute value (multiply by 0.1 to get b/tick)
-	ChaseSpeed  float64 // attribute value when pursuing
+	WanderSpeed float64 // movement-speed attribute (× speedToBlocksPerTick = b/tick)
+	ChaseSpeed  float64 // movement-speed attribute when pursuing
 	AttackDamage float64
 	AttackRange float64 // squared distance is checked; ~2² = 4 for melee
 	AttackCooldown int

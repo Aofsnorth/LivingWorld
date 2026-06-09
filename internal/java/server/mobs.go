@@ -166,7 +166,7 @@ func moveMobPacket(m mobs.Mob) pk.Packet {
 		pk.VarInt(int32(m.EntityID)),
 		pk.Double(m.X), pk.Double(m.Y), pk.Double(m.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
-		pk.Float(float32(m.Yaw)), pk.Float(0), // body yaw (degrees), pitch
+		pk.Float(float32(m.Yaw)), pk.Float(float32(m.HeadPitch)), // body yaw (degrees), pitch (head tilt)
 		pk.Int(0),        // flags
 		pk.Boolean(true), // onGround
 	)

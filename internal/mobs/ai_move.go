@@ -2,6 +2,73 @@ package mobs
 
 import "math"
 
+// speedToBlocksPerTick converts a MobDef's movement-speed attribute
+// (WanderSpeed / ChaseSpeed, in vanilla attribute units) into the per-tick
+// horizontal displacement the integrator applies. Calibrated against vanilla:
+// a zombie's ChaseSpeed 0.35 → 0.217 b/tick (≈ 4.3 b/s), matching the observed
+// vanilla zombie pursuit speed. Wander values (0.20–0.30) land at 2.5–3.7 b/s,
+// the casual passive amble.
+const speedToBlocksPerTick = 0.62
+
+// Head look limits. lookAt eases HeadYaw/HeadPitch toward the target by at most
+// these many degrees per tick instead of snapping, so a mob's head tracks a
+// player smoothly (vanilla LookControl clamps head rotation the same way).
+const (
+	maxHeadYawTurn   = 40.0
+	maxHeadPitchTurn = 40.0
+	// mobEyeHeight is the fallback eye height used to compute look pitch when a
+	// mob type has no entry in mobEyeHeightFor. Per-type heights live there;
+	// using a flat 1.6 for everything made short mobs (pig/chicken) compute a
+	// near-level pitch and stare at the player's torso instead of their face.
+	mobEyeHeight = 1.6
+	// playerEyeHeight is where a look goal aims on the target player, so mobs
+	// look at the player's eyes rather than their feet.
+	playerEyeHeight = 1.62
+)
+
+// mobEyeHeightFor returns the approximate eye height (blocks above feet) for a
+// mob type, used as the origin when computing look pitch so the head tilt reads
+// correctly across body sizes. Values are vanilla eye heights (≈ 0.85× standing
+// height for most mobs). Baby mobs are half height. Unknown types fall back to
+// mobEyeHeight.
+func mobEyeHeightFor(m *Mob) float64 {
+	var h float64
+	switch m.Type {
+	case "minecraft:chicken":
+		h = 0.64
+	case "minecraft:pig", "minecraft:sheep":
+		h = 0.77
+	case "minecraft:cow":
+		h = 1.05
+	case "minecraft:slime", "minecraft:magma_cube":
+		h = 0.7 * float64(maxInt(m.Size, 1))
+	case "minecraft:spider", "minecraft:cave_spider":
+		h = 0.65
+	case "minecraft:enderman":
+		h = 2.55
+	case "minecraft:iron_golem":
+		h = 2.3
+	case "minecraft:zombie", "minecraft:husk", "minecraft:zombie_villager",
+		"minecraft:drowned", "minecraft:skeleton", "minecraft:stray",
+		"minecraft:bogged", "minecraft:wither_skeleton", "minecraft:creeper",
+		"minecraft:piglin", "minecraft:witch":
+		h = 1.74
+	default:
+		h = mobEyeHeight
+	}
+	if m.Baby {
+		h *= 0.5
+	}
+	return h
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // Shared movement primitives used by the behaviour goals. These own the
 // "translate a desired direction into a physically-valid step" logic that the
 // old moveMob folded into its state switch: path following, step-up jumps,
@@ -59,7 +126,7 @@ func stepHorizontal(m *Mob, def MobDef, ctx *AIContext, dx, dz, speed float64, f
 		if dl == 0 {
 			return
 		}
-		step := speed * 0.5
+		step := speed * speedToBlocksPerTick
 		m.X += dx / dl * step
 		m.Z += dz / dl * step
 		if face {
@@ -72,7 +139,7 @@ func stepHorizontal(m *Mob, def MobDef, ctx *AIContext, dx, dz, speed float64, f
 	if dl == 0 {
 		return
 	}
-	step := speed * 0.5
+	step := speed * speedToBlocksPerTick
 
 	// Water slow (0.5×) — hostile mobs wade slowly.
 	if ctx.WaterAt != nil {
@@ -167,19 +234,52 @@ func wanderStep(m *Mob, def MobDef, ctx *AIContext) {
 		dz := math.Cos(m.Yaw * math.Pi / 180)
 		m.walkTicks--
 		stepHorizontal(m, def, ctx, dx, dz, def.WanderSpeed, false)
-		return
 	}
-	// Idle head drift on a 30-tick cadence.
-	if m.aiTick%30 == 0 {
-		m.HeadYaw += (ctx.RNG.Float64() - 0.5) * 30.0
+	// NOTE: idle head drift is owned by randomLookAroundGoal (a FlagLook goal),
+	// not here. wanderStep holds only FlagMove; writing HeadYaw from here too
+	// would fight the look goals on the same tick and make the head blink.
+}
+
+// lookAt eases the mob's head toward the point (tx, ty, tz), setting both
+// HeadYaw and HeadPitch. The rotation is clamped to maxHeadYawTurn /
+// maxHeadPitchTurn per tick so the head tracks smoothly instead of snapping
+// (vanilla LookControl behaves the same). When turnBody is set the body Yaw
+// follows the (already-clamped) head yaw, used by goals that must face a
+// target to act on it (melee).
+func lookAt(m *Mob, tx, ty, tz float64, turnBody bool) {
+	dx, dz := tx-m.X, tz-m.Z
+	yaw := math.Atan2(-dx, dz) * 180 / math.Pi
+	// Pitch: positive = looking down (Minecraft convention). A target above the
+	// mob's eye (dy > 0) yields a negative pitch (look up).
+	dy := ty - (m.Y + mobEyeHeightFor(m))
+	pitch := -math.Atan2(dy, math.Hypot(dx, dz)) * 180 / math.Pi
+
+	m.HeadYaw = approachAngle(m.HeadYaw, yaw, maxHeadYawTurn)
+	m.HeadPitch = approachAngle(m.HeadPitch, pitch, maxHeadPitchTurn)
+	if turnBody {
+		m.Yaw = m.HeadYaw
 	}
 }
 
-// lookAt sets HeadYaw (and optionally body Yaw) toward (tx, tz).
-func lookAt(m *Mob, tx, tz float64, turnBody bool) {
-	yaw := math.Atan2(-(tx - m.X), tz-m.Z) * 180 / math.Pi
-	m.HeadYaw = yaw
-	if turnBody {
-		m.Yaw = yaw
+// approachAngle moves cur toward target by at most maxStep degrees, taking the
+// shortest way around the 360° wrap.
+func approachAngle(cur, target, maxStep float64) float64 {
+	d := wrapDegrees(target - cur)
+	if d > maxStep {
+		d = maxStep
+	} else if d < -maxStep {
+		d = -maxStep
 	}
+	return cur + d
+}
+
+// wrapDegrees normalises an angle delta to (-180, 180].
+func wrapDegrees(d float64) float64 {
+	for d > 180 {
+		d -= 360
+	}
+	for d <= -180 {
+		d += 360
+	}
+	return d
 }

@@ -22,9 +22,10 @@ import (
 )
 
 // AI movement tuning. The world loop (Manager.runOneTick) MUST drive Tick at
-// TickHz; the effective ground speed a player sees is TickHz * WalkSpeed
-// blocks/sec. Vanilla mobs use attribute * 0.1 blocks/tick at 20 Hz, so the
-// per-tick delta inside ai.go is def.WanderSpeed * 0.1 (see aiStep).
+// TickHz; the effective ground speed a player sees is TickHz * step blocks/sec.
+// The per-tick horizontal delta is def.{Wander,Chase}Speed * speedToBlocksPerTick
+// (see stepHorizontal in ai_move.go), calibrated so a chasing zombie matches the
+// vanilla ~0.22 b/tick pursuit speed.
 const TickHz = 20.0
 
 // AIState is the per-mob high-level behaviour. The tree in ai.go switches on
@@ -84,6 +85,8 @@ type Mob struct {
 	// --- per-mob AI state (unexported; reset on Tick, never serialised) ---
 	state          AIState
 	walkTicks      int      // >0: walking forward for this many ticks
+	lookTicks      int      // >0: holding an idle random glance for this many ticks
+	lookYawTarget  float64  // head-yaw target for the current idle glance
 	cooldownTicks  int      // generic per-mob cooldown (used for attack reuse)
 	target         [16]byte // current target player UUID; zero if none
 	hurtBy         [16]byte // last attacker; cleared after panic ends

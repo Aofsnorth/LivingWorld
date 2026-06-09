@@ -35,7 +35,7 @@ func (meleeAttackGoal) Tick(m *Mob, ctx *AIContext) {
 	def := defFor(m.Type)
 	dx, dz := p.X-m.X, p.Z-m.Z
 	distSq := dx*dx + dz*dz
-	lookAt(m, p.X, p.Z, true)
+	lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, true)
 
 	if distSq > def.AttackRange {
 		// Out of range — close the distance.

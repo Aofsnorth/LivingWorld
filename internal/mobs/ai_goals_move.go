@@ -50,13 +50,17 @@ func (g panicGoal) CanContinue(m *Mob, ctx *AIContext) bool { return g.CanUse(m,
 // panicDurationTicks is the vanilla passive panic window (2 s).
 const panicDurationTicks = 40
 
+// panicSpeedMul is the vanilla PanicGoal speed modifier — a fleeing passive
+// sprints noticeably faster than it ambles.
+const panicSpeedMul = 2.0
+
 func (panicGoal) Tick(m *Mob, ctx *AIContext) {
 	def := defFor(m.Type)
 	if p := findPlayer(ctx.Players(), m.hurtBy); p != nil {
-		fleeFrom(m, def, ctx, p.X, p.Z, def.WanderSpeed*1.5)
+		fleeFrom(m, def, ctx, p.X, p.Z, def.WanderSpeed*panicSpeedMul)
 	} else {
 		// Attacker gone — just keep running forward.
-		fleeFrom(m, def, ctx, m.X-math.Sin(m.Yaw*math.Pi/180), m.Z+math.Cos(m.Yaw*math.Pi/180), def.WanderSpeed*1.5)
+		fleeFrom(m, def, ctx, m.X-math.Sin(m.Yaw*math.Pi/180), m.Z+math.Cos(m.Yaw*math.Pi/180), def.WanderSpeed*panicSpeedMul)
 	}
 }
 
@@ -110,11 +114,11 @@ func (g temptGoal) Tick(m *Mob, ctx *AIContext) {
 	def := defFor(m.Type)
 	dx, dz := p.X-m.X, p.Z-m.Z
 	if dx*dx+dz*dz <= 4 { // within 2 b — stop crowding, just watch
-		lookAt(m, p.X, p.Z, false)
+		lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, false)
 		return
 	}
 	navigateTo(m, def, ctx, p.X, p.Y, p.Z, def.WanderSpeed)
-	lookAt(m, p.X, p.Z, false)
+	lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, false)
 }
 
 // randomStrollGoal is the default wander — vanilla RandomStrollGoal /
@@ -160,7 +164,7 @@ func (g lookAtPlayerGoal) CanContinue(m *Mob, ctx *AIContext) bool {
 
 func (g lookAtPlayerGoal) Tick(m *Mob, ctx *AIContext) {
 	if p := g.nearest(m, ctx); p != nil {
-		lookAt(m, p.X, p.Z, false)
+		lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, false)
 	}
 }
 
@@ -174,7 +178,19 @@ func (randomLookAroundGoal) CanUse(m *Mob, ctx *AIContext) bool    { return true
 func (randomLookAroundGoal) CanContinue(m *Mob, ctx *AIContext) bool { return true }
 
 func (randomLookAroundGoal) Tick(m *Mob, ctx *AIContext) {
-	if m.aiTick%30 == 0 {
-		m.HeadYaw += (ctx.RNG.Float64() - 0.5) * 30.0
+	if m.lookTicks > 0 {
+		// Holding a glance: ease the head toward the picked offset.
+		m.lookTicks--
+		m.HeadYaw = approachAngle(m.HeadYaw, m.lookYawTarget, maxHeadYawTurn)
+		return
+	}
+	// Default: settle the head toward the body heading and level the pitch, so a
+	// walking mob looks where it's going instead of staying cocked sideways.
+	m.HeadYaw = approachAngle(m.HeadYaw, m.Yaw, maxHeadYawTurn)
+	m.HeadPitch = approachAngle(m.HeadPitch, 0, maxHeadPitchTurn)
+	// Occasionally pick a brief sideways glance relative to the heading.
+	if ctx.RNG.Float64() < 0.02 {
+		m.lookYawTarget = m.Yaw + (ctx.RNG.Float64()-0.5)*150.0
+		m.lookTicks = 20 + ctx.RNG.Intn(40)
 	}
 }
