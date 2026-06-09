@@ -70,6 +70,17 @@ const (
 // captures a single context.
 type walkableQuery func(x, y, z int) bool
 
+// costFn returns the per-cell movement malus (penalty) for entering the cell
+// at (x, y, z) — vanilla's PathfindingMalus model. 0 is the neutral cost; a
+// positive value makes the cell expensive but passable (Blaze over lava = 8);
+// MalusBlocked makes it impassable (water for a land mob). May be nil, in
+// which case every walkable cell costs the base step only.
+type costFn func(x, y, z int) float64
+
+// MalusBlocked is the sentinel cost meaning "do not path through this cell".
+// Anything ≥ MalusBlocked is treated as impassable by PathFind.
+const MalusBlocked = 1e6
+
 // PathFind returns the shortest A* path from `from` to `to` (integer
 // cell coordinates) under the walkable predicate, or a not-Found result
 // if the budget was exhausted.
@@ -78,9 +89,11 @@ type walkableQuery func(x, y, z int) bool
 // traversed (uniform — no diagonal cost or surface slope for v1).
 //
 // `walkable` is the canonical "is the cell at (x,y,z) walkable for this
-// mob" predicate. Building a custom walkable is the per-mob hook for
-// M1: spiders add wall-climb, drowned add water, etc.
-func PathFind(from, to PathNode, walkable walkableQuery) PathFindResult {
+// mob" predicate. `cost` adds the per-cell movement malus (nil = uniform):
+// a cell whose cost ≥ MalusBlocked is treated as impassable even if walkable,
+// and a positive cost makes the cell expensive but usable (Strider lava = 0,
+// Blaze lava = 8, water = blocked for land mobs).
+func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindResult {
 	if from == to {
 		return PathFindResult{Found: true, Nodes: Path{from}, Expansions: 0}
 	}
@@ -185,6 +198,16 @@ func PathFind(from, to PathNode, walkable walkableQuery) PathFindResult {
 			stepCost := 1.0
 			if nb.Y != cur.pos.Y {
 				stepCost += 0.5 // climbing or falling costs a little more
+			}
+			// Per-cell malus (lava/water/powder-snow per the mob's profile).
+			// A blocked cell is skipped entirely; the goal cell is exempt so
+			// a mob can still path *to* an otherwise-costly destination.
+			if cost != nil && nb != goal.pos {
+				m := cost(nb.X, nb.Y, nb.Z)
+				if m >= MalusBlocked {
+					continue
+				}
+				stepCost += m
 			}
 			tentativeG := cur.g + stepCost
 			n := get(nb)

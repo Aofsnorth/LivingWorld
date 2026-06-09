@@ -182,6 +182,9 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 			},
 			Difficulty: m.Difficulty(),
 			HeldItem:   m.aiHeldItem,
+			BlockNameAt: func(x, y, z int) string {
+				return StateName(w.GetBlock(x, y, z).ID())
+			},
 		})
 		// Phase 4 cleanup: any mob whose AI set Despawn (e.g. creeper
 		// post-explosion) is removed here. Remove() fires OnDespawn so

@@ -75,7 +75,8 @@ type Mob struct {
 	goalSel   *goalSelector
 	targetSel *goalSelector
 	brain     *aiBrain
-	aiTick    int64 // monotonic per-mob tick counter (memory expiry clock)
+	nav       *navProfile // navigation penalty profile (lava/water/etc.)
+	aiTick    int64       // monotonic per-mob tick counter (memory expiry clock)
 
 	// --- per-mob AI state (unexported; reset on Tick, never serialised) ---
 	state          AIState
@@ -561,7 +562,17 @@ func (m *Mob) replanPath(from, to PathNode, ctx AIContext) {
 		}
 		return true
 	}
-	res := PathFind(from, to, wq)
+	// Per-mob navigation penalties (lava/water/powder-snow per the mob's
+	// profile). nav is lazily built in aiStep; guard for the test paths that
+	// call replanPath without a prior aiStep.
+	var cost costFn
+	if m.nav != nil {
+		cost = m.nav.cost(&ctx)
+	} else {
+		prof := navProfileFor(defFor(m.Type))
+		cost = prof.cost(&ctx)
+	}
+	res := PathFind(from, to, wq, cost)
 	if res.Found {
 		m.path = res.Nodes
 		m.pathIdx = 0

@@ -189,6 +189,8 @@ func aiStep(m *Mob, ctx *AIContext) {
 	if m.goalSel == nil {
 		m.goalSel, m.targetSel = buildAI(def)
 		m.brain = newBrain()
+		prof := navProfileFor(def)
+		m.nav = &prof
 	}
 
 	// 2. Timers.
