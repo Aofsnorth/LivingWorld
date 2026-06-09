@@ -154,6 +154,14 @@ type MobDef struct {
 	// baby flag on the existing spawn call). Other mobs
 	// leave this 0.
 	BabyChance float32
+
+	// FoodItem is the namespaced item id that attracts this
+	// passive mob when held by a player. Vanilla: wheat for
+	// cow/sheep, carrot/potato/beetroot for pig, seeds for
+	// chicken. Empty means "no food attraction". The AI
+	// checks the nearest player's held item via HeldItem
+	// callback; if it matches, the mob enters StateFollow.
+	FoodItem string
 }
 
 // LightAny is the sentinel for "don't care" in SpawnRule.MinLight
@@ -269,11 +277,12 @@ type Drop struct {
 // added to the spawn director renders and moves without crashing.
 func defs() map[string]MobDef {
 	return map[string]MobDef{
-		"minecraft:cow": {
-			Type: "minecraft:cow", IsHostile: false,
-			FollowRange: 16, WanderSpeed: 0.20,
-			AttackRange: 4, AttackCooldown: 0,
-			MaxHP: 10,
+"minecraft:cow": {
+		Type: "minecraft:cow", IsHostile: false,
+		FollowRange: 16, WanderSpeed: 0.20,
+		AttackRange: 4, AttackCooldown: 0,
+		MaxHP: 10,
+		FoodItem: "minecraft:wheat",
 			Spawn: &SpawnRule{
 				Category: SpawnPassive,
 				Dimension: DimOverworld,
@@ -282,11 +291,12 @@ func defs() map[string]MobDef {
 				Surfaces: []string{"minecraft:grass_block"},
 			},
 		},
-		"minecraft:pig": {
-			Type: "minecraft:pig", IsHostile: false,
-			FollowRange: 16, WanderSpeed: 0.20,
-			AttackRange: 4, AttackCooldown: 0,
-			MaxHP: 10,
+"minecraft:pig": {
+		Type: "minecraft:pig", IsHostile: false,
+		FollowRange: 16, WanderSpeed: 0.20,
+		AttackRange: 4, AttackCooldown: 0,
+		MaxHP: 10,
+		FoodItem: "minecraft:carrot",
 			Spawn: &SpawnRule{
 				Category: SpawnPassive,
 				Dimension: DimOverworld,
@@ -295,11 +305,12 @@ func defs() map[string]MobDef {
 				Surfaces: []string{"minecraft:grass_block"},
 			},
 		},
-		"minecraft:sheep": {
-			Type: "minecraft:sheep", IsHostile: false,
-			FollowRange: 16, WanderSpeed: 0.20,
-			AttackRange: 4, AttackCooldown: 0,
-			MaxHP: 8,
+"minecraft:sheep": {
+		Type: "minecraft:sheep", IsHostile: false,
+		FollowRange: 16, WanderSpeed: 0.20,
+		AttackRange: 4, AttackCooldown: 0,
+		MaxHP: 8,
+		FoodItem: "minecraft:wheat",
 			Spawn: &SpawnRule{
 				Category: SpawnPassive,
 				Dimension: DimOverworld,
@@ -308,11 +319,12 @@ func defs() map[string]MobDef {
 				Surfaces: []string{"minecraft:grass_block"},
 			},
 		},
-		"minecraft:chicken": {
-			Type: "minecraft:chicken", IsHostile: false,
-			FollowRange: 16, WanderSpeed: 0.20,
-			AttackRange: 4, AttackCooldown: 0,
-			MaxHP: 4,
+"minecraft:chicken": {
+		Type: "minecraft:chicken", IsHostile: false,
+		FollowRange: 16, WanderSpeed: 0.20,
+		AttackRange: 4, AttackCooldown: 0,
+		MaxHP: 4,
+		FoodItem: "minecraft:wheat_seeds",
 			Spawn: &SpawnRule{
 				Category: SpawnPassive,
 				Dimension: DimOverworld,

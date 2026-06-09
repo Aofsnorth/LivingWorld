@@ -39,22 +39,29 @@ import (
 // that fit a small playtest; M2.2 should re-derive from
 // the number of loaded chunks.
 const (
-	capPassive = 12
-	capHostile = 18
+	capPassive = 10  // vanilla creature cap
+	capHostile = 70  // vanilla monster cap
 	capNeutral = 8
 )
 
 // Candidate-column shell radii (blocks) around a player: outside
-// the immediate no-spawn ring, inside simulation distance.
+// the immediate no-spawn ring, inside the 128-block despawn radius.
+// Vanilla: hostile mobs spawn in 24..128 block shell.
 const (
 	spawnMinRadius = 24
-	spawnMaxRadius = 44
-	// Max attempts per director call. The director picks up
-	// to this many candidate columns per tick.
-	spawnAttemptsPerTick = 4
+	spawnMaxRadius = 128
+	// Max attempts per director call. Vanilla runs one spawn cycle
+	// per chunk per tick; we approximate with per-tick attempts.
+	spawnAttemptsPerTick = 10
 	// openSkyCheckCells is how many cells above the spawn
 	// column the director checks for "open sky" (ghast).
 	openSkyCheckCells = 8
+	// packMaxSize is the maximum mobs per pack spawn. Vanilla: 4
+	// for most mobs, up to 8 for wolves/cod/tropical fish.
+	packMaxSize = 4
+	// packSpreadBlocks is the ±5 block triangular distribution
+	// radius for pack member offsets (vanilla).
+	packSpreadBlocks = 5
 )
 
 // pickSpawnColumn chooses a random column in the shell around a
@@ -253,6 +260,20 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 		if !hasHeadroom(w, x, y, z) {
 			continue
 		}
+		// 24-block player exclusion: vanilla does not allow spawning
+		// within 24 blocks of any player (spherical distance).
+		tooClose := false
+		for _, a := range anchors {
+			dx, dz := float64(x)-a.X+0.5, float64(z)-a.Z+0.5
+			dy := float64(y) - a.Y
+			if dx*dx+dy*dy+dz*dz < 24*24 {
+				tooClose = true
+				break
+			}
+		}
+		if tooClose {
+			continue
+		}
 		// Build the candidate pool for this column.
 		type cand struct {
 			mobType string
@@ -268,7 +289,6 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 			if !difficultyAllowsCategory(difficulty, rule.Category) {
 				continue
 			}
-			// Global cap (per category).
 			switch rule.Category {
 			case mobs.SpawnPassive:
 				if counts[mobs.SpawnPassive] >= capPassive {
@@ -283,11 +303,9 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 					continue
 				}
 			}
-			// Per-mob cap.
 			if rule.Cap > 0 && m.mobTypeCount(d.Type) >= rule.Cap {
 				continue
 			}
-			// Weight (default 1.0).
 			weight := rule.Chance
 			if weight <= 0 {
 				weight = 1.0
@@ -297,7 +315,6 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 		if len(pool) == 0 {
 			continue
 		}
-		// Weighted pick.
 		var total float32
 		for _, c := range pool {
 			total += c.weight
@@ -317,7 +334,41 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 		if pick == "" {
 			continue
 		}
-		m.mobs.Spawn(pick, float64(x)+0.5, float64(y), float64(z)+0.5)
-		counts[pickedCat]++
+		// Pack spawning: spawn 1..packMaxSize mobs of the same type
+		// near the initial position (vanilla: ±5 blocks triangular).
+		packSize := 1 + rng.Intn(packMaxSize)
+		for j := 0; j < packSize; j++ {
+			px, pz := x, z
+			if j > 0 {
+				// Offset pack members with triangular distribution
+				// within ±packSpreadBlocks of the initial position.
+				px = x + int(math.Round((rng.Float64()-rng.Float64())*packSpreadBlocks))
+				pz = z + int(math.Round((rng.Float64()-rng.Float64())*packSpreadBlocks))
+			}
+			py := w.HighestSolidY(px, pz)
+			if !hasHeadroom(w, px, py, pz) {
+				continue
+			}
+			// Check cap again for each pack member.
+			if counts[pickedCat] >= capForCategory(pickedCat) {
+				break
+			}
+			m.mobs.Spawn(pick, float64(px)+0.5, float64(py), float64(pz)+0.5)
+			counts[pickedCat]++
+		}
+	}
+}
+
+// capForCategory returns the global cap for the given spawn category.
+func capForCategory(cat mobs.SpawnCategory) int {
+	switch cat {
+	case mobs.SpawnPassive:
+		return capPassive
+	case mobs.SpawnHostile:
+		return capHostile
+	case mobs.SpawnNeutral:
+		return capNeutral
+	default:
+		return 0
 	}
 }

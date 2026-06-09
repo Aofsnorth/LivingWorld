@@ -68,6 +68,12 @@ type Manager struct {
 	// detection and just wanders.
 	aiPlayerList func() []mobs.PlayerTarget
 
+	// aiHeldItem returns the namespaced item id of the given player's
+	// main hand. Used by passive mob food-attraction AI. May be nil —
+	// the AI degrades to "no food following". Wired from the server
+	// bootstrap with a closure that reads the player's inventory.
+	aiHeldItem func(playerUUID [16]byte) string
+
 	// aiMeleeAttack / aiShootArrow / aiExplode are the side-effect callbacks
 	// the AI fires when a hostile mob lands a hit, a skeleton fires an arrow,
 	// or a creeper explodes. Wired from the server bootstrap with closures
@@ -333,6 +339,14 @@ func (m *Manager) playerAnchors() []Position {
 func (m *Manager) SetMobAIPlayerList(fn func() []mobs.PlayerTarget) {
 	m.locatorMu.Lock()
 	m.aiPlayerList = fn
+	m.locatorMu.Unlock()
+}
+
+// SetMobAIHeldItem registers the function the AI uses to query a player's
+// held item. Wired from server bootstrap; nil disables food-attraction AI.
+func (m *Manager) SetMobAIHeldItem(fn func(playerUUID [16]byte) string) {
+	m.locatorMu.Lock()
+	m.aiHeldItem = fn
 	m.locatorMu.Unlock()
 }
 

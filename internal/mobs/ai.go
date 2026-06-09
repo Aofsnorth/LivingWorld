@@ -130,6 +130,12 @@ type AIContext struct {
 	// wooden doors on Hard. The world layer provides this so
 	// the AI doesn't need to know the difficulty constants.
 	Difficulty string
+
+	// HeldItem returns the namespaced item id of the item in
+	// the given player's main hand. Used by passive mobs to
+	// detect food attraction (cow follows wheat, pig follows
+	// carrot, etc). May be nil; the AI degrades to "no follow".
+	HeldItem func(playerUUID [16]byte) string
 }
 
 // Tick runs one AI pass over every mob. It is the single entry point driven
@@ -272,6 +278,94 @@ func aiStep(m *Mob, ctx AIContext) {
 		}
 	}
 
+	// --- passive mob AI (alert / graze / flee / follow food) ----------------
+	if !def.IsHostile {
+		// Count down active states.
+		if m.grazeTicks > 0 {
+			m.grazeTicks--
+			if m.grazeTicks == 0 {
+				m.state = StateIdle
+			}
+		}
+		if m.alertTicks > 0 {
+			m.alertTicks--
+			if m.alertTicks == 0 {
+				m.state = StateIdle
+			}
+		}
+		if m.followTicks > 0 {
+			m.followTicks--
+			if m.followTicks == 0 {
+				m.target = zero16()
+				m.state = StateIdle
+			}
+		}
+
+		// Find nearest player and check food attraction.
+		var nearestPlayer *PlayerTarget
+		nearestDistSq := math.MaxFloat64
+		for i := range players {
+			dx, dz := players[i].X-m.X, players[i].Z-m.Z
+			distSq := dx*dx + dz*dz
+			if distSq < nearestDistSq {
+				nearestDistSq = distSq
+				nearestPlayer = &players[i]
+			}
+		}
+
+		// Food attraction: if player holds this mob's preferred food
+		// within 8 blocks, follow them (overrides alert/graze but not flee).
+		if nearestPlayer != nil && def.FoodItem != "" && ctx.HeldItem != nil && m.state != StateFlee {
+			if nearestDistSq <= 64 { // 8^2
+				held := ctx.HeldItem(nearestPlayer.UUID)
+				if held == def.FoodItem {
+					m.state = StateFollow
+					m.target = nearestPlayer.UUID
+					m.followTicks = 100 // 5 seconds of interest
+					m.grazeTicks = 0
+					m.alertTicks = 0
+				} else if m.state == StateFollow {
+					m.state = StateIdle
+					m.target = zero16()
+					m.followTicks = 0
+				}
+			} else if m.state == StateFollow {
+				m.state = StateIdle
+				m.target = zero16()
+				m.followTicks = 0
+			}
+		}
+
+		// Check player proximity (only when not following food).
+		if m.state != StateFlee && m.state != StateGraze && m.state != StateFollow {
+			if nearestPlayer != nil {
+				// Player within 3 blocks -> flee (panic)
+				if nearestDistSq <= 9 { // 3^2
+					m.state = StateFlee
+					m.hurtBy = nearestPlayer.UUID
+					m.panicTicks = 60
+					m.alertTicks = 0
+					m.grazeTicks = 0
+					m.followTicks = 0
+					m.target = zero16()
+				// Player within 7 blocks -> alert (watch player)
+				} else if nearestDistSq <= 49 && m.state != StateAlert { // 7^2
+					m.state = StateAlert
+					m.alertTicks = 40 + ctx.RNG.Intn(41) // 2-4 seconds
+					m.grazeTicks = 0
+				}
+			}
+		}
+
+		// Random grazing when idle.
+		if m.state == StateIdle && m.grazeTicks == 0 && m.alertTicks == 0 {
+			if ctx.RNG.Float64() < 0.005 { // 0.5% chance per tick
+				m.state = StateGraze
+				m.grazeTicks = 40 + ctx.RNG.Intn(41) // 2-4 seconds grazing
+			}
+		}
+	}
+
 	// --- detection (hostile only) -----------------------------------------
 	if def.IsHostile {
 		if tgt, ok := pickTarget(m, def, players, ctx); ok {
@@ -300,6 +394,38 @@ func aiStep(m *Mob, ctx AIContext) {
 	case StateIdle, StatePursue, StateFlee:
 		moveMob(m, def, players, ctx)
 		lookAtNearestPlayer(m, def, players, 6.0)
+	case StateGraze:
+		// Passive mob eating grass: head down, no movement.
+		m.HeadPitch = 30.0 // head down eating
+		// Occasionally twitch head while grazing for natural feel.
+		if m.ambientCD%20 == 0 {
+			m.HeadYaw += (ctx.RNG.Float64() - 0.5) * 10.0
+		}
+	case StateAlert:
+		// Passive mob watching player: track nearest player with head.
+		var nearestPlayer *PlayerTarget
+		nearestDistSq := math.MaxFloat64
+		for i := range players {
+			dx, dz := players[i].X-m.X, players[i].Z-m.Z
+			distSq := dx*dx + dz*dz
+			if distSq < nearestDistSq {
+				nearestDistSq = distSq
+				nearestPlayer = &players[i]
+			}
+		}
+		if nearestPlayer != nil && nearestDistSq <= 49 { // still within 7 blocks
+			// Only turn head, not body.
+			m.HeadYaw = math.Atan2(-(nearestPlayer.X-m.X), nearestPlayer.Z-m.Z) * 180 / math.Pi
+		}
+		// Very slight body sway for natural alert posture.
+		if m.ambientCD%40 == 0 {
+			m.Yaw += (ctx.RNG.Float64() - 0.5) * 5.0
+		}
+	case StateFollow:
+		// Passive mob following player who holds food.
+		// Walk toward the target player at wander speed.
+		moveMob(m, def, players, ctx)
+		faceTarget(m, players)
 	case StateMelee:
 		// Stand in range; swing on cooldown; lose interest if target runs.
 		meleeTick(m, def, players, ctx)
@@ -593,10 +719,50 @@ func moveMob(m *Mob, def MobDef, players []PlayerTarget, ctx AIContext) {
 		}
 		// Flee ~1.5× wander speed.
 		speed = def.WanderSpeed * 1.5
+	case StateFollow:
+		// Follow player who holds food. Walk toward them at
+		// wander speed (not chase speed — they're friendly).
+		var tgt *PlayerTarget
+		for i, p := range players {
+			if p.UUID == m.target {
+				tgt = &players[i]
+				break
+			}
+		}
+		if tgt == nil {
+			m.state = StateIdle
+			m.target = zero16()
+			m.followTicks = 0
+			return
+		}
+		// Stop approaching when within 2 blocks (don't crowd the player).
+		fdSq := (tgt.X-m.X)*(tgt.X-m.X) + (tgt.Z-m.Z)*(tgt.Z-m.Z)
+		if fdSq <= 4 { // 2^2
+			// Close enough — stand still and look at player.
+			m.HeadYaw = math.Atan2(-(tgt.X-m.X), tgt.Z-m.Z) * 180 / math.Pi
+			return
+		}
+		dx, dz = tgt.X-m.X, tgt.Z-m.Z
+		target = m.target
 	default:
 		// Idle wander: head along Yaw for `walkTicks` ticks, then idle.
-		if m.walkTicks <= 0 && ctx.RNG.Float64() < 0.0125 {
-			m.walkTicks = 80 + ctx.RNG.Intn(160) // 4-12s
+		// Baby passive mobs have shorter attention spans and random
+		// playful jumps (vanilla: baby animals jump ~2× more often
+		// and change direction more frequently).
+		walkChance := 0.0125
+		walkLen := 80
+		walkJitter := 160
+		if m.Baby && !def.IsHostile {
+			walkChance = 0.03   // babies start walking more often
+			walkLen = 40         // shorter walks
+			walkJitter = 80     // less jitter
+			// Playful random jump while on ground.
+			if m.OnGround && m.jumpCooldown == 0 && ctx.RNG.Float64() < 0.01 {
+				jumpMob(m)
+			}
+		}
+		if m.walkTicks <= 0 && ctx.RNG.Float64() < walkChance {
+			m.walkTicks = walkLen + ctx.RNG.Intn(walkJitter)
 			m.Yaw = ctx.RNG.Float64()*360 - 180
 		}
 		if m.walkTicks > 0 {

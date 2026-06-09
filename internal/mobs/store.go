@@ -35,6 +35,9 @@ const (
 	StateMelee                   // hostile: in attack range, swinging on cooldown
 	StateShoot                   // skeleton: bow drawn, will fire on next AI tick
 	StateFuse                    // creeper: hissing, will explode at fuse == 0
+	StateGraze                   // passive: standing still, head down eating
+	StateAlert                   // passive: standing still, tracking player
+	StateFollow                  // passive: following player who holds food
 )
 
 // Mob is a live mob entity in the world. The exported fields are the
@@ -53,6 +56,9 @@ type Mob struct {
 	// looking at something without turning. Defaults to Yaw; look-at-entity
 	// overrides it when a player is within 6 blocks.
 	HeadYaw float64
+	// HeadPitch is the vertical head angle. Used for grazing (eating)
+	// animation where the mob lowers its head to the ground. Defaults to 0.
+	HeadPitch float64
 	// OnGround is the server's view of the mob's grounding; used for the
 	// OnMove broadcast so the client can stop running its own gravity.
 	OnGround bool
@@ -144,6 +150,22 @@ type Mob struct {
 	// "stuck" feel where a mob bumping into a wall doesn't
 	// keep grinding on it.
 	stuckTicks int
+
+	// M-passiveAI: grazeTicks counts ticks remaining in the
+	// grazing (eating) state. Passive mobs enter StateGraze
+	// for 40-80 ticks when idle, lowering their head pitch
+	// to simulate eating grass.
+	grazeTicks int
+
+	// M-passiveAI: alertTicks counts ticks remaining in the
+	// alert state. Passive mobs in StateAlert slowly rotate
+	// their head (not body) to track nearby players.
+	alertTicks int
+
+	// M-passiveAI: followTicks counts ticks remaining in the
+	// follow state. Passive mobs follow a player holding food
+	// for up to this many ticks before losing interest.
+	followTicks int
 }
 
 // Store holds active mobs and notifies listeners on spawn/despawn/move.
