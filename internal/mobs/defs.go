@@ -162,6 +162,13 @@ type MobDef struct {
 	// checks the nearest player's held item via HeldItem
 	// callback; if it matches, the mob enters StateFollow.
 	FoodItem string
+
+	// AggravatedByGaze marks a mob (enderman) that is neutral until a
+	// player looks directly at it. The brain-backed gaze target goal
+	// (ai_goals_brain.go) only aggros players whose view cone is on the
+	// mob's head, and keeps it angry for a timer after provocation. Other
+	// mobs leave this false and use the normal nearest-target acquisition.
+	AggravatedByGaze bool
 }
 
 // LightAny is the sentinel for "don't care" in SpawnRule.MinLight
@@ -755,9 +762,10 @@ func defs() map[string]MobDef {
 			Type: "minecraft:enderman", IsHostile: true,
 			FollowRange: 64, WanderSpeed: 0.30, ChaseSpeed: 0.45,
 			AttackDamage: 4, AttackRange: 4, AttackCooldown: 20,
-			WaterSensitive:  true, // 1 HP/s in water
-			BurnsInDaylight: false,
-			MaxHP:           40,
+			WaterSensitive:   true, // 1 HP/s in water
+			BurnsInDaylight:  false,
+			AggravatedByGaze: true, // neutral until looked at (vanilla)
+			MaxHP:            40,
 			Drops: []Drop{
 				{Item: "minecraft:ender_pearl", Min: 0, Max: 1, Chance: 0.5},
 			},

@@ -130,6 +130,8 @@ func New(cfg *Config) *Server {
 				Sneaking:    p.Sneaking,
 				WearingGold: p.WearingGold(),
 				Gamemode:    p.Gamemode,
+				LookYaw:     float64(p.Rotation.Yaw),
+				LookPitch:   float64(p.Rotation.Pitch),
 			})
 		}
 		return out

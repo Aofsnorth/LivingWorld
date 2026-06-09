@@ -68,7 +68,11 @@ func buildAI(def MobDef) (goalSel, targetSel *goalSelector) {
 		// Retaliate against the last attacker (players + iron golem).
 		targetSel.add(1, hurtByTargetGoal{})
 	}
-	if def.IsHostile {
+	switch {
+	case def.AggravatedByGaze:
+		// Enderman: neutral until stared at; brain-backed anger memory.
+		targetSel.add(2, endermanGazeGoal{})
+	case def.IsHostile:
 		// Hostiles auto-aggro the nearest valid player. Neutral mobs
 		// (iron golem) only retaliate via hurtByTargetGoal above.
 		targetSel.add(2, nearestAttackableTargetGoal{})
