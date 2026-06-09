@@ -50,8 +50,18 @@ func (s *Server) startMobSync() {
 					v.write(&packet.MoveActorAbsolute{
 						EntityRuntimeID: uint64(m.EntityID),
 						Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
-						Rotation:        mgl32.Vec3{0, float32(m.Yaw), float32(m.Yaw)},
+						// Rotation = {pitch, body yaw, head yaw}. The rombak AI
+						// decouples HeadYaw so the head can track a player while
+						// the body faces its movement heading.
+						Rotation: mgl32.Vec3{0, float32(m.Yaw), float32(m.HeadYaw)},
 					})
+					// On-fire flag only on transition (sun-burn etc.).
+					if v.mobViewer.fireChanged(m.EntityID, m.FireTicks > 0) {
+						v.write(&packet.SetActorData{
+							EntityRuntimeID: uint64(m.EntityID),
+							EntityMetadata:  mobEntityMetadata(m),
+						})
+					}
 				} else {
 					v.write(addMobActor(m))
 					v.mobViewer.markSpawned(m.EntityID)
@@ -120,7 +130,7 @@ func addMobActor(m mobs.Mob) *packet.AddActor {
 		Position:        mgl32.Vec3{float32(m.X), float32(m.Y), float32(m.Z)},
 		Velocity:        mgl32.Vec3{},
 		Yaw:             float32(m.Yaw),
-		HeadYaw:         float32(m.Yaw),
+		HeadYaw:         float32(m.HeadYaw),
 		EntityMetadata:  mobEntityMetadata(m),
 	}
 }
@@ -161,6 +171,11 @@ func mobEntityMetadata(m mobs.Mob) protocol.EntityMetadata {
 	case "minecraft:drowned":
 		// Variant 1 = trident. v1 always uses 1 (M4 limitation).
 		md[protocol.EntityDataKeyVariant] = int32(1)
+	}
+	// On-fire flag (rombak): the AI's FireTicks drives the flame overlay.
+	// SetFlag toggles the bit in the shared EntityDataKeyFlags bitfield.
+	if m.FireTicks > 0 {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagOnFire)
 	}
 	return md
 }

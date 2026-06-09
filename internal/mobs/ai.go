@@ -140,6 +140,26 @@ type AIContext struct {
 // lock, mirroring drops.Store.TickPhysics. SolidAt is required; the other
 // fields may be nil (the AI degrades gracefully — no detection, no attack).
 func (s *Store) Tick(ctx AIContext) {
+	// OnFireDamage is the one side-effect callback the world layer wires back
+	// to THIS store (HurtFire), which would re-lock s.mu while Tick holds it —
+	// a self-deadlock. Defer those events: collect them during the locked
+	// pass and replay them after the unlock, where HurtFire can take the lock
+	// safely. (All other callbacks touch the player/world/projectile stores,
+	// not this one, so they're fine to fire in-lock.)
+	realFire := ctx.OnFireDamage
+	var fireEvents []struct {
+		id  int64
+		dmg float32
+	}
+	if realFire != nil {
+		ctx.OnFireDamage = func(id int64, dmg float32) {
+			fireEvents = append(fireEvents, struct {
+				id  int64
+				dmg float32
+			}{id, dmg})
+		}
+	}
+
 	s.mu.Lock()
 	moved := make([]Mob, 0, len(s.mobs))
 	for _, m := range s.mobs {
@@ -159,6 +179,11 @@ func (s *Store) Tick(ctx AIContext) {
 	}
 	cbs := append([]func(Mob){}, s.onMove...)
 	s.mu.Unlock()
+
+	// Replay deferred fire-damage now the lock is released (HurtFire re-locks).
+	for _, e := range fireEvents {
+		realFire(e.id, e.dmg)
+	}
 
 	for _, m := range moved {
 		for _, cb := range cbs {

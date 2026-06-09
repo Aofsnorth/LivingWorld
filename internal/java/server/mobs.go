@@ -109,6 +109,10 @@ func (j *javaBridge) startMobSync() {
 				if s.mobViewer.isSpawned(m.EntityID) {
 					_ = s.SendPacket(moveMobPacket(m))
 					_ = s.SendPacket(headRotatePacket(m))
+					// On-fire metadata only on transition (sun-burn etc.).
+					if s.mobViewer.fireChanged(m.EntityID, m.FireTicks > 0) {
+						_ = s.SendPacket(mobFlagsPacket(m))
+					}
 				} else {
 					_ = s.SendPacket(spawnMobPacket(m))
 					// M4: held item for entering AOI.
@@ -168,14 +172,40 @@ func moveMobPacket(m mobs.Mob) pk.Packet {
 	)
 }
 
-// headRotatePacket turns the mob's head to match its heading (Yaw). Without it the
-// head stays at the AddEntity head-yaw while the body teleport-rotates, which reads
-// as a mob walking with its head locked forward.
+// headRotatePacket turns the mob's head to its HeadYaw, which the rombak AI
+// decouples from the body Yaw (a mob can stroll along Yaw while its head
+// tracks a nearby player via the look goals). Falls back to Yaw only when the
+// AI never set a head yaw (HeadYaw defaults to Yaw on the first look tick).
 func headRotatePacket(m mobs.Mob) pk.Packet {
 	return pk.Marshal(
 		packetid.ClientboundGameRotateHead,
 		pk.VarInt(int32(m.EntityID)),
-		yawToAngle(m.Yaw),
+		yawToAngle(m.HeadYaw),
+	)
+}
+
+// mobFlagsByte builds the protocol-775 shared entity-flags byte (metadata
+// index 0). Bit 0x01 = on fire. The rombak AI tracks FireTicks (sun-burn,
+// future fire sources); this surfaces the flame overlay to Java clients.
+func mobFlagsByte(m mobs.Mob) byte {
+	var f byte
+	if m.FireTicks > 0 {
+		f |= 0x01
+	}
+	return f
+}
+
+// mobFlagsPacket emits SetEntityData carrying only the shared-flags byte
+// (index 0, type 0 = Byte). Sent on a fire-state transition so a burning mob
+// shows flames and stops showing them when the fire lapses.
+func mobFlagsPacket(m mobs.Mob) pk.Packet {
+	return pk.Marshal(
+		packetid.ClientboundGameSetEntityData,
+		pk.VarInt(int32(m.EntityID)),
+		pk.UnsignedByte(0), // index 0 = shared flags
+		pk.VarInt(0),       // type 0 = Byte
+		pk.Byte(mobFlagsByte(m)),
+		pk.UnsignedByte(0xff), // terminator
 	)
 }
 

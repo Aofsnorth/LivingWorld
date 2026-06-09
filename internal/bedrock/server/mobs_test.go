@@ -305,3 +305,17 @@ func TestM4_AddMobActor_CarriesMetadata(t *testing.T) {
 		t.Errorf("skeleton: AddActor has variant=%v; want absent", v)
 	}
 }
+
+// TestRombak_MobEntityMetadata_OnFire verifies the rombak on-fire flag is set
+// in the Bedrock entity metadata when the mob is burning, and absent otherwise.
+func TestRombak_MobEntityMetadata_OnFire(t *testing.T) {
+	burning := mobEntityMetadata(mobs.Mob{Type: "minecraft:zombie", FireTicks: 60})
+	flags, ok := burning[protocol.EntityDataKeyFlags]
+	if !ok || flags.(int64)&(1<<protocol.EntityDataFlagOnFire) == 0 {
+		t.Errorf("burning mob should set the on-fire flag, got flags=%v ok=%v", flags, ok)
+	}
+	calm := mobEntityMetadata(mobs.Mob{Type: "minecraft:zombie", FireTicks: 0})
+	if f, ok := calm[protocol.EntityDataKeyFlags]; ok && f.(int64)&(1<<protocol.EntityDataFlagOnFire) != 0 {
+		t.Error("non-burning mob must not set the on-fire flag")
+	}
+}

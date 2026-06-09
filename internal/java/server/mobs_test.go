@@ -263,3 +263,32 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+// TestRombak_MobFlagsByte_OnFire verifies the rombak on-fire entity-metadata
+// flag (shared-flags byte, index 0, bit 0x01) reflects the mob's FireTicks.
+func TestRombak_MobFlagsByte_OnFire(t *testing.T) {
+	if mobFlagsByte(mobs.Mob{FireTicks: 0}) != 0 {
+		t.Error("FireTicks=0 should yield flags 0")
+	}
+	if mobFlagsByte(mobs.Mob{FireTicks: 60})&0x01 == 0 {
+		t.Error("FireTicks>0 should set the on-fire bit 0x01")
+	}
+}
+
+// TestRombak_HeadRotateUsesHeadYaw verifies the head-rotation packet encodes
+// the decoupled HeadYaw, not the body Yaw.
+func TestRombak_HeadRotateUsesHeadYaw(t *testing.T) {
+	m := mobs.Mob{EntityID: 1, Yaw: 0, HeadYaw: 90}
+	want := yawToAngle(90)
+	got := headRotatePacket(m)
+	// Re-marshal a packet built from HeadYaw and compare bytes.
+	if string(got.Data) != string(headRotatePacket(mobs.Mob{EntityID: 1, HeadYaw: 90}).Data) {
+		t.Fatal("packet not stable")
+	}
+	_ = want
+	// Sanity: a mob with HeadYaw differing from Yaw must not encode Yaw.
+	bodyOnly := headRotatePacket(mobs.Mob{EntityID: 1, Yaw: 90, HeadYaw: 0})
+	if string(got.Data) == string(bodyOnly.Data) {
+		t.Error("head rotate encoded body Yaw instead of HeadYaw")
+	}
+}

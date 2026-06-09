@@ -35,10 +35,29 @@ const mobAOIRadiusSq = 80.0 * 80.0
 type mobTracker struct {
 	mu      sync.Mutex
 	spawned map[int64]struct{}
+	burning map[int64]struct{} // mobs currently shown on-fire to this session
+}
+
+// fireChanged records the on-fire state for a mob and reports whether it
+// changed since the last call, so the bridge sends a SetActorData flag update
+// only on transitions (not every move tick).
+func (t *mobTracker) fireChanged(id int64, onFire bool) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, was := t.burning[id]
+	if onFire == was {
+		return false
+	}
+	if onFire {
+		t.burning[id] = struct{}{}
+	} else {
+		delete(t.burning, id)
+	}
+	return true
 }
 
 func newMobTracker() *mobTracker {
-	return &mobTracker{spawned: make(map[int64]struct{})}
+	return &mobTracker{spawned: make(map[int64]struct{}), burning: make(map[int64]struct{})}
 }
 
 func (t *mobTracker) markSpawned(id int64) {

@@ -15,6 +15,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"livingworld/internal/combat"
+	"livingworld/internal/registry"
+
 	"github.com/google/uuid"
 )
 
@@ -456,27 +459,24 @@ func (s *Store) HurtDirectWithKnockback(mobID int64, attacker [16]byte, damage f
 		deathSnap = &snap
 		deathCbs = append(deathCbs, s.onDeath...)
 	}
-	if kb > 0 && !def.NoKnockback {
-		d := math.Hypot(dirX, dirZ)
-		if d > 0 {
-			// Push is OPPOSITE the attacker direction (mob
-			// away from attacker). Vanilla adds the on-
-			// ground Y bump (0.4) so the mob visibly
-			// hops when hit. The integrator consumes
-			// these once and zeros them.
-			//
-			// M7.10: NoKnockback (slime / magma cube) skip
-			// the impulse entirely. Vanilla 1.20 slime has
-			// knockback_resistance=1.0 — a hit produces no
-			// visible stagger.
-			m.KnockbackVX = -dirX / d * kb
-			m.KnockbackVZ = -dirZ / d * kb
-			if m.OnGround {
-				m.KnockbackVY = 0.4
-			} else {
-				m.KnockbackVY = 0
-			}
+	if kb > 0 {
+		// Route through the shared combat.Knockback formula (vanilla
+		// LivingEntity.knockback) so player↔mob and mob-store knockback
+		// agree. NoKnockback mobs (slime / magma cube, knockback_resistance
+		// 1.0) pass resistance 1.0, which zeroes the impulse. The mob has no
+		// persistent horizontal velocity (it steps by position), so we seed
+		// the formula with only the vertical vy; KnockbackVX/VZ are the
+		// resulting horizontal impulse and KnockbackVY is the *delta* to vy
+		// (the integrator adds it), preserving the on-ground 0.4 hop and the
+		// airborne "no hop" rule.
+		resistance := 0.0
+		if def.NoKnockback {
+			resistance = 1.0
 		}
+		nv := combat.Knockback(registry.Vec3{Y: m.vy}, kb, dirX, dirZ, resistance, m.OnGround)
+		m.KnockbackVX = nv.X
+		m.KnockbackVZ = nv.Z
+		m.KnockbackVY = nv.Y - m.vy
 	}
 	s.mu.Unlock()
 	if deathSnap != nil {

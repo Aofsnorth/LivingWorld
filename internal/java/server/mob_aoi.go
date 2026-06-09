@@ -22,10 +22,29 @@ const javaMobAOIRadiusSq = 80.0 * 80.0
 type javaMobTracker struct {
 	mu      sync.Mutex
 	spawned map[int64]struct{}
+	burning map[int64]struct{} // mobs currently shown on-fire to this session
 }
 
 func newJavaMobTracker() *javaMobTracker {
-	return &javaMobTracker{spawned: make(map[int64]struct{})}
+	return &javaMobTracker{spawned: make(map[int64]struct{}), burning: make(map[int64]struct{})}
+}
+
+// fireChanged records the on-fire state for a mob and reports whether it
+// changed since the last call. The bridge uses it to send the on-fire
+// entity-metadata flag only on transitions (not every move tick).
+func (t *javaMobTracker) fireChanged(id int64, onFire bool) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, was := t.burning[id]
+	if onFire == was {
+		return false
+	}
+	if onFire {
+		t.burning[id] = struct{}{}
+	} else {
+		delete(t.burning, id)
+	}
+	return true
 }
 
 func (t *javaMobTracker) markSpawned(id int64) {
