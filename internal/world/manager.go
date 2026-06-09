@@ -55,6 +55,11 @@ type Manager struct {
 	// by StartMobAI; read under m.mu by the director tick.
 	difficulty string
 
+	// spawnMode selects the JE ("java") vs BE ("bedrock") mob spawn/despawn
+	// model used by the director. Set via SetSpawnMode at bootstrap; read
+	// under m.mu by spawnTick. Empty defaults to "java".
+	spawnMode string
+
 	// playerLocator returns the live world positions of connected players. The
 	// world package can't import player (cycle), so the server bootstrap wires the
 	// player.Manager in via SetPlayerLocator. Used by the mob-spawn director as the
@@ -192,6 +197,25 @@ func (m *Manager) Difficulty() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.difficulty
+}
+
+// SetSpawnMode selects the JE ("java") vs BE ("bedrock") mob spawn/despawn
+// model used by the natural-spawn director. Anything other than "bedrock" is
+// treated as "java" (the default).
+func (m *Manager) SetSpawnMode(mode string) {
+	m.mu.Lock()
+	m.spawnMode = mode
+	m.mu.Unlock()
+}
+
+// SpawnMode returns the current spawn mode ("java" or "bedrock").
+func (m *Manager) SpawnMode() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.spawnMode == spawnModeBedrock {
+		return spawnModeBedrock
+	}
+	return spawnModeJava
 }
 
 // Mobs returns the shared mob store. Each protocol bridge subscribes

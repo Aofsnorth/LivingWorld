@@ -34,14 +34,37 @@ import (
 //   - Easy / Normal / Hard: identical for v1 (vanilla scales
 //     pack size and per-mob chance, deferred to M2.2).
 
-// Global mob caps. Vanilla scales these by loaded-chunk count
-// (per-category monster density). For v1 we use flat numbers
-// that fit a small playtest; M2.2 should re-derive from
-// the number of loaded chunks.
+// Spawn-mode identifiers. The director replicates either the Java Edition
+// model (per-category caps scaled by loaded-chunk count, surface-Y spawning,
+// internal light = max(block,sky)) or the Bedrock Edition model (one static
+// global cap, 3D shell-Y spawning around the player, hostile light = block
+// light only). Selected server-wide via Manager.SetSpawnMode.
 const (
-	capPassive = 10  // vanilla creature cap
-	capHostile = 70  // vanilla monster cap
+	spawnModeJava    = "java"
+	spawnModeBedrock = "bedrock"
+)
+
+// Global mob caps (Java mode). Vanilla scales these by loaded-chunk count
+// (per-category monster density): cap = base × eligibleChunks / 289. We treat
+// the constants below as the per-289-chunk base and scale at spawn time.
+const (
+	capPassive = 10 // vanilla creature cap (base)
+	capHostile = 70 // vanilla monster cap (base)
 	capNeutral = 8
+
+	// jeChunksPerCapUnit is vanilla's 17×17 = 289 spawn-eligible-chunk
+	// denominator the global cap is divided by.
+	jeChunksPerCapUnit = 289
+
+	// beStaticCap is the Bedrock Edition single global cap for
+	// environment-spawned mobs (vanilla 200).
+	beStaticCap = 200
+
+	// beShellMin/beShellMax bound the Bedrock vertical shell (blocks above
+	// and below the player) sampled when picking a spawn Y. Vanilla spawns
+	// in a 24..128 shell; we sample ±beShellMax around the player's feet.
+	beShellMin = 24
+	beShellMax = 64
 )
 
 // Candidate-column shell radii (blocks) around a player: outside
@@ -217,6 +240,39 @@ func evaluateSpawnRule(w *World, x, y, z int, rule *mobs.SpawnRule, dayTime int6
 	return true
 }
 
+// evaluateSpawnRuleMode is the edition-aware wrapper around evaluateSpawnRule.
+// Java mode (and any unknown mode) uses the internal-light = max(block,sky)
+// rule baked into evaluateSpawnRule. Bedrock mode applies the BE hostile-light
+// rule instead: a hostile mob needs block light == 0 AND sky light below the
+// rule's MaxLight bound (torchlight blocks BE spawns more aggressively than
+// JE, which folds block + sky into one value). Non-hostile rules are identical
+// across editions, so they always defer to evaluateSpawnRule.
+func evaluateSpawnRuleMode(w *World, x, y, z int, rule *mobs.SpawnRule, dayTime int64, mode string) bool {
+	if mode != spawnModeBedrock || rule == nil || rule.Category != mobs.SpawnHostile {
+		return evaluateSpawnRule(w, x, y, z, rule, dayTime)
+	}
+	// Run the full JE check first for dimension/time/surface/sky-special, but
+	// override the light test with BE's block-light-only rule. The simplest
+	// faithful approach: temporarily evaluate everything except light by
+	// reusing evaluateSpawnRule with a copy whose light bounds are relaxed,
+	// then apply the BE light test ourselves.
+	relaxed := *rule
+	relaxed.MinLight = mobs.LightAny
+	relaxed.MaxLight = mobs.LightAny
+	if !evaluateSpawnRule(w, x, y, z, &relaxed, dayTime) {
+		return false
+	}
+	block := int(w.GetBlockLight(x, y, z))
+	sky := int(w.GetSkyLight(x, y, z))
+	if block > 0 {
+		return false // BE hostiles never spawn under any block light
+	}
+	if rule.MaxLight >= 0 && sky > rule.MaxLight {
+		return false
+	}
+	return true
+}
+
 // difficultyAllowsCategory returns true if the mob's category
 // can spawn at the current difficulty. Peaceful suppresses
 // hostiles; easy/normal/hard are all the same for v1.
@@ -246,17 +302,39 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 	}
 	m.mu.RLock()
 	difficulty := m.difficulty
+	mode := m.spawnMode
 	m.mu.RUnlock()
+	if mode != spawnModeBedrock {
+		mode = spawnModeJava
+	}
 	w := m.GetDefaultWorld()
 	dayTime := w.GetDayTime()
 	counts := m.mobCategoryCounts()
 	defs := mobs.SpawnDefList()
+
+	// Edition-specific cap model. Java scales per-category caps by the number
+	// of loaded chunks (cap = base × chunks / 289). Bedrock uses a single
+	// static 200 cap shared across all environment-spawned mobs.
+	caps := m.effectiveCaps(w, mode)
+	beTotal := counts[mobs.SpawnPassive] + counts[mobs.SpawnHostile] + counts[mobs.SpawnNeutral]
+
 	for i := 0; i < spawnAttemptsPerTick; i++ {
+		if mode == spawnModeBedrock && beTotal >= beStaticCap {
+			return // BE global cap reached
+		}
 		x, z, ok := m.pickSpawnColumn(rng, anchors)
 		if !ok {
 			return
 		}
+		// Y sampling differs by edition: Java spawns on the surface column;
+		// Bedrock samples a Y inside the vertical shell around the player so
+		// mobs can appear in caves above/below the player, not just on top.
 		y := w.HighestSolidY(x, z)
+		if mode == spawnModeBedrock {
+			if sy, ok := m.pickBedrockShellY(w, rng, anchors, x, z); ok {
+				y = sy
+			}
+		}
 		if !hasHeadroom(w, x, y, z) {
 			continue
 		}
@@ -283,25 +361,14 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 		pool := make([]cand, 0, len(defs))
 		for _, d := range defs {
 			rule := d.Spawn
-			if !evaluateSpawnRule(w, x, y, z, rule, dayTime) {
+			if !evaluateSpawnRuleMode(w, x, y, z, rule, dayTime, mode) {
 				continue
 			}
 			if !difficultyAllowsCategory(difficulty, rule.Category) {
 				continue
 			}
-			switch rule.Category {
-			case mobs.SpawnPassive:
-				if counts[mobs.SpawnPassive] >= capPassive {
-					continue
-				}
-			case mobs.SpawnHostile:
-				if counts[mobs.SpawnHostile] >= capHostile {
-					continue
-				}
-			case mobs.SpawnNeutral:
-				if counts[mobs.SpawnNeutral] >= capNeutral {
-					continue
-				}
+			if counts[rule.Category] >= caps[rule.Category] {
+				continue
 			}
 			if rule.Cap > 0 && m.mobTypeCount(d.Type) >= rule.Cap {
 				continue
@@ -346,17 +413,85 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 				pz = z + int(math.Round((rng.Float64()-rng.Float64())*packSpreadBlocks))
 			}
 			py := w.HighestSolidY(px, pz)
+			if mode == spawnModeBedrock {
+				py = y // keep pack members at the sampled shell Y band
+			}
 			if !hasHeadroom(w, px, py, pz) {
 				continue
 			}
-			// Check cap again for each pack member.
-			if counts[pickedCat] >= capForCategory(pickedCat) {
+			// Check cap again for each pack member (per-category for JE, the
+			// shared static total for BE).
+			if mode == spawnModeBedrock {
+				if beTotal >= beStaticCap {
+					break
+				}
+			} else if counts[pickedCat] >= caps[pickedCat] {
 				break
 			}
 			m.mobs.Spawn(pick, float64(px)+0.5, float64(py), float64(pz)+0.5)
 			counts[pickedCat]++
+			beTotal++
 		}
 	}
+}
+
+// effectiveCaps returns the per-category mob caps for the given spawn mode.
+// Java scales the vanilla base caps by the loaded-chunk count (cap = base ×
+// chunks / 289, floored at the base so a tiny world still spawns something).
+// Bedrock returns the single static 200 cap for every category — the shared
+// total is enforced separately in spawnTick via beTotal.
+func (m *Manager) effectiveCaps(w *World, mode string) map[mobs.SpawnCategory]int {
+	if mode == spawnModeBedrock {
+		return map[mobs.SpawnCategory]int{
+			mobs.SpawnPassive: beStaticCap,
+			mobs.SpawnHostile: beStaticCap,
+			mobs.SpawnNeutral: beStaticCap,
+		}
+	}
+	chunks := len(w.loadedChunkPositions())
+	scale := func(base int) int {
+		c := base * chunks / jeChunksPerCapUnit
+		if c < base {
+			return base // floor so small worlds still populate
+		}
+		return c
+	}
+	return map[mobs.SpawnCategory]int{
+		mobs.SpawnPassive: scale(capPassive),
+		mobs.SpawnHostile: scale(capHostile),
+		mobs.SpawnNeutral: scale(capNeutral),
+	}
+}
+
+// pickBedrockShellY samples a spawn Y inside the Bedrock vertical shell around
+// the nearest player anchor to (x, z): a random offset in ±beShellMax that is
+// at least beShellMin blocks from the player vertically, clamped to a solid
+// floor with headroom. ok=false when no valid Y is found in a few tries.
+func (m *Manager) pickBedrockShellY(w *World, rng *rand.Rand, anchors []Position, x, z int) (int, bool) {
+	// Nearest anchor by horizontal distance gives the shell centre.
+	var anchorY float64
+	best := math.MaxFloat64
+	for _, a := range anchors {
+		dx, dz := a.X-float64(x), a.Z-float64(z)
+		if d := dx*dx + dz*dz; d < best {
+			best, anchorY = d, a.Y
+		}
+	}
+	for try := 0; try < 6; try++ {
+		off := beShellMin + rng.Intn(beShellMax-beShellMin+1)
+		if rng.Intn(2) == 0 {
+			off = -off
+		}
+		y := int(anchorY) + off
+		if y <= MinWorldHeight || y >= MaxWorldHeight-2 {
+			continue
+		}
+		// Need a solid block below and 2-air headroom (a standable ledge).
+		if w.GetBlock(x, y-1, z).ID() != AirID && hasHeadroom(w, x, y, z) {
+			return y, true
+		}
+	}
+	return 0, false
 }
 
 // capForCategory returns the global cap for the given spawn category.

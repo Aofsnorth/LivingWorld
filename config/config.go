@@ -66,6 +66,14 @@ type WorldConfig struct {
 	// and damage once the entity system exists.
 	Difficulty string `yaml:"difficulty"`
 
+	// SpawnMode selects which edition's mob spawn/despawn model the natural
+	// spawn director uses: "java" (chunk-scaled per-category mob caps,
+	// surface-Y spawning, internal light = max(block,sky)) or "bedrock"
+	// (single static 200 global cap, 3D shell-Y spawning around the player,
+	// hostile light = block light only). Defaults to "java". Both editions'
+	// clients are served from one world, so this is a server-wide switch.
+	SpawnMode string `yaml:"spawnMode"`
+
 	// DayNightCycle enables the advancing time-of-day (sun/moon movement).
 	DayNightCycle bool `yaml:"dayNightCycle"`
 
@@ -178,6 +186,7 @@ func Default() *Config {
 			Directory:       system.DefaultWorldsDirectory,
 			AutosaveSeconds: int(system.DefaultAutosaveInterval.Seconds()),
 			Difficulty:      gameplay.DifficultyNormal,
+			SpawnMode:       "java",
 			DayNightCycle:   true,
 			WeatherCycle:    true,
 			WeatherDurations: WeatherDurationsConfig{
