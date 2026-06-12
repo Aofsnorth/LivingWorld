@@ -6,8 +6,9 @@ import (
 
 // Vanilla grass random ticks. Grass is driven from the source grass block, not
 // from random dirt samples: a random-ticked grass block first checks whether it
-// can survive, then tries four nearby dirt positions in the vanilla spread
-// volume (x/z +/-1, y -3..+1).
+// can survive, then rolls vanilla's spread volume. LivingWorld only accepts
+// targets on the same surface layer so grass does not jump downward into buried
+// dirt, but the vertical roll is kept so the spread chance stays vanilla-like.
 const (
 	// defaultRandomTickSpeed matches vanilla's default gamerule. LivingWorld does
 	// not expose /gamerule randomTickSpeed yet, so grass uses the vanilla default.
@@ -92,6 +93,9 @@ func (m *Manager) randomTickGrassBlock(rng *rand.Rand, w *World, x, y, z int, di
 		tx := x + rng.Intn(3) - 1
 		ty := y + rng.Intn(5) - 3
 		tz := z + rng.Intn(3) - 1
+		if ty != y {
+			continue
+		}
 		id, ok := loadedBlockID(w, tx, ty, tz)
 		if !ok || id != dirtID {
 			continue

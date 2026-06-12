@@ -41,8 +41,10 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 			bs.setChunkCenter(chunkX, chunkZ) // under bs.mu (AOI reads it concurrently)
 			s.updateBedrockChunks(bs, chunkX, chunkZ)
 			// AOI: this viewer moved — re-evaluate which foreign players are now in /
-			// out of range (reads the just-updated lastChunkX/Z).
+			// out of range (reads the just-updated lastChunkX/Z), and do the
+			// same for stationary item drops that won't emit OnMove anymore.
 			s.reconcileViewers(bs)
+			s.reconcileDrops(bs)
 		}
 	}
 }
@@ -136,120 +138,144 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			case *protocol.UseItemTransactionData:
 				switch data.ActionType {
 				case protocol.UseItemActionClickBlock:
-					// Bedrock block placement: resolve held item → block state → place
-					if data.HeldItem.Stack.ItemType.NetworkID != 0 {
-						itemName, ok := inventory.NameByRuntimeID(data.HeldItem.Stack.ItemType.NetworkID)
-						if ok {
-							stateID, placeable := item.BlockStateID(itemName)
-							if placeable {
-								// Vanilla placement rules for Bedrock (mirrors the Java
-								// path): only consume the held stack if the target is air
-								// (or a replaceable block). Bedrock's UseItemActionClickBlock
-								// covers both PLACE and USE; in vanilla, the crouch gate
-								// (sneak-to-place on top of a solid) exists so a right-click
-								// on a chest/door/furnace opens the UI instead of placing
-								// a block on it. LivingWorld has no block-USE semantics
-								// implemented yet, so the crouch gate would just stop
-								// players from placing dirt/grass on the ground surface —
-								// a frustrating dead end. Drop the crouch check and let
-								// the player place on top of anything; the future
-								// interaction service (Phase 4d) can add the gate per
-								// block without touching this call site.
-								targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
-								wm := s.wm.GetDefaultWorld()
-								pl := s.pm.GetPlayer(bs.id)
-								if pl == nil {
-									return
-								}
-								targetID := wm.GetBlock(int(targetPos[0]), int(targetPos[1]), int(targetPos[2])).ID()
-								if targetID != world.AirID {
-									// Block at the target position: refuse the place and
-									// re-affirm the world so the client's prediction rolls
-									// back cleanly.
-									s.resyncBedrockBlock(conn, data.BlockPosition)
-									s.resyncBedrockBlock(conn, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
-									return
-								}
-
-								s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(int32(stateID)))
-
-								// Decrement held item count (survival item consumption) —
-								// only on a fully-valid placement, so the server's
-								// authoritative state matches the client's predicted
-								// decrement.
-								if pl.Inventory != nil && pl.Inventory.HeldSlot >= 0 && pl.Inventory.HeldSlot < len(pl.Inventory.Items) {
-									if pl.Inventory.Items[pl.Inventory.HeldSlot].Count > 0 {
-										pl.Inventory.Items[pl.Inventory.HeldSlot].Count--
-										s.syncBedrockInventory(bs, pl)
-										// Held stack shrank: re-render the hand for others.
-										s.pm.PublishEquipmentChange(bs.id)
-									}
-								}
-								// Echo the placed block back to the placer inline so the
-								// new block appears in the same network round-trip as
-								// the placement confirm — no waiting for the block-event
-								// bus goroutine to flush. The bus will still fan the
-								// change out to foreign viewers, so this is purely a
-								// latency win for the placer.
-								//
-								// Flags is intentionally just BlockUpdateNetwork. The
-								// gophertunnel doc says "typically sending only the
-								// BlockUpdateNetwork flag is sufficient" — adding
-								// BlockUpdateNeighbours tells the client this is a
-								// neighbour/light update (redstone-style), which in
-								// some client builds suppresses the player-side place
-								// sound and arm animation context, leaving the block
-								// "placed silently".
-								conn.WritePacket(&packet.UpdateBlock{
-									Position:          protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])},
-									NewBlockRuntimeID: bedrockworld.LivingWorldBlockIDToBedrockRID(int32(stateID)),
-									Flags:             packet.BlockUpdateNetwork,
-									Layer:             0,
-								})
-								// Guaranteed place-sound. Bedrock has no generic
-								// `LevelEvent` for "block placed", and the client-side
-								// place sound is tied to the placement *prediction*,
-								// not the server's UpdateBlock — if the client's
-								// prediction is suppressed (e.g. late-joining the
-								// session, the client got the UseItem transaction
-								// out of order, etc.) the place happens silently. The
-								// vanilla place SFX is `step.<material>` for most
-								// blocks; we use a category-keyed lookup so grass/dirt
-								// gets `step.grass`, stone-family gets `step.stone`,
-								// wood gets `step.wood`, etc., and a generic
-								// `step.stone` as the catch-all. Pitch 0.79/Volume 1
-								// match vanilla's block-place call.
-								s.playBlockPlaceSound(conn, itemName, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
-								// Play the placer's own arm-swing animation. Bedrock's
-								// client only auto-swings for PlayerActionStartBreak; a
-								// placement arriving through UseItemActionClickBlock does
-								// NOT trigger a local swing, so without this the placer
-								// sees the new block appear with no arm follow-through
-								// (the "no animation" reported in single-player testing).
-								//
-								// The EntityRuntimeID MUST be `bedrockLocalRuntime` (1),
-								// not `pl.EntityRuntimeID`. The local Bedrock client
-								// identifies its own player as runtime id 1 — the
-								// per-session id (bs.runtimeID) is what foreign viewers
-								// see, but addressing the local client with the
-								// per-session id silently no-ops the packet. Same
-								// gotcha as Push() (see session.go).
-								//
-								// SwingSource=Build is the second half: vanilla uses
-								// that hint to pick the swing timing and the "place"
-								// SFX; SwingSource=0 (none) makes many client versions
-								// drop the packet.
-								conn.WritePacket(&packet.Animate{
-									ActionType:      packet.AnimateActionSwingArm,
-									EntityRuntimeID: bedrockLocalRuntime,
-									SwingSource:     packet.AnimateSwingSourceBuild,
-								})
-								// Replay the placer's arm swing on every other viewer so the
-								// place animation shows up for foreign viewers too.
-								s.pm.PublishSwing(bs.id)
-								return
-							}
+					// Bedrock block placement is server-authoritative: resolve the held
+					// item from the server inventory, not from data.HeldItem. Some Bedrock
+					// clients send duplicate UseItemActionClickBlock packets for one tap,
+					// and the duplicate can carry the pre-decrement stack. Trusting that
+					// packet let a 1-block stack place twice.
+					pl := s.pm.GetPlayer(bs.id)
+					if pl == nil || pl.Inventory == nil {
+						return
+					}
+					heldSlot := pl.Inventory.HeldSlot
+					held := pl.Inventory.GetHeldItem()
+					if held == nil || held.ID == 0 || held.Count <= 0 {
+						s.syncBedrockInventory(bs, pl)
+						s.resyncBedrockBlock(conn, data.BlockPosition)
+						s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
+						return
+					}
+					heldItem, ok := item.ByID(held.ID)
+					if !ok {
+						s.syncBedrockInventory(bs, pl)
+						s.resyncBedrockBlock(conn, data.BlockPosition)
+						s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
+						return
+					}
+					if clientRID := data.HeldItem.Stack.ItemType.NetworkID; clientRID != 0 {
+						serverRID, ok := inventory.RuntimeIDByName(heldItem.Name)
+						if !ok || serverRID != clientRID {
+							s.syncBedrockInventory(bs, pl)
+							s.resyncBedrockBlock(conn, data.BlockPosition)
+							s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
+							return
 						}
+					}
+					stateID, placeable := item.BlockStateID(heldItem.Name)
+					if placeable {
+						// Vanilla placement rules for Bedrock (mirrors the Java
+						// path): only consume the held stack if the target is air
+						// (or a replaceable block). Bedrock's UseItemActionClickBlock
+						// covers both PLACE and USE; in vanilla, the crouch gate
+						// (sneak-to-place on top of a solid) exists so a right-click
+						// on a chest/door/furnace opens the UI instead of placing
+						// a block on it. LivingWorld has no block-USE semantics
+						// implemented yet, so the crouch gate would just stop
+						// players from placing dirt/grass on the ground surface —
+						// a frustrating dead end. Drop the crouch check and let
+						// the player place on top of anything; the future
+						// interaction service (Phase 4d) can add the gate per
+						// block without touching this call site.
+						targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
+						wm := s.wm.GetDefaultWorld()
+						targetID := wm.GetBlock(int(targetPos[0]), int(targetPos[1]), int(targetPos[2])).ID()
+						if targetID != world.AirID {
+							// Block at the target position: refuse the place and
+							// re-affirm the world so the client's prediction rolls
+							// back cleanly.
+							s.resyncBedrockBlock(conn, data.BlockPosition)
+							s.resyncBedrockBlock(conn, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+							return
+						}
+						if !bs.acceptBlockPlace() {
+							s.syncBedrockInventory(bs, pl)
+							s.resyncBedrockBlock(conn, data.BlockPosition)
+							s.resyncBedrockBlock(conn, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+							return
+						}
+						if !pl.Inventory.RemoveItem(heldSlot, 1) {
+							s.syncBedrockInventory(bs, pl)
+							s.resyncBedrockBlock(conn, data.BlockPosition)
+							s.resyncBedrockBlock(conn, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+							return
+						}
+						s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(int32(stateID)))
+						s.syncBedrockInventory(bs, pl)
+						// Held stack shrank: re-render the hand for others.
+						s.pm.PublishEquipmentChange(bs.id)
+						// Echo the placed block back to the placer inline so the
+						// new block appears in the same network round-trip as
+						// the placement confirm — no waiting for the block-event
+						// bus goroutine to flush. The bus will still fan the
+						// change out to foreign viewers, so this is purely a
+						// latency win for the placer.
+						//
+						// Flags is intentionally just BlockUpdateNetwork. The
+						// gophertunnel doc says "typically sending only the
+						// BlockUpdateNetwork flag is sufficient" — adding
+						// BlockUpdateNeighbours tells the client this is a
+						// neighbour/light update (redstone-style), which in
+						// some client builds suppresses the player-side place
+						// sound and arm animation context, leaving the block
+						// "placed silently".
+						conn.WritePacket(&packet.UpdateBlock{
+							Position:          protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])},
+							NewBlockRuntimeID: bedrockworld.LivingWorldBlockIDToBedrockRID(int32(stateID)),
+							Flags:             packet.BlockUpdateNetwork,
+							Layer:             0,
+						})
+						// Guaranteed place-sound. Bedrock has no generic
+						// `LevelEvent` for "block placed", and the client-side
+						// place sound is tied to the placement *prediction*,
+						// not the server's UpdateBlock — if the client's
+						// prediction is suppressed (e.g. late-joining the
+						// session, the client got the UseItem transaction
+						// out of order, etc.) the place happens silently. The
+						// vanilla place SFX is `step.<material>` for most
+						// blocks; we use a category-keyed lookup so grass/dirt
+						// gets `step.grass`, stone-family gets `step.stone`,
+						// wood gets `step.wood`, etc., and a generic
+						// `step.stone` as the catch-all. Pitch 0.79/Volume 1
+						// match vanilla's block-place call.
+						s.playBlockPlaceSound(conn, heldItem.Name, protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])})
+						// Play the placer's own arm-swing animation. Bedrock's
+						// client only auto-swings for PlayerActionStartBreak; a
+						// placement arriving through UseItemActionClickBlock does
+						// NOT trigger a local swing, so without this the placer
+						// sees the new block appear with no arm follow-through
+						// (the "no animation" reported in single-player testing).
+						//
+						// The EntityRuntimeID MUST be `bedrockLocalRuntime` (1),
+						// not `pl.EntityRuntimeID`. The local Bedrock client
+						// identifies its own player as runtime id 1 — the
+						// per-session id (bs.runtimeID) is what foreign viewers
+						// see, but addressing the local client with the
+						// per-session id silently no-ops the packet. Same
+						// gotcha as Push() (see session.go).
+						//
+						// SwingSource=Build is the second half: vanilla uses
+						// that hint to pick the swing timing and the "place"
+						// SFX; SwingSource=0 (none) makes many client versions
+						// drop the packet.
+						conn.WritePacket(&packet.Animate{
+							ActionType:      packet.AnimateActionSwingArm,
+							EntityRuntimeID: bedrockLocalRuntime,
+							SwingSource:     packet.AnimateSwingSourceBuild,
+						})
+						// Replay the placer's arm swing on every other viewer so the
+						// place animation shows up for foreign viewers too.
+						s.pm.PublishSwing(bs.id)
+						return
 					}
 					// Fallback: resync jika item tidak placeable atau tidak ditemukan
 					s.resyncBedrockBlock(conn, data.BlockPosition)

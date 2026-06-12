@@ -55,7 +55,7 @@ type WorldConfig struct {
 	Spawn SpawnConfig `yaml:"spawn"`
 
 	// Persistence controls saving the world to disk. Directory is the base path
-	// under which each world gets its own subfolder; AutosaveSeconds is the
+	// under which dimensions get their own subfolder; AutosaveSeconds is the
 	// periodic save interval (0 disables autosave but a final save still runs on
 	// shutdown).
 	Persistence     bool   `yaml:"persistence"`
@@ -173,9 +173,9 @@ type BedrockConfig struct {
 
 func Default() *Config {
 	return &Config{
-		ServerName:     system.DefaultServerName,
-		MOTD:           system.DefaultMOTD,
-		PluginsDir:     system.DefaultPluginsDirectory,
+		ServerName:      system.DefaultServerName,
+		MOTD:            system.DefaultMOTD,
+		PluginsDir:      system.DefaultPluginsDirectory,
 		DefaultGamemode: gameplay.GamemodeSurvival,
 		World: WorldConfig{
 			Type: system.WorldTypeDefault,

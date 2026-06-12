@@ -18,7 +18,7 @@ ops:
   - Aofsnorth
 
 world:
-  type: superflat # superflat | overworld
+  type: overworld # superflat | overworld
   seed: 12345
   spawn:
     x: 0
@@ -27,7 +27,7 @@ world:
     yaw: 0
     pitch: 0
   persistence: true # save edited chunks to disk
-  directory: worlds # base folder; each world saves under <directory>/<name>
+  directory: worlds # base folder; default dimension saves under <directory>/dimensions
   autosaveSeconds: 300 # periodic autosave; 0 = save on shutdown only
   difficulty: peaceful # peaceful | easy | normal | hard
   spawnMobs: false # enable/disable natural mob spawning (true = mobs spawn, false = no new mobs)

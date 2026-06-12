@@ -51,6 +51,41 @@ func zeroUUID() [16]byte { return [16]byte{} }
 // negligible.
 var serverRNG = rand.New(rand.NewSource(time.Now().UnixNano()))
 
+// findLandSpawn searches outward from (x, z) for a column whose surface
+// is dry land (above sea level and not water/ice). Overworld seeds can
+// put the configured spawn in the middle of an ocean; vanilla performs
+// the same kind of search. Scans rings every 16 blocks up to ~160
+// blocks out and falls back to the original point if everything is wet.
+func findLandSpawn(w *world.World, x, z int) (int, int) {
+	waterID := world.WaterID
+	iceID := world.StateID("minecraft:ice")
+	isLand := func(px, pz int) bool {
+		y := w.HighestSolidY(px, pz) // feet Y, one above the surface block
+		if y <= 63 {
+			return false
+		}
+		below := w.GetBlock(px, y-1, pz).ID()
+		return below != waterID && below != iceID
+	}
+	if isLand(x, z) {
+		return x, z
+	}
+	for radius := 16; radius <= 160; radius += 16 {
+		for dx := -radius; dx <= radius; dx += 16 {
+			for dz := -radius; dz <= radius; dz += 16 {
+				// Ring only: skip interior points already scanned.
+				if dx > -radius && dx < radius && dz > -radius && dz < radius {
+					continue
+				}
+				if isLand(x+dx, z+dz) {
+					return x + dx, z + dz
+				}
+			}
+		}
+	}
+	return x, z
+}
+
 // Config is the server configuration. It is an alias of the YAML config type, so
 // it can be built in code or loaded from a file via LoadConfig.
 type Config = config.Config
@@ -95,8 +130,13 @@ func New(cfg *Config) *Server {
 	case "overworld", "default", "normal":
 		overworld := dimension.NewOverworld()
 		dw.SetGenerator(overworld.Generator(cfg.World.Seed))
-		// Spawn on the generated surface (overworld terrain isn't flat at y=4).
-		cfg.World.Spawn.Y = float64(dw.HighestSolidY(int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z)))
+		// Spawn on the generated surface (overworld terrain isn't flat at
+		// y=4), nudging the spawn point to dry land if the configured XZ
+		// is in an ocean or river.
+		sx, sz := findLandSpawn(dw, int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z))
+		cfg.World.Spawn.X = float64(sx) + 0.5
+		cfg.World.Spawn.Z = float64(sz) + 0.5
+		cfg.World.Spawn.Y = float64(dw.HighestSolidY(sx, sz))
 	case "nether":
 		n := dimension.NewNether()
 		dw.SetGenerator(n.Generator(cfg.World.Seed))

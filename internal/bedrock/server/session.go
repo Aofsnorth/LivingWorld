@@ -19,6 +19,11 @@ const (
 	// Bedrock local spawn/teleport positions are empirically camera/eye based in
 	// this gophertunnel path. Shared player/world state remains feet based.
 	bedrockLocalEyeHeight = 1.62
+
+	// Bedrock may send more than one UseItemActionClickBlock packet for one tap.
+	// Keep placement server-authoritative by accepting at most one placement in a
+	// short window; normal holding/clicking remains faster than vanilla building.
+	bedrockPlaceDedupWindow = 75 * time.Millisecond
 )
 
 type bedrockSession struct {
@@ -33,6 +38,7 @@ type bedrockSession struct {
 
 	lastMovePublish     time.Time
 	lastAuthInputAt     time.Time
+	lastBlockPlaceAt    time.Time
 	lastX, lastY, lastZ float64
 
 	// chunkCache is the thread-safe Bedrock chunk cache for this connection session.
@@ -69,6 +75,11 @@ type bedrockSession struct {
 	// entries are sent as AddActor; exits as RemoveActor.
 	mobViewer *mobTracker
 
+	// dropViewer tracks item drops rendered on this client. Drops move
+	// every physics tick, so they use the same AOI bookkeeping as mobs
+	// to avoid broadcasting item animation packets globally.
+	dropViewer *mobTracker
+
 	mu sync.Mutex
 }
 
@@ -91,6 +102,7 @@ func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *mi
 		health:       20,
 		viewers:      newViewerTracker(),
 		mobViewer:    newMobTracker(),
+		dropViewer:   newMobTracker(),
 	}
 }
 
@@ -116,6 +128,17 @@ func (s *bedrockSession) write(pk packet.Packet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = s.conn.WritePacket(pk)
+}
+
+func (s *bedrockSession) acceptBlockPlace() bool {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.lastBlockPlaceAt.IsZero() && now.Sub(s.lastBlockPlaceAt) < bedrockPlaceDedupWindow {
+		return false
+	}
+	s.lastBlockPlaceAt = now
+	return true
 }
 
 // SendMessage implements player.Controller: chat to this Bedrock client.

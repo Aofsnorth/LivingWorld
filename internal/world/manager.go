@@ -1,7 +1,9 @@
 package world
 
 import (
+	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -12,6 +14,11 @@ import (
 	"livingworld/internal/mobs"
 
 	"github.com/google/uuid"
+)
+
+const (
+	legacyDefaultWorldStorageName = "world"
+	defaultDimensionStorageName   = "dimensions"
 )
 
 type Manager struct {
@@ -88,12 +95,12 @@ type Manager struct {
 	// the AI fires when a hostile mob lands a hit, a skeleton fires an arrow,
 	// or a creeper explodes. Wired from the server bootstrap with closures
 	// that resolve the per-edition damage / projectile / explosion pipeline.
-	aiMeleeAttack    func(targetUUID [16]byte, attackerID int64, damage float32)
-	aiShootArrow     func(shooterID int64, x, y, z, yaw, pitch float64)
-	aiExplode        func(attackerID int64, x, y, z, power float64)
-	aiProjectileHit  func(arrowID int64, targetUUID [16]byte)
-	aiFireDamage     func(mobID int64, damage float32)
-	aiSound          func(emits []mobs.SoundEmit)
+	aiMeleeAttack   func(targetUUID [16]byte, attackerID int64, damage float32)
+	aiShootArrow    func(shooterID int64, x, y, z, yaw, pitch float64)
+	aiExplode       func(attackerID int64, x, y, z, power float64)
+	aiProjectileHit func(arrowID int64, targetUUID [16]byte)
+	aiFireDamage    func(mobID int64, damage float32)
+	aiSound         func(emits []mobs.SoundEmit)
 	// M6: aiTickEffects is called once per 20 Hz tick from Phase 4e.
 	// The player manager iterates its effect bag inside the closure:
 	// it applies per-tick damage (poison/wither), decrements
@@ -111,7 +118,7 @@ type Manager struct {
 	// a status effect (e.g. husk → hunger, cave spider → poison,
 	// wither skeleton → wither). Bridges translate the effect into
 	// per-edition damage / status packets.
-	aiHitEffect  func(targetUUID [16]byte, attackerID int64, effect mobs.HitEffect)
+	aiHitEffect func(targetUUID [16]byte, attackerID int64, effect mobs.HitEffect)
 	// M1: aiThrow is fired when an iron golem picks up a player and
 	// launches them upward. The bridge applies an upward velocity
 	// to the player and queues the throw-damage to land on impact.
@@ -143,8 +150,8 @@ type Manager struct {
 
 	// explosion listeners: bridges register here so the world tick can
 	// broadcast an ExplosionResult to all clients on both editions.
-	explosionMu     sync.RWMutex
-	explosionHooks  []mobs.ExplosionListener
+	explosionMu    sync.RWMutex
+	explosionHooks []mobs.ExplosionListener
 
 	// mobSound listeners: bridges register here so the world tick can
 	// fan out SoundEmit (entityID + sound id + volume/pitch) to all
@@ -156,11 +163,11 @@ type Manager struct {
 
 func NewManager() *Manager {
 	m := &Manager{
-		worlds:       make(map[string]*World),
-		blockEvents:  NewBlockEventBus(),
-		drops:        drops.New(),
-		mobs:         mobs.New(),
-		projectiles:  mobs.NewProjectileStore(),
+		worlds:           make(map[string]*World),
+		blockEvents:      NewBlockEventBus(),
+		drops:            drops.New(),
+		mobs:             mobs.New(),
+		projectiles:      mobs.NewProjectileStore(),
 		dropRNG:          rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
 		crackManager:     NewCrackManager(),
 		effectEvents:     NewWorldEffectBus(),
@@ -529,15 +536,47 @@ func (m *Manager) PublishBlockDestroy(source BlockUpdateSource, breaker uuid.UUI
 	})
 }
 
-// EnablePersistence attaches a DiskStorage to every world, rooted at
-// <baseDir>/<worldName>. Returns the first error encountered creating a backend.
+// EnablePersistence attaches storage to every world. The default logical world
+// keeps the name "world" for API compatibility but persists under
+// <baseDir>/dimensions, matching the dimension-oriented on-disk layout.
 func (m *Manager) EnablePersistence(baseDir string) error {
 	for _, w := range m.GetAllWorlds() {
-		store, err := NewRegionStorage(filepath.Join(baseDir, w.Name()))
+		storageName := w.Name()
+		if w == m.defaultWorld && storageName == legacyDefaultWorldStorageName {
+			storageName = defaultDimensionStorageName
+			if err := migrateLegacyDefaultWorldStorage(baseDir); err != nil {
+				return err
+			}
+		}
+		store, err := NewRegionStorage(filepath.Join(baseDir, storageName))
 		if err != nil {
 			return err
 		}
 		w.SetStorage(store)
+	}
+	return nil
+}
+
+func migrateLegacyDefaultWorldStorage(baseDir string) error {
+	legacyDir := filepath.Join(baseDir, legacyDefaultWorldStorageName)
+	dimensionDir := filepath.Join(baseDir, defaultDimensionStorageName)
+	if _, err := os.Stat(dimensionDir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat dimension storage %s: %w", dimensionDir, err)
+	}
+	info, err := os.Stat(legacyDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat legacy world storage %s: %w", legacyDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("legacy world storage %s is not a directory", legacyDir)
+	}
+	if err := os.Rename(legacyDir, dimensionDir); err != nil {
+		return fmt.Errorf("rename legacy world storage %s -> %s: %w", legacyDir, dimensionDir, err)
 	}
 	return nil
 }

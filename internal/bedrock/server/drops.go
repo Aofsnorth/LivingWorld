@@ -5,12 +5,29 @@ import (
 	"livingworld/internal/drops"
 	"livingworld/internal/item"
 	"livingworld/internal/player"
+	"sync"
 
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
+
+const (
+	// Bedrock clients smooth item actors locally from velocity. Sending an
+	// absolute correction every other server tick keeps the item authoritative
+	// without doubling the hot-path packet rate for every moving drop.
+	bedrockDropMoveSendEvery = 2
+
+	// Below this squared velocity a grounded drop is considered visually settled;
+	// force one final correction so the client stops at the server position.
+	bedrockDropStillVelocitySq = 0.0001
+)
+
+type bedrockDropRenderState struct {
+	moveCount uint8
+	onGround  bool
+}
 
 // startDropLoop renders the shared drop store to Bedrock clients. Item spawns
 // become AddItemActor, despawns become RemoveActor. Pickup itself (proximity +
@@ -19,48 +36,42 @@ import (
 // play the Bedrock pickup animation when a drop is taken near a Bedrock player.
 func (s *Server) startDropLoop() {
 	store := s.wm.Drops()
+	var stateMu sync.Mutex
+	dropState := make(map[int64]bedrockDropRenderState)
 
 	store.OnSpawn(func(d drops.Drop) {
-		rid, ok := inventory.RuntimeIDByName(d.Item)
+		pkt, ok := bedrockDropSpawnPacket(d)
 		if !ok {
-			return // unknown item: do NOT spawn — a bad item id crashes nearby clients
+			return
 		}
-		inst := protocol.ItemInstance{
-			StackNetworkID: 0,
-			Stack: protocol.ItemStack{
-				ItemType: protocol.ItemType{NetworkID: rid},
-				Count:    uint16(d.Count),
-			},
-		}
-		// Use velocity from Drop struct (vanilla physics)
-		vel := mgl32.Vec3{
-			float32(d.VX),
-			float32(d.VY),
-			float32(d.VZ),
-		}
+		stateMu.Lock()
+		dropState[d.EntityID] = bedrockDropRenderState{onGround: d.OnGround}
+		stateMu.Unlock()
 		s.forEachSession(func(bs *bedrockSession) {
-			bs.write(&packet.AddItemActor{
-				EntityUniqueID:  d.EntityID,
-				EntityRuntimeID: uint64(d.EntityID),
-				Item:            inst,
-				Position:        mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
-				Velocity:        vel,
-			})
+			pos := s.playerPosOf(bs)
+			if !mobInAOI(pos.x, pos.z, d.X, d.Z) {
+				return
+			}
+			bs.write(pkt)
+			bs.dropViewer.markSpawned(d.EntityID)
 		})
 	})
 
 	store.OnDespawn(func(id int64) {
+		stateMu.Lock()
+		delete(dropState, id)
+		stateMu.Unlock()
 		s.forEachSession(func(bs *bedrockSession) {
-			bs.write(&packet.RemoveActor{EntityUniqueID: id})
+			if bs.dropViewer.markDespawned(id) {
+				bs.write(&packet.RemoveActor{EntityUniqueID: id})
+			}
 		})
 	})
-	// Server-authoritative drop physics (StartDropPhysics) drives this: the Bedrock
-	// client interpolates between absolute positions, but plain MoveActorAbsolute
-	// carries no velocity so a falling item snaps each update and looks stuttery.
-	// Pairing every position update with SetActorMotion gives the client the live
-	// velocity vector to extrapolate from — items now arc, bounce-roll and settle
-	// the way they do on Java. The OnGround flag also tells the client to stop
-	// running its own gravity so resting items don't shiver against the floor.
+	// Server-authoritative drop physics drives this. Bedrock gets AOI-filtered,
+	// throttled corrections: newly visible drops are spawned immediately, visible
+	// drops receive a position correction every other physics tick, and the client
+	// uses the velocity from AddItemActor / occasional SetActorMotion to smooth the
+	// animation between corrections.
 	store.OnMove(func(d drops.Drop) {
 		// Re-entrancy guard against pickup: store.TickPhysics snapshots each
 		// moved drop into a local slice OUTSIDE the lock and fires OnMove
@@ -80,6 +91,17 @@ func (s *Server) startDropLoop() {
 		if _, ok := store.Get(d.EntityID); !ok {
 			return
 		}
+		stateMu.Lock()
+		st := dropState[d.EntityID]
+		st.moveCount++
+		groundChanged := st.onGround != d.OnGround
+		st.onGround = d.OnGround
+		dropState[d.EntityID] = st
+		speedSq := bedrockDropSpeedSq(d)
+		settled := d.OnGround && speedSq <= bedrockDropStillVelocitySq
+		sendCorrection := groundChanged || settled || st.moveCount%bedrockDropMoveSendEvery == 0
+		stateMu.Unlock()
+
 		flags := byte(0)
 		if d.OnGround {
 			flags |= packet.MoveFlagOnGround
@@ -87,10 +109,32 @@ func (s *Server) startDropLoop() {
 		pos := mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)}
 		vel := mgl32.Vec3{float32(d.VX), float32(d.VY), float32(d.VZ)}
 		s.forEachSession(func(bs *bedrockSession) {
-			bs.write(&packet.SetActorMotion{
-				EntityRuntimeID: uint64(d.EntityID),
-				Velocity:        vel,
-			})
+			viewer := s.playerPosOf(bs)
+			inRange := mobInAOI(viewer.x, viewer.z, d.X, d.Z)
+			if !inRange {
+				if bs.dropViewer.markDespawned(d.EntityID) {
+					bs.write(&packet.RemoveActor{EntityUniqueID: d.EntityID})
+				}
+				return
+			}
+			if !bs.dropViewer.isSpawned(d.EntityID) {
+				pkt, ok := bedrockDropSpawnPacket(d)
+				if !ok {
+					return
+				}
+				bs.write(pkt)
+				bs.dropViewer.markSpawned(d.EntityID)
+				return
+			}
+			if !sendCorrection {
+				return
+			}
+			if !d.OnGround || groundChanged {
+				bs.write(&packet.SetActorMotion{
+					EntityRuntimeID: uint64(d.EntityID),
+					Velocity:        vel,
+				})
+			}
 			bs.write(&packet.MoveActorAbsolute{
 				EntityRuntimeID: uint64(d.EntityID),
 				Flags:           flags,
@@ -98,6 +142,58 @@ func (s *Server) startDropLoop() {
 			})
 		})
 	})
+}
+
+func bedrockDropSpawnPacket(d drops.Drop) (*packet.AddItemActor, bool) {
+	rid, ok := inventory.RuntimeIDByName(d.Item)
+	if !ok {
+		return nil, false // unknown item: a bad item id crashes nearby clients
+	}
+	return &packet.AddItemActor{
+		EntityUniqueID:  d.EntityID,
+		EntityRuntimeID: uint64(d.EntityID),
+		Item: protocol.ItemInstance{
+			StackNetworkID: 0,
+			Stack: protocol.ItemStack{
+				ItemType: protocol.ItemType{NetworkID: rid},
+				Count:    uint16(d.Count),
+			},
+		},
+		Position: mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
+		Velocity: mgl32.Vec3{float32(d.VX), float32(d.VY), float32(d.VZ)},
+	}, true
+}
+
+func bedrockDropSpeedSq(d drops.Drop) float64 {
+	return d.VX*d.VX + d.VY*d.VY + d.VZ*d.VZ
+}
+
+func (s *Server) reconcileDrops(bs *bedrockSession) {
+	viewer := s.playerPosOf(bs)
+	inRange := make(map[int64]struct{})
+	for _, d := range s.wm.Drops().All() {
+		if !mobInAOI(viewer.x, viewer.z, d.X, d.Z) {
+			continue
+		}
+		inRange[d.EntityID] = struct{}{}
+		if bs.dropViewer.isSpawned(d.EntityID) {
+			continue
+		}
+		pkt, ok := bedrockDropSpawnPacket(d)
+		if !ok {
+			continue
+		}
+		bs.write(pkt)
+		bs.dropViewer.markSpawned(d.EntityID)
+	}
+	for _, id := range bs.dropViewer.spawnedIDs() {
+		if _, ok := inRange[id]; ok {
+			continue
+		}
+		if bs.dropViewer.markDespawned(id) {
+			bs.write(&packet.RemoveActor{EntityUniqueID: id})
+		}
+	}
 }
 
 // registerPickupHandler registers a callback with the world manager to handle
@@ -219,24 +315,16 @@ func (s *Server) syncBedrockInventory(bs *bedrockSession, pl *player.Player) {
 // spawnExistingDropsFor sends every active drop to a freshly-joined Bedrock
 // viewer so items already on the ground are visible.
 func (s *Server) spawnExistingDropsFor(bs *bedrockSession) {
+	viewer := s.playerPosOf(bs)
 	for _, d := range s.wm.Drops().All() {
-		rid, ok := inventory.RuntimeIDByName(d.Item)
+		if !mobInAOI(viewer.x, viewer.z, d.X, d.Z) {
+			continue
+		}
+		pkt, ok := bedrockDropSpawnPacket(d)
 		if !ok {
 			continue
 		}
-		// Use the drop's real current velocity (matching the OnSpawn handler) so a
-		// freshly-joined viewer sees the item with its true motion, not a fabricated
-		// one.
-		vel := mgl32.Vec3{float32(d.VX), float32(d.VY), float32(d.VZ)}
-		bs.write(&packet.AddItemActor{
-			EntityUniqueID:  d.EntityID,
-			EntityRuntimeID: uint64(d.EntityID),
-			Item: protocol.ItemInstance{Stack: protocol.ItemStack{
-				ItemType: protocol.ItemType{NetworkID: rid},
-				Count:    uint16(d.Count),
-			}},
-			Position: mgl32.Vec3{float32(d.X), float32(d.Y), float32(d.Z)},
-			Velocity: vel,
-		})
+		bs.write(pkt)
+		bs.dropViewer.markSpawned(d.EntityID)
 	}
 }
