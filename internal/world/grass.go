@@ -4,28 +4,26 @@ import (
 	"math/rand"
 )
 
-// Vanilla grass spread. In 26.1 every random tick a chunk's
-// `randomTick` can promote a neighbouring `dirt` to `grass_block` if the
-// block above is transparent and at least one of the four horizontal
-// neighbours is already `grass_block`. We approximate that with a
-// per-tick budget of `grassRandomTicksPerTick` random samples per
-// world — enough to keep the surface "alive" (visible spreading within
-// a few seconds when you park a grass block next to a dirt patch) but
-// cheap enough that the 20 Hz tick stays well under a millisecond of
-// CPU even on a busy world.
+// Vanilla grass random ticks. Grass is driven from the source grass block, not
+// from random dirt samples: a random-ticked grass block first checks whether it
+// can survive, then tries four nearby dirt positions in the vanilla spread
+// volume (x/z +/-1, y -3..+1).
 const (
-	// grassRandomTicksPerTick is the number of random block samples run
-	// per world per 20 Hz tick. Vanilla does ~3 per sub-chunk per ~40
-	// ticks; we flatten that across a whole world to a small fixed
-	// number so a 1-chunk world and a 100-chunk world both spread grass
-	// at a similar visible rate.
-	grassRandomTicksPerTick = 64
+	// defaultRandomTickSpeed matches vanilla's default gamerule. LivingWorld does
+	// not expose /gamerule randomTickSpeed yet, so grass uses the vanilla default.
+	defaultRandomTickSpeed = 3
 
-	// grassSpreadChance is the probability that a sampled dirt block
-	// that meets the spread conditions actually turns to grass. Vanilla
-	// uses 1/4, which gives the "gradual" feel of watching grass creep
-	// outwards.
-	grassSpreadChance = 0.25
+	// grassSpreadAttempts is the vanilla number of spread attempts made by one
+	// random-ticked grass block.
+	grassSpreadAttempts = 4
+
+	// grassSurviveMinLight is the minimum local light above grass before it dies
+	// back to dirt. This is the observable vanilla threshold for covered grass.
+	grassSurviveMinLight = 4
+
+	// grassSpreadMinLight is the minimum local light above the source/target for
+	// grass to spread.
+	grassSpreadMinLight = 9
 )
 
 // grassTick is Phase 3 of the unified tick. It runs the random-tick
@@ -33,6 +31,9 @@ const (
 // tick goroutine; it uses the world manager's RNG so seeded worlds stay
 // deterministic.
 func (m *Manager) grassTick(rng *rand.Rand) {
+	if rng == nil {
+		return
+	}
 	m.mu.RLock()
 	worlds := make([]*World, 0, len(m.worlds))
 	for _, w := range m.worlds {
@@ -44,14 +45,13 @@ func (m *Manager) grassTick(rng *rand.Rand) {
 	}
 }
 
-// grassTickWorld runs the random-tick budget for a single world. It
-// samples random block positions across all loaded chunks and applies
-// the vanilla grass-promotion rule. A sampled block that is not
-// eligible is silently skipped so the budget effectively becomes
-// "eligible samples" — with the dirt-vs-grass ratio in a real world
-// that means the budget is dominated by dirt/grass blocks anyway.
+// grassTickWorld runs the grass random-tick budget for a single world. It
+// samples random positions per loaded chunk section using the vanilla default
+// randomTickSpeed and executes grass behaviour only when the sampled block is a
+// grass block. Sampling uses already-loaded chunks only; random ticks must not
+// generate chunks at a loaded chunk border.
 func (m *Manager) grassTickWorld(rng *rand.Rand, w *World) {
-	if w == nil {
+	if rng == nil || w == nil {
 		return
 	}
 	dirtID := StateID("minecraft:dirt")
@@ -64,59 +64,83 @@ func (m *Manager) grassTickWorld(rng *rand.Rand, w *World) {
 	if len(chunkPositions) == 0 {
 		return
 	}
-	for i := 0; i < grassRandomTicksPerTick; i++ {
-		cp := chunkPositions[rng.Intn(len(chunkPositions))]
-		bx := cp.WorldX + rng.Intn(ChunkSize)
-		by := MinWorldHeight + rng.Intn(MaxWorldHeight-MinWorldHeight)
-		bz := cp.WorldZ + rng.Intn(ChunkSize)
-		// Only attempt spread on the top of a column — grass can only
-		// appear where sunlight hits, which is the column surface. The
-		// +1..+2 sample of `by` cheaply biases the random pool towards
-		// the top of the world without needing a heightmap lookup.
-		top := w.HeightmapTop(bx, bz)
-		if top < 0 {
-			continue
+	for _, cp := range chunkPositions {
+		for section := 0; section < SectionsPerChunk; section++ {
+			for i := 0; i < defaultRandomTickSpeed; i++ {
+				bx := cp.WorldX + rng.Intn(ChunkSize)
+				by := MinWorldHeight + section*16 + rng.Intn(16)
+				bz := cp.WorldZ + rng.Intn(ChunkSize)
+				id, ok := loadedBlockID(w, bx, by, bz)
+				if !ok || id != grassID {
+					continue
+				}
+				m.randomTickGrassBlock(rng, w, bx, by, bz, dirtID, grassID)
+			}
 		}
-		// Sample at the surface or one block below it: the grass-spread
-		// check looks at "the dirt block below a transparent block", so
-		// either of those two is the right cell to test.
-		if by < top-1 || by > top {
-			continue
-		}
-		// Cheap bail-out before reading the chunk: if the block is not
-		// even dirt, skip the whole neighbour walk.
-		if w.GetBlock(bx, by, bz).ID() != dirtID {
-			continue
-		}
-		// The block above must be air (or otherwise transparent — we
-		// model air as the only case in the worldgen output).
-		if w.GetBlock(bx, by+1, bz).ID() != AirID {
-			continue
-		}
-		// At least one horizontal neighbour must already be grass. If
-		// not, the sample is wasted but the budget is small enough to
-		// absorb that.
-		hasGrass := false
-		if w.GetBlock(bx+1, by, bz).ID() == grassID {
-			hasGrass = true
-		} else if w.GetBlock(bx-1, by, bz).ID() == grassID {
-			hasGrass = true
-		} else if w.GetBlock(bx, by, bz+1).ID() == grassID {
-			hasGrass = true
-		} else if w.GetBlock(bx, by, bz-1).ID() == grassID {
-			hasGrass = true
-		}
-		if !hasGrass {
-			continue
-		}
-		if rng.Float64() >= grassSpreadChance {
-			continue
-		}
-		// Promote: use the world manager so the change is published
-		// across the world bus (so both Java and Bedrock viewers update
-		// the block visually).
-		m.SetBlockAndPublish(BlockUpdateSourceServer, bx, by, bz, BlockByID(grassID))
 	}
+}
+
+func (m *Manager) randomTickGrassBlock(rng *rand.Rand, w *World, x, y, z int, dirtID, grassID int32) {
+	if !grassCanSurvive(w, x, y, z) {
+		m.setWorldBlockAndPublish(w, x, y, z, BlockByID(dirtID))
+		return
+	}
+	if localLightAbove(w, x, y, z) < grassSpreadMinLight {
+		return
+	}
+	for i := 0; i < grassSpreadAttempts; i++ {
+		tx := x + rng.Intn(3) - 1
+		ty := y + rng.Intn(5) - 3
+		tz := z + rng.Intn(3) - 1
+		id, ok := loadedBlockID(w, tx, ty, tz)
+		if !ok || id != dirtID {
+			continue
+		}
+		if !grassCanSpreadTo(w, tx, ty, tz) {
+			continue
+		}
+		m.setWorldBlockAndPublish(w, tx, ty, tz, BlockByID(grassID))
+	}
+}
+
+func (m *Manager) setWorldBlockAndPublish(w *World, x, y, z int, block Block) {
+	w.SetBlock(x, y, z, block)
+	m.PublishBlockUpdate(BlockUpdateSourceServer, x, y, z, block.ID())
+}
+
+func loadedBlockID(w *World, x, y, z int) (int32, bool) {
+	c := w.GetChunk(x>>4, z>>4)
+	if c == nil {
+		return AirID, false
+	}
+	return c.GetBlock(x&15, y, z&15).ID(), true
+}
+
+func grassCanSurvive(w *World, x, y, z int) bool {
+	aboveID, ok := loadedBlockID(w, x, y+1, z)
+	if !ok {
+		return false
+	}
+	if GetLightProps(aboveID).Opacity >= 15 {
+		return false
+	}
+	return localLightAbove(w, x, y, z) >= grassSurviveMinLight
+}
+
+func grassCanSpreadTo(w *World, x, y, z int) bool {
+	if !grassCanSurvive(w, x, y, z) {
+		return false
+	}
+	return localLightAbove(w, x, y, z) >= grassSpreadMinLight
+}
+
+func localLightAbove(w *World, x, y, z int) uint8 {
+	sky := w.GetSkyLight(x, y+1, z)
+	block := w.GetBlockLight(x, y+1, z)
+	if sky > block {
+		return sky
+	}
+	return block
 }
 
 // chunkWorldPos is a world-coordinate top-left corner of a loaded chunk.

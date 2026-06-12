@@ -41,14 +41,17 @@ func (le *LightEngine) ProcessUpdates() {
 	le.mu.Unlock()
 
 	for pos := range pending {
-		// Safely get the chunk while holding the read lock
+		// Keep the world read lock for the whole recompute. ComputeChunkLight's
+		// world-coordinate helpers intentionally use getChunkUnlocked because chunk
+		// generation calls this while already holding world.mu; without a lock here,
+		// tick-time light recomputation can race a concurrent chunk load/unload and
+		// panic on a concurrent map read/write.
 		le.world.mu.RLock()
 		chunk := le.world.chunks[pos]
-		le.world.mu.RUnlock()
-		
 		if chunk != nil {
 			le.ComputeChunkLight(chunk, pos.X, pos.Z)
 		}
+		le.world.mu.RUnlock()
 	}
 }
 

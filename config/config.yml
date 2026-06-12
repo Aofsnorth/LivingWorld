@@ -18,7 +18,7 @@ ops:
   - Aofsnorth
 
 world:
-  type: superflat # superflat | overworld
+  type: overworld # superflat | overworld
   seed: 12345
   spawn:
     x: 0
