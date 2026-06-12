@@ -1,7 +1,6 @@
 package server
 
 import (
-	"log"
 	"strings"
 
 	bedrockworld "livingworld/internal/bedrock/world"
@@ -169,7 +168,7 @@ func isBedrockBreakAction(action int32) bool {
 
 // placeSoundForBlockName returns the vanilla Bedrock step-SFX for the placed
 // block. The mapping is intentionally coarse — it's keyed off the block's
-// material family so grass/dirt sound like grass, stone-family sounds like
+// material family so grass/dirt use their own vanilla-ish sounds, stone-family sounds like
 // stone, wood sounds like wood, etc. Anything we don't recognise falls back
 // to `step.stone`, which is the same default vanilla uses for un-categorised
 // place sounds.
@@ -185,8 +184,10 @@ func placeSoundForBlockName(name string) string {
 		strings.HasSuffix(name, "_stairs") && (strings.Contains(name, "oak") || strings.Contains(name, "spruce") || strings.Contains(name, "birch") || strings.Contains(name, "jungle") || strings.Contains(name, "acacia") || strings.Contains(name, "dark_oak") || strings.Contains(name, "mangrove") || strings.Contains(name, "cherry") || strings.Contains(name, "bamboo")),
 		name == "crafting_table" || name == "bookshelf" || name == "chest" || name == "barrel" || name == "lectern" || name == "loom" || name == "smoker" || name == "furnace" || name == "blast_furnace" || name == "composter":
 		return "step.wood"
-	case name == "grass_block" || name == "dirt" || name == "coarse_dirt" || name == "podzol" || name == "mycelium" || name == "rooted_dirt" || name == "farmland" || name == "mud" || name == "muddy_mangrove_roots" || name == "moss_block" || name == "moss_carpet":
+	case name == "grass_block" || name == "podzol" || name == "mycelium" || name == "moss_block" || name == "moss_carpet":
 		return "step.grass"
+	case name == "dirt" || name == "coarse_dirt" || name == "rooted_dirt" || name == "farmland" || name == "mud" || name == "muddy_mangrove_roots":
+		return "step.gravel"
 	case name == "sand" || name == "red_sand" || name == "gravel" || name == "soul_sand" || name == "soul_soil":
 		return "step.sand"
 	case name == "snow" || name == "snow_block" || name == "powder_snow":
@@ -210,9 +211,6 @@ func placeSoundForBlockName(name string) string {
 func (s *Server) playBlockPlaceSound(conn *minecraft.Conn, itemName string, pos protocol.BlockPos) {
 	sound := placeSoundForBlockName(itemName)
 	center := mgl32.Vec3{float32(pos[0]) + 0.5, float32(pos[1]) + 0.5, float32(pos[2]) + 0.5}
-	// TEMP DEBUG: confirm what sound + itemName we actually emit at runtime.
-	// Remove after the dirt/grass sound report is closed out.
-	log.Printf("[bedrock-place-sfx] itemName=%q → SoundName=%q @ %v", itemName, sound, center)
 	_ = conn.WritePacket(&packet.PlaySound{
 		SoundName: sound,
 		Position:  center,

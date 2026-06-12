@@ -250,6 +250,62 @@ func aiStep(m *Mob, ctx *AIContext) {
 	// 5. Selectors — target acquisition first, then behaviour.
 	m.targetSel.tick(m, ctx)
 	m.goalSel.tick(m, ctx)
+
+	// 6. Body rotation control — vanilla BodyRotationControl. When stationary,
+	// the body gradually aligns with the head; when no FlagLook goal is
+	// active, the head eases back toward the body heading.
+	bodyRotationSystem(m)
+}
+
+// bodyRotationSystem mirrors vanilla BodyRotationControl. When the mob is
+// walking, the body already faces the movement direction (via wanderStep /
+// stepHorizontal). When stationary, the body slowly rotates to follow the
+// head after a short delay, and the head eases toward the body if no look
+// goal is running. This prevents the "floating head" effect where the body
+// stays frozen while the head whips around.
+func bodyRotationSystem(m *Mob) {
+	if m.walkTicks > 0 {
+		// Moving: body follows movement direction (set by wanderStep / navigateTo).
+		// Head eases toward the body heading if no look goal is controlling it.
+		m.headStillTicks = 0
+		if !m.lookGoalActive() {
+			m.HeadYaw = approachAngle(m.HeadYaw, m.Yaw, maxHeadYawTurn)
+			m.HeadPitch = approachAngle(m.HeadPitch, 0, maxHeadPitchTurn)
+		}
+		return
+	}
+	// Stationary.
+	m.headStillTicks++
+	if m.headStillTicks > bodyFollowDelay {
+		// Slowly rotate body toward head yaw (vanilla: ~1/6 of the difference per tick).
+		diff := wrapDegrees(m.HeadYaw - m.Yaw)
+		step := diff * 0.167 // ≈ 1/6 per tick → ~1 s to fully align
+		if step > 0 && step < 1 {
+			step = 1
+		} else if step < 0 && step > -1 {
+			step = -1
+		}
+		m.Yaw = normalizeAngle(m.Yaw + step)
+	}
+	// Whether or not the body has started turning, keep the head within ±75° of body.
+	clampHeadYawToBody(m)
+
+	// If no look goal is running, ease head to body heading + level pitch.
+	if !m.lookGoalActive() {
+		m.HeadYaw = approachAngle(m.HeadYaw, m.Yaw, maxHeadYawTurn)
+		m.HeadPitch = approachAngle(m.HeadPitch, 0, maxHeadPitchTurn)
+	}
+}
+
+// lookGoalActive reports whether a FlagLook goal is currently running on
+// the mob's goal selector. Used by bodyRotationSystem to avoid overwriting
+// head yaw/pitch that a look goal is actively controlling.
+func (m *Mob) lookGoalActive() bool {
+	if m.goalSel == nil {
+		return false
+	}
+	_, ok := m.goalSel.locked[FlagLook]
+	return ok
 }
 
 // zero16 returns the zero-valued [16]byte. Helper for the "no target" case.

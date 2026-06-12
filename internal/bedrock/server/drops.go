@@ -1,8 +1,6 @@
 package server
 
 import (
-	"time"
-
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/drops"
 	"livingworld/internal/item"
@@ -106,12 +104,10 @@ func (s *Server) startDropLoop() {
 // item pickups for Bedrock players (animation + inventory sync).
 func (s *Server) registerPickupHandler() {
 	s.wm.OnItemPickup(func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
-		// TakeItemActor flies the dropped item to the collector — that IS the
-		// vanilla pickup "magnet" animation on Bedrock. Sending RemoveActor in the
-		// same write kills the entity before the client can play the tween, which
-		// is why pickups used to just blink out. Send TakeItemActor right away so
-		// the magnet plays, then queue a defensive RemoveActor ~10 ticks later so
-		// any client that didn't despawn after the animation gets cleaned up.
+		// The shared pickup loop has already claimed the drop from the server store.
+		// Send TakeItemActor for pickup feedback, then immediately remove the actor
+		// so Bedrock does not keep rendering an unpickable ghost item until a delayed
+		// cleanup timer fires.
 		//
 		// The TakerEntityRuntimeID is the runtime id of the player who is doing
 		// the collecting. Foreign viewers (other Bedrock sessions) see the
@@ -119,9 +115,8 @@ func (s *Server) registerPickupHandler() {
 		// player-spawn code assigned them). The local collector's own client
 		// however identifies itself as `bedrockLocalRuntime` (1), NOT
 		// `playerEntityID` — addressing the wrong id silently no-ops the magnet
-		// (the item sits still, then the delayed RemoveActor makes it blink out).
-		// So for the collector's own session we use the local-runtime id; for
-		// everyone else we use the per-session id.
+		// (the item sits still). So for the collector's own session we use the
+		// local-runtime id; for everyone else we use the per-session id.
 		uid, _ := uuid.FromBytes(playerUUID[:])
 		collectorSession, _ := s.getSession(uid)
 		s.forEachSession(func(bs *bedrockSession) {
@@ -133,13 +128,8 @@ func (s *Server) registerPickupHandler() {
 				ItemEntityRuntimeID:  uint64(dropEntityID),
 				TakerEntityRuntimeID: taker,
 			})
+			bs.write(&packet.RemoveActor{EntityUniqueID: dropEntityID})
 		})
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			s.forEachSession(func(bs *bedrockSession) {
-				bs.write(&packet.RemoveActor{EntityUniqueID: dropEntityID})
-			})
-		}()
 
 		// Inventory sync only when the collector is a Bedrock player.
 		pl := s.pm.GetPlayer(uid)

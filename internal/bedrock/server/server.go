@@ -12,7 +12,6 @@ import (
 	"livingworld/internal/world"
 
 	"github.com/sandertv/gophertunnel/minecraft"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
 type Server struct {
@@ -81,8 +80,6 @@ func (s *Server) Start() error {
 	s.listener = listener
 
 	log.Printf("[Bedrock] Server listening on 0.0.0.0:%d", s.port)
-	log.Printf("[Bedrock] Block palette pinned to MC %s (protocol %d) — clients MUST be this exact version or terrain renders transparent",
-		protocol.CurrentVersion, protocol.CurrentProtocol)
 	bedrockworld.LogBlockPaletteVersion()
 	s.startBlockEventLoop()
 	s.startEffectEventLoop()

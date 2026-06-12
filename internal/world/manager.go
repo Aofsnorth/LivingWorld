@@ -60,6 +60,11 @@ type Manager struct {
 	// under m.mu by spawnTick. Empty defaults to "java".
 	spawnMode string
 
+	// spawnMobsEnabled gates the natural mob-spawn director. When false, spawnTick
+	// is skipped entirely — no new mobs appear, but existing ones keep their AI.
+	// Defaults to true; set via SetSpawnMobsEnabled from the server bootstrap.
+	spawnMobsEnabled bool
+
 	// playerLocator returns the live world positions of connected players. The
 	// world package can't import player (cycle), so the server bootstrap wires the
 	// player.Manager in via SetPlayerLocator. Used by the mob-spawn director as the
@@ -156,9 +161,10 @@ func NewManager() *Manager {
 		drops:        drops.New(),
 		mobs:         mobs.New(),
 		projectiles:  mobs.NewProjectileStore(),
-		dropRNG:      rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
-		crackManager: NewCrackManager(),
-		effectEvents: NewWorldEffectBus(),
+		dropRNG:          rand.New(rand.NewSource(1)), // deterministic; drops aren't security-sensitive
+		crackManager:     NewCrackManager(),
+		effectEvents:     NewWorldEffectBus(),
+		spawnMobsEnabled: true,
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld
@@ -216,6 +222,20 @@ func (m *Manager) SpawnMode() string {
 		return spawnModeBedrock
 	}
 	return spawnModeJava
+}
+
+// SetSpawnMobsEnabled toggles the natural mob-spawn director.
+func (m *Manager) SetSpawnMobsEnabled(enabled bool) {
+	m.mu.Lock()
+	m.spawnMobsEnabled = enabled
+	m.mu.Unlock()
+}
+
+// SpawnMobsEnabled returns true if the natural spawn director is enabled.
+func (m *Manager) SpawnMobsEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.spawnMobsEnabled
 }
 
 // Mobs returns the shared mob store. Each protocol bridge subscribes

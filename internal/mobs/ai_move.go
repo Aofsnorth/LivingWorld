@@ -14,9 +14,12 @@ const speedToBlocksPerTick = 0.62
 // these many degrees per tick instead of snapping, so a mob's head tracks a
 // player smoothly (vanilla LookControl clamps head rotation the same way).
 const (
-	maxHeadYawTurn   = 40.0
-	maxHeadPitchTurn = 40.0
+	maxHeadYawTurn   = 10.0 // vanilla getMaxHeadYRot() default — 10°/tick
+	maxHeadPitchTurn = 40.0 // vanilla getMaxHeadXRot() default — 40°/tick
 	maxHeadBodyYaw   = 75.0
+	// bodyFollowDelay is the number of stationary ticks before the body starts
+	// rotating toward the head yaw (vanilla BodyRotationControl threshold).
+	bodyFollowDelay = 10
 	// mobEyeHeight is the fallback eye height used to compute look pitch when a
 	// mob type has no entry in mobEyeHeightFor. Per-type heights live there;
 	// using a flat 1.6 for everything made short mobs (pig/chicken) compute a

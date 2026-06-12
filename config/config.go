@@ -66,6 +66,11 @@ type WorldConfig struct {
 	// and damage once the entity system exists.
 	Difficulty string `yaml:"difficulty"`
 
+	// SpawnMobs enables natural mob spawning. When false the spawn director
+	// is skipped entirely — no new mobs appear, but existing ones keep their
+	// AI and physics. Defaults to true.
+	SpawnMobs bool `yaml:"spawnMobs"`
+
 	// SpawnMode selects which edition's mob spawn/despawn model the natural
 	// spawn director uses: "java" (chunk-scaled per-category mob caps,
 	// surface-Y spawning, internal light = max(block,sky)) or "bedrock"
@@ -186,6 +191,7 @@ func Default() *Config {
 			Directory:       system.DefaultWorldsDirectory,
 			AutosaveSeconds: int(system.DefaultAutosaveInterval.Seconds()),
 			Difficulty:      gameplay.DifficultyNormal,
+			SpawnMobs:       true,
 			SpawnMode:       "java",
 			DayNightCycle:   true,
 			WeatherCycle:    true,

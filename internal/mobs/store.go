@@ -168,6 +168,11 @@ type Mob struct {
 	// keep grinding on it.
 	stuckTicks int
 
+	// headStillTicks counts consecutive ticks the mob has been stationary
+	// (not walking). After bodyFollowDelay ticks, the body slowly rotates
+	// toward the head yaw — vanilla BodyRotationControl.
+	headStillTicks int
+
 	// M-passiveAI: grazeTicks counts ticks remaining in the
 	// grazing (eating) state. Passive mobs enter StateGraze
 	// for 40-80 ticks when idle, lowering their head pitch

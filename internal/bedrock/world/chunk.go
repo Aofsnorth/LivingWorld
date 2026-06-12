@@ -4,7 +4,6 @@ import (
 	"log"
 	"sync"
 
-	dfbiome "github.com/df-mc/dragonfly/server/world/biome"
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
@@ -49,26 +48,11 @@ func LogBlockPaletteVersion() {
 	bedrockRID := BlockRID("minecraft:bedrock")
 	dirtRID := BlockRID("minecraft:dirt")
 	grassRID := BlockRID("minecraft:grass_block", map[string]any{"minecraft:snowy_bit": false})
-	plainsBiome := uint32(dfbiome.Plains{}.EncodeBiome())
-
-	_, props, found := dfchunk.RuntimeIDToState(airRID)
-	ver := int32(-1)
-	if found {
-		if v, ok := props["version"]; ok {
-			ver = v.(int32)
-		}
-	}
-
-	log.Printf("[Bedrock] Block palette: air=%d bedrock=%d dirt=%d grass=%d biome_plains=%d",
-		airRID, bedrockRID, dirtRID, grassRID, plainsBiome)
-	log.Printf("[Bedrock] air state: found=%v props=%+v blockVersion=%d", found, props, ver)
-	log.Printf("[Bedrock] gophertunnel protocol=%d version=%s",
-		protocol.CurrentProtocol, protocol.CurrentVersion)
 
 	if airRID == 0 {
-		log.Printf("[Bedrock] WARNING: air RID is 0 â€” blocks will be invisible!")
+		log.Printf("[Bedrock] WARNING: air runtime ID is 0; blocks may render invisible")
 	}
 	if bedrockRID == 0 || dirtRID == 0 || grassRID == 0 {
-		log.Printf("[Bedrock] WARNING: one or more terrain block RIDs are 0 â€” palette mismatch likely")
+		log.Printf("[Bedrock] WARNING: one or more terrain block runtime IDs are 0; palette mismatch likely")
 	}
 }

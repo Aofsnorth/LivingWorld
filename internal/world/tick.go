@@ -244,7 +244,7 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// director is cheap (3 candidate columns per attempt, capped by per-cat
 	// population) so running it every 5 ticks is well within budget.
 	tickNum := m.tickCounter.Add(1)
-	if tickNum%5 == 0 {
+	if tickNum%5 == 0 && m.SpawnMobsEnabled() {
 		m.spawnTick(rng)
 	}
 

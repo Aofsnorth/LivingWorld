@@ -3,6 +3,7 @@ package server
 import (
 	"log"
 	"net"
+	"strings"
 
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/bedrock/skin"
@@ -44,15 +45,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	mcConn := conn.(*minecraft.Conn)
 	addr := conn.RemoteAddr().String()
 
-	log.Printf("[Bedrock] Client connected from %s", addr)
-
 	identity := mcConn.IdentityData()
 	playerName := identity.DisplayName
 	playerID, err := uuid.Parse(identity.Identity)
 	if err != nil {
 		playerID = uuid.New()
 	}
-	log.Printf("[Bedrock] Player joining: %s", playerName)
 
 	// Resolve op status BEFORE StartGame: PlayerPermissions is part of the
 	// initial GameData and cannot be changed post-join without a re-handshake.
@@ -94,7 +92,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			RewindHistorySize:                0,
 			ServerAuthoritativeBlockBreaking: true,
 		},
-		ChunkRadius:         int32(s.cfg.Bedrock.ViewDistance),
+		ChunkRadius: int32(s.cfg.Bedrock.ViewDistance),
 		// PlayerPermissions drives Bedrock's "Cheats are not enabled on this
 		// world" UI banner AND the in-game cheats toggle. Hardcoding 1 (member)
 		// here is what kept ops from opening the gamemode selector, time controls,
@@ -119,8 +117,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		log.Printf("[Bedrock] StartGame failed for %s: %v", addr, err)
 		return
 	}
-
-	log.Printf("[Bedrock] Client %s spawned successfully", addr)
 
 	bs := newBedrockSession(playerID, playerName, system.BedrockPlayerRuntimeIDOffset+uint64(s.pm.PlayerCount()), mcConn, s.pm)
 	s.addSession(bs)
@@ -196,7 +192,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	for {
 		pk, err := mcConn.ReadPacket()
 		if err != nil {
-			log.Printf("[Bedrock] Client disconnected %s: %v", addr, err)
+			if !strings.Contains(err.Error(), "context canceled") {
+				log.Printf("[Bedrock] Client disconnected %s: %v", addr, err)
+			}
 			return
 		}
 		s.handlePacket(bs, pk, bs.chunkCache)

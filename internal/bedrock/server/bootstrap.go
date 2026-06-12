@@ -1,8 +1,6 @@
 package server
 
 import (
-	"log"
-
 	lwworld "livingworld/internal/world"
 
 	"github.com/sandertv/gophertunnel/minecraft"
@@ -22,7 +20,6 @@ func (s *Server) bootstrapWorld(conn *minecraft.Conn, radius int, bs *bedrockSes
 		int32(lwworld.SuperflatSpawnY),
 		int32(s.cfg.World.Spawn.Z),
 	}
-	log.Printf("[Bedrock] Sending world bootstrap radius=%d centerChunk=(%d,%d) groundY=%d", radius, centerX, centerZ, bedrockGroundY)
 	_ = conn.WritePacket(&packet.ChunkRadiusUpdated{ChunkRadius: int32(radius)})
 	_ = conn.WritePacket(&packet.NetworkChunkPublisherUpdate{Position: spawn, Radius: uint32(radius * 16)})
 

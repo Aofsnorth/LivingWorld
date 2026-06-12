@@ -135,12 +135,22 @@ func (randomStrollGoal) Tick(m *Mob, ctx *AIContext) {
 
 // lookAtPlayerGoal turns the mob's head toward the nearest player within range
 // — vanilla LookAtPlayerGoal. Look-only so it runs alongside strolling.
+//
+// Vanilla behaviour: canUse has a 2% probability gate per tick (so the mob
+// doesn't stare 100% of the time); on start, a random look duration of
+// 40–80 ticks (2–4 s) is chosen. The mob keeps looking until the timer
+// expires or the player leaves range. This creates the natural "occasional
+// glance" pattern instead of a permanent head-lock.
 type lookAtPlayerGoal struct {
 	baseGoal
 	rangeBlocks float64
 }
 
 func (lookAtPlayerGoal) Flags() GoalFlag { return FlagLook }
+
+// lookAtPlayerChance is the vanilla per-tick probability that a mob begins
+// looking at a nearby player (LookAtPlayerGoal default 0.02).
+const lookAtPlayerChance = 0.02
 
 func (g lookAtPlayerGoal) nearest(m *Mob, ctx *AIContext) *PlayerTarget {
 	players := ctx.Players()
@@ -157,40 +167,65 @@ func (g lookAtPlayerGoal) nearest(m *Mob, ctx *AIContext) *PlayerTarget {
 	return best
 }
 
-func (g lookAtPlayerGoal) CanUse(m *Mob, ctx *AIContext) bool { return g.nearest(m, ctx) != nil }
-func (g lookAtPlayerGoal) CanContinue(m *Mob, ctx *AIContext) bool {
+func (g lookAtPlayerGoal) CanUse(m *Mob, ctx *AIContext) bool {
+	if ctx.RNG.Float64() >= lookAtPlayerChance {
+		return false // 98% of ticks: don't start
+	}
 	return g.nearest(m, ctx) != nil
 }
 
+func (g lookAtPlayerGoal) CanContinue(m *Mob, ctx *AIContext) bool {
+	if m.lookTicks <= 0 {
+		return false // duration expired
+	}
+	return g.nearest(m, ctx) != nil
+}
+
+func (g lookAtPlayerGoal) Start(m *Mob, ctx *AIContext) {
+	// Vanilla: lookTime = 40 + random.nextInt(40) → 2–4 s.
+	m.lookTicks = 40 + ctx.RNG.Intn(40)
+}
+
+func (g lookAtPlayerGoal) Stop(m *Mob, ctx *AIContext) {
+	m.lookTicks = 0
+}
+
 func (g lookAtPlayerGoal) Tick(m *Mob, ctx *AIContext) {
+	m.lookTicks--
 	if p := g.nearest(m, ctx); p != nil {
 		lookAt(m, p.X, p.Y+playerEyeHeight, p.Z, false)
 	}
 }
 
 // randomLookAroundGoal idly drifts the head when nothing else looks — vanilla
-// RandomLookAroundGoal. It only nudges on a cadence so it reads as a glance,
-// not a spin. Look-only and lowest priority so lookAtPlayerGoal wins.
+// RandomLookAroundGoal. Has a 2% per-tick chance to start, then holds a random
+// glance for 20–60 ticks. When not actively glancing, the head eases back
+// toward the body heading. Look-only and lowest priority so lookAtPlayerGoal wins.
 type randomLookAroundGoal struct{ baseGoal }
 
-func (randomLookAroundGoal) Flags() GoalFlag                       { return FlagLook }
-func (randomLookAroundGoal) CanUse(m *Mob, ctx *AIContext) bool    { return true }
-func (randomLookAroundGoal) CanContinue(m *Mob, ctx *AIContext) bool { return true }
+func (randomLookAroundGoal) Flags() GoalFlag { return FlagLook }
+
+func (randomLookAroundGoal) CanUse(m *Mob, ctx *AIContext) bool {
+	return ctx.RNG.Float64() < 0.02
+}
+
+func (randomLookAroundGoal) CanContinue(m *Mob, ctx *AIContext) bool {
+	return m.lookTicks > 0
+}
+
+func (randomLookAroundGoal) Start(m *Mob, ctx *AIContext) {
+	// Pick a random sideways glance relative to the current body heading.
+	m.lookYawTarget = m.Yaw + (ctx.RNG.Float64()-0.5)*150.0
+	m.lookTicks = 20 + ctx.RNG.Intn(40)
+}
+
+func (randomLookAroundGoal) Stop(m *Mob, ctx *AIContext) {
+	m.lookTicks = 0
+}
 
 func (randomLookAroundGoal) Tick(m *Mob, ctx *AIContext) {
-	if m.lookTicks > 0 {
-		// Holding a glance: ease the head toward the picked offset.
-		m.lookTicks--
-		m.HeadYaw = approachAngle(m.HeadYaw, m.lookYawTarget, maxHeadYawTurn)
-		return
-	}
-	// Default: settle the head toward the body heading and level the pitch, so a
-	// walking mob looks where it's going instead of staying cocked sideways.
-	m.HeadYaw = approachAngle(m.HeadYaw, m.Yaw, maxHeadYawTurn)
+	m.lookTicks--
+	// Ease the head toward the picked glance target.
+	m.HeadYaw = approachAngle(m.HeadYaw, m.lookYawTarget, maxHeadYawTurn)
 	m.HeadPitch = approachAngle(m.HeadPitch, 0, maxHeadPitchTurn)
-	// Occasionally pick a brief sideways glance relative to the heading.
-	if ctx.RNG.Float64() < 0.02 {
-		m.lookYawTarget = m.Yaw + (ctx.RNG.Float64()-0.5)*150.0
-		m.lookTicks = 20 + ctx.RNG.Intn(40)
-	}
 }

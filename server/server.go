@@ -339,8 +339,9 @@ func New(cfg *Config) *Server {
 	// with the effect tick.
 	worlds.SetIFramesTickCallback(players.IFramesTick)
 	worlds.StartTimeLoop(cfg.World.DayNightCycle)
-	worlds.StartMobAI(cfg.World.Difficulty)
+	worlds.SetDifficulty(cfg.World.Difficulty)
 	worlds.SetSpawnMode(cfg.World.SpawnMode)
+	worlds.SetSpawnMobsEnabled(cfg.World.SpawnMobs)
 	wd := cfg.World.WeatherDurations
 	worlds.StartWeatherCycle(cfg.World.WeatherCycle, world.WeatherDurations{
 		ClearMin:   wd.ClearMinSeconds,
