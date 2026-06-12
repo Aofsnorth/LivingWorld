@@ -39,13 +39,13 @@ import (
 // sounds regardless).
 func soundCategoryFor(e mobs.SoundEmit) int32 {
 	switch e.Sound {
-	case mobs.SoundMobZombieSay, mobs.SoundMobSkeletonSay,
-		mobs.SoundMobCreeperSay, mobs.SoundMobShoot:
+	case string(mobs.SoundMobZombieSay), string(mobs.SoundMobSkeletonSay),
+		string(mobs.SoundMobCreeperSay), string(mobs.SoundMobShoot):
 		return 5 // HOSTILE
-	case mobs.SoundMobCowSay, mobs.SoundMobPigSay,
-		mobs.SoundMobSheepSay, mobs.SoundMobChickenSay:
+	case string(mobs.SoundMobCowSay), string(mobs.SoundMobPigSay),
+		string(mobs.SoundMobSheepSay), string(mobs.SoundMobChickenSay):
 		return 8 // AMBIENT
-	case mobs.SoundMobHurt, mobs.SoundMobDeath:
+	case string(mobs.SoundMobHurt), string(mobs.SoundMobDeath):
 		return 0 // MASTER
 	}
 	return 0
@@ -64,7 +64,7 @@ func buildSoundEntityPacket(e mobs.SoundEmit) pk.Packet {
 			FixedRange: pk.Option[pk.Float, *pk.Float]{},
 		},
 		pk.VarInt(soundCategoryFor(e)),
-		pk.VarInt(int32(e.EntityID)),
+		pk.VarInt(int32(e.MobID)),
 		pk.Float(float32(e.Volume)),
 		pk.Float(float32(e.Pitch)),
 		pk.Long(0), // seed: clients don't read this

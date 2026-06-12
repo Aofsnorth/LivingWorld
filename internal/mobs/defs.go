@@ -260,15 +260,11 @@ type SpawnRule struct {
 	Chance float32
 }
 
-// HitEffect is the on-hit status effect applied by a hostile mob. The
-// effect itself (icon, particle, modifiers) is not implemented in M1;
-// we apply the underlying damage / slowness / etc. directly via the
-// world layer's player API. M5 wires the full effect model.
-type HitEffect struct {
-	Type    string // "hunger" | "wither" | "poison" | "slowness" | "instant_damage" | "levitation" | ""
-	Level   int    // amplifier (0 = I, 1 = II, ...)
-	Seconds int    // duration in ticks / 20
-}
+// HitEffect is the on-hit status effect applied by a hostile mob.
+// The type is re-exported from internal/mobs/ai/context (see
+// ai_context_aliases.go); the doc is preserved here for code
+// search. M5 wires the full effect model — for now the world
+// layer applies the underlying damage / slowness / etc. directly.
 
 // Drop is one entry in a mob's loot table. Empty Item means "no
 // drop"; chance < 1 means a roll on each kill. The world tick

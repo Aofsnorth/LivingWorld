@@ -18,7 +18,7 @@ ops:
   - Aofsnorth
 
 world:
-  type: overworld # superflat | overworld
+  type: superflat # superflat | overworld
   seed: 12345
   spawn:
     x: 0
@@ -45,6 +45,45 @@ world:
     rainMaxSeconds: 1200
     thunderMinSeconds: 180
     thunderMaxSeconds: 600
+  # Vanilla overworld generator tuning (Phase 1-7 pipeline). Any field you
+  # omit here falls back to the documented vanilla 1.18+ default in
+  # config/config.go. Set any boolean to false to skip that phase entirely.
+  overworld:
+    # Phase 1: 3D climate (biome picker — 5 axes)
+    climateScale: 0.00390625 # 1/256, vanilla default
+    biomeAmplitude: 1.0 # 1.0 = vanilla; <1.0 = more uniform
+    # Phase 2: Heightmap
+    heightNoiseScale: 0.0078125 # 1/128
+    heightNoiseOctaves: 4
+    heightNoisePersistence: 0.5
+    heightNoiseLacunarity: 2.0
+    seaLevel: 63
+    # Phase 3: Surface rules
+    bedrockFloor: true
+    beachWidth: 1
+    # Phase 4: Global structures (stronghold ring)
+    generateStrongholds: true
+    strongholdCount: 128
+    strongholdMinRadius: 1280
+    strongholdMaxRadius: 14000
+    # Phase 5: 3D caves
+    generateCaves: true
+    caveScale: 0.041666666 # 1/24
+    caveCheeseThreshold: 0.4
+    caveSpaghettiThreshold: 0.35
+    caveSpaghettiWidth: 1
+    caveNoodleThreshold: 0.3
+    # Phase 6: Jigsaw structures
+    generateVillages: true
+    generateMonuments: true
+    villageSpacing: 32
+    villageSeparation: 8
+    monumentSpacing: 32
+    monumentSeparation: 5
+    # Phase 7: Ores
+    generateOres: true
+    deepslateY: 8
+    oreVeinScale: 1.0
 
 java:
   bind: 0.0.0.0

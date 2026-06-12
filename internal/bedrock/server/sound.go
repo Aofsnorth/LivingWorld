@@ -28,9 +28,9 @@ import (
 // Bedrock hardcoded LevelSoundEvent ids. From the Bedrock protocol
 // reference; values are stable across versions for the legacy events.
 const (
-	bedrockSoundBow            uint32 = 5
-	bedrockSoundHurtFlesh      uint32 = 24
-	bedrockSoundMobWarning     uint32 = 33 // creeper primed-hiss
+	bedrockSoundBow        uint32 = 5
+	bedrockSoundHurtFlesh  uint32 = 24
+	bedrockSoundMobWarning uint32 = 33 // creeper primed-hiss
 )
 
 // mobPosOf looks up the mob's current position by its entityID so
@@ -51,7 +51,7 @@ func (s *Server) mobPosOf(id int64) (x, y, z float32, ok bool) {
 // SoundEmit. v1 may return more than one packet (e.g. hurt + flesh
 // splatter) but in practice it's one or zero.
 func (s *Server) buildBedrockSoundPackets(e mobs.SoundEmit) []packet.Packet {
-	x, y, z, ok := s.mobPosOf(e.EntityID)
+	x, y, z, ok := s.mobPosOf(e.MobID)
 	if !ok {
 		return nil
 	}
@@ -59,17 +59,17 @@ func (s *Server) buildBedrockSoundPackets(e mobs.SoundEmit) []packet.Packet {
 	vol := e.Volume
 	pitch := e.Pitch
 	switch e.Sound {
-	case mobs.SoundMobShoot:
+	case string(mobs.SoundMobShoot):
 		// Bow shoot.
 		return []packet.Packet{&packet.LevelSoundEvent{
-			SoundType:           bedrockSoundBow,
-			Position:            pos,
-			ExtraData:           0,
-			EntityType:          "minecraft:skeleton",
+			SoundType:             bedrockSoundBow,
+			Position:              pos,
+			ExtraData:             0,
+			EntityType:            "minecraft:skeleton",
 			DisableRelativeVolume: false,
-			EntityUniqueID:      e.EntityID,
+			EntityUniqueID:        e.MobID,
 		}}
-	case mobs.SoundMobCreeperSay:
+	case string(mobs.SoundMobCreeperSay):
 		// Creeper primed-hiss. Bedrock uses MobWarning for the
 		// "fuse lit" sound.
 		return []packet.Packet{&packet.LevelSoundEvent{
@@ -77,9 +77,9 @@ func (s *Server) buildBedrockSoundPackets(e mobs.SoundEmit) []packet.Packet {
 			Position:       pos,
 			ExtraData:      0,
 			EntityType:     "minecraft:creeper",
-			EntityUniqueID: e.EntityID,
+			EntityUniqueID: e.MobID,
 		}}
-	case mobs.SoundMobHurt:
+	case string(mobs.SoundMobHurt):
 		// Generic flesh hurt. HurtFlesh plays a universal "ow"
 		// regardless of mob species.
 		return []packet.Packet{&packet.LevelSoundEvent{
@@ -87,9 +87,9 @@ func (s *Server) buildBedrockSoundPackets(e mobs.SoundEmit) []packet.Packet {
 			Position:       pos,
 			ExtraData:      0,
 			EntityType:     "minecraft:zombie", // client uses this for tie-break
-			EntityUniqueID: e.EntityID,
+			EntityUniqueID: e.MobID,
 		}}
-	case mobs.SoundMobDeath:
+	case string(mobs.SoundMobDeath):
 		// Vanilla Bedrock has no specific "generic death" sound;
 		// PlaySound with the namespaced "minecraft:entity.generic.death"
 		// works on modern clients.

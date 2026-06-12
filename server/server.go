@@ -26,6 +26,7 @@ import (
 	"livingworld/config"
 	"livingworld/internal/bedrock"
 	"livingworld/internal/command"
+	"livingworld/internal/dimension"
 	"livingworld/internal/infrastructure/logging"
 	"livingworld/internal/java"
 	"livingworld/internal/mobs"
@@ -33,7 +34,6 @@ import (
 	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 	worldgen "livingworld/internal/world/generator"
-	terraingen "livingworld/internal/worldgen"
 	"livingworld/plugin"
 
 	"github.com/google/uuid"
@@ -93,9 +93,16 @@ func New(cfg *Config) *Server {
 	case "", "superflat":
 		dw.SetGenerator(worldgen.NewSuperflat())
 	case "overworld", "default", "normal":
-		dw.SetGenerator(terraingen.NewGenerator(cfg.World.Seed))
+		overworld := dimension.NewOverworld()
+		dw.SetGenerator(overworld.Generator(cfg.World.Seed))
 		// Spawn on the generated surface (overworld terrain isn't flat at y=4).
 		cfg.World.Spawn.Y = float64(dw.HighestSolidY(int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z)))
+	case "nether":
+		n := dimension.NewNether()
+		dw.SetGenerator(n.Generator(cfg.World.Seed))
+	case "end":
+		e := dimension.NewEnd()
+		dw.SetGenerator(e.Generator(cfg.World.Seed))
 	default:
 		logger.Warn("Unknown world.type %q, falling back to superflat", cfg.World.Type)
 		dw.SetGenerator(worldgen.NewSuperflat())

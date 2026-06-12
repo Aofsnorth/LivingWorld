@@ -75,7 +75,14 @@ type walkableQuery func(x, y, z int) bool
 // positive value makes the cell expensive but passable (Blaze over lava = 8);
 // MalusBlocked makes it impassable (water for a land mob). May be nil, in
 // which case every walkable cell costs the base step only.
-type costFn func(x, y, z int) float64
+//
+// Exported (CostFn) for cross-package use by internal/mobs/ai/movement
+// and internal/mobs/ai/navigation.
+type CostFn func(x, y, z int) float64
+
+// costFn is the unexported alias kept for back-compat with internal
+// callers that were written before the cross-package export.
+type costFn = CostFn
 
 // MalusBlocked is the sentinel cost meaning "do not path through this cell".
 // Anything ≥ MalusBlocked is treated as impassable by PathFind.

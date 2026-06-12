@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"livingworld/internal/mobs"
+	aisystems "livingworld/internal/mobs/ai/systems"
 )
 
 // Phase 4a: unified per-world tick loop.
@@ -36,7 +37,7 @@ import (
 //     Today: no-op (player actions land synchronously via the bridges).
 //  2. Run scheduled block ticks. Today: no-op (Phase 4d will fill).
 //  3. Run random ticks. Today: no-op (Phase 4d will fill).
-//  4. Advance mob AI (calls m.mobs.Tick at 20 Hz).
+//  4. Advance mob AI (calls aisystems.Tick at 20 Hz).
 //  5. Advance drop physics (calls m.drops.TickPhysics at 20 Hz).
 //  6. Stage outbound state changes to protocol edges.
 //     Today: no-op (edges subscribe to blockEvents / drops / mobs already;
@@ -154,21 +155,21 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// Phase 4: mob AI at 20 Hz. The legacy StartMobAI ticked mobs.TickHz
 	// times per second (also 20 Hz), so cadence is preserved.
 	for _, w := range worlds {
-		m.mobs.Tick(mobs.AIContext{
-			RNG:           rng,
-			SolidAt:       func(x, y, z int) bool { return w.GetBlock(x, y, z).ID() != AirID },
-			SkyLightAt:    func(x, y, z int) uint8 { return w.GetSkyLight(x, y, z) },
-			Players:       m.aiPlayerList,
-			OnMeleeAttack: m.aiMeleeAttack,
-			OnShootArrow:  m.aiShootArrow,
-			OnExplode:     m.aiExplode,
-			OnFireDamage:  m.aiFireDamage,
-			OnSound:       m.aiSound,
-			OnHitEffect:   m.aiHitEffect,
-			OnThrow:       m.aiThrow,
+		aisystems.Tick(m.mobs, mobs.AIContext{
+			RNG:               rng,
+			SolidAt:           func(x, y, z int) bool { return w.GetBlock(x, y, z).ID() != AirID },
+			SkyLightAt:        func(x, y, z int) uint8 { return w.GetSkyLight(x, y, z) },
+			Players:           m.aiPlayerList,
+			OnMeleeAttack:     m.aiMeleeAttack,
+			OnShootArrow:      m.aiShootArrow,
+			OnExplode:         m.aiExplode,
+			OnFireDamage:      m.aiFireDamage,
+			OnSound:           m.aiSound,
+			OnHitEffect:       m.aiHitEffect,
+			OnThrow:           m.aiThrow,
 			OnShootProjectile: m.aiShootProjectile,
-			WaterAt:       m.aiWaterAt,
-			IsDay:         func() bool { return isDay(w.GetDayTime()) },
+			WaterAt:           m.aiWaterAt,
+			IsDay:             func() bool { return isDay(w.GetDayTime()) },
 			DoorAt: func(x, y, z int) bool {
 				return isWoodenDoorID(w.GetBlock(x, y, z).ID())
 			},

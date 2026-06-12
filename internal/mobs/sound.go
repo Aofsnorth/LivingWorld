@@ -58,21 +58,17 @@ const (
 )
 
 // EmitSounds decides which sound each mob should play this tick, and
-// returns a list of (entityID, sound, volume, pitch) tuples the world
+// returns a list of (mobID, sound, volume, pitch) tuples the world
 // layer forwards to bridges. The decision is per-mob-type and based
 // on the mob's recent activity (e.g. shoot → arrow sound; hurt →
 // hurt sound; idle ambient sounds fire on a 5% chance per tick with
 // a per-mob-type minimum interval of ~80 ticks = 4 s).
 //
-// callers: this is invoked by world/tick.go at the end of Phase 4,
-// after AI + projectile + cleanup, so the sound reflects the final
-// state of the mob in the tick.
-type SoundEmit struct {
-	EntityID int64
-	Sound    SoundEvent
-	Volume   float32
-	Pitch    float32
-}
+// The SoundEmit struct itself is re-exported from
+// internal/mobs/ai/context (see ai_context_aliases.go) so the AI
+// subpackages and the world layer share one canonical shape. The
+// SoundEvent enum (the strings "minecraft:entity.skeleton.shoot"
+// etc.) stays in this file as a private decision table.
 
 // EmitSounds walks the mob store and returns the sounds to play this
 // tick. The function is read-only on the mob store; the world layer
@@ -122,12 +118,12 @@ func EmitSoundsFromSnapshot(snapshot []Mob, rng *rand.Rand) []SoundEmit {
 // groans is annoying and doesn't match vanilla cadence.
 func decideSound(m *Mob, def MobDef, rng *rand.Rand) SoundEmit {
 	// 1. Skeleton fires.
-	if m.state == StateShoot && m.drawTicks == 0 {
-		return SoundEmit{EntityID: m.EntityID, Sound: SoundMobShoot, Volume: 1.0, Pitch: 1.0}
+	if m.State == StateShoot && m.DrawTicks == 0 {
+		return SoundEmit{MobID: m.EntityID, Sound: string(SoundMobShoot), Volume: 1.0, Pitch: 1.0}
 	}
 	// 2. Creeper hissing.
-	if m.state == StateFuse && m.fuseTicks > 20 {
-		return SoundEmit{EntityID: m.EntityID, Sound: SoundMobCreeperSay, Volume: 1.0, Pitch: 1.0}
+	if m.State == StateFuse && m.FuseTicks > 20 {
+		return SoundEmit{MobID: m.EntityID, Sound: string(SoundMobCreeperSay), Volume: 1.0, Pitch: 1.0}
 	}
 	// 3. Just hurt (cooldownTicks was just set by a melee swing this
 	//    tick; we use FireTicks as a proxy for "took damage in the
@@ -135,7 +131,7 @@ func decideSound(m *Mob, def MobDef, rng *rand.Rand) SoundEmit {
 	//    in the same tick is the death sound, not the hurt).
 	// 4. Just died.
 	if m.Despawn && m.HP <= 0 {
-		return SoundEmit{EntityID: m.EntityID, Sound: SoundMobDeath, Volume: 1.0, Pitch: 0.9}
+		return SoundEmit{MobID: m.EntityID, Sound: string(SoundMobDeath), Volume: 1.0, Pitch: 0.9}
 	}
 	// 5. Ambient. We gate by an "every-80-ticks" cycle: a per-mob
 	//    counter increments per tick; when it crosses 80, the mob
@@ -199,7 +195,7 @@ func decideSound(m *Mob, def MobDef, rng *rand.Rand) SoundEmit {
 			s = ""
 		}
 		if s != "" {
-			return SoundEmit{EntityID: m.EntityID, Sound: s, Volume: 0.8, Pitch: 0.95 + float32(rng.Float64())*0.1}
+			return SoundEmit{MobID: m.EntityID, Sound: string(s), Volume: 0.8, Pitch: 0.95 + float32(rng.Float64())*0.1}
 		}
 	}
 	_ = def
