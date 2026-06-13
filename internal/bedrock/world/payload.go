@@ -25,26 +25,3 @@ func DimensionMismatchError(clientProtocol int32) string {
 		clientProtocol, protocol.CurrentProtocol)
 }
 
-// inlinePayloadBuffer is a small helper to build chunk payloads.
-// (Separated so we can swap implementations easily.)
-func newInlinePayloadBuffer() *inlinePayloadBuffer {
-	return &inlinePayloadBuffer{}
-}
-
-type inlinePayloadBuffer struct {
-	data []byte
-}
-
-func (b *inlinePayloadBuffer) Write(p []byte) (int, error) {
-	b.data = append(b.data, p...)
-	return len(p), nil
-}
-
-func (b *inlinePayloadBuffer) WriteByte(c byte) error {
-	b.data = append(b.data, c)
-	return nil
-}
-
-func (b *inlinePayloadBuffer) Bytes() []byte {
-	return b.data
-}

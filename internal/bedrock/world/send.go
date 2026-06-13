@@ -22,7 +22,6 @@ func (c *ChunkConverter) SendChunk(
 	airRID := BlockRID("minecraft:air")
 	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
 	maxY := int(rng.Max()) // 319; world blocks live at Y >= 0
-	subChunkCount := uint32((rng.Height() >> 4) + 1)
 
 	pos := protocol.ChunkPos{int32(cx), int32(cz)}
 
@@ -60,23 +59,32 @@ func (c *ChunkConverter) SendChunk(
 		chunkCache.Mu.Unlock()
 	}
 
+	// Modern Bedrock (1.18.10+) expects LevelChunk to use the sub-chunk request
+	// system: the inline payload carries only biomes + the border-block count
+	// (1 byte), and the client then sends a SubChunkRequest for each sub-chunk
+	// it actually needs. Sending the full payload inline with a SubChunkCount
+	// of (rng.Height()>>4)+1 = 24 desyncs the client's heightmap against the
+	// world — the renderer then masks terrain into thin slabs around the
+	// heightmap surface (the "floating islands" rendering). Dragonfly does the
+	// same dance (see session.chunk.sendNetworkChunk) by emitting
+	// SubChunkRequestModeLimited and HighestSubChunk, then answering each
+	// SubChunkRequest via the sub-chunk entry path.
 	chunkCache.Mu.RLock()
-	data := dfchunk.Encode(ch, dfchunk.NetworkEncoding)
+	biomes := dfchunk.EncodeBiomes(ch, dfchunk.NetworkEncoding)
+	highest := ch.HighestFilledSubChunk()
 	chunkCache.Mu.RUnlock()
 
-	buf := newInlinePayloadBuffer()
-	for _, sub := range data.SubChunks {
-		_, _ = buf.Write(sub)
-	}
-	_, _ = buf.Write(data.Biomes)
-	buf.WriteByte(0) // border block count = 0
+	payload := make([]byte, 0, len(biomes)+1)
+	payload = append(payload, biomes...)
+	payload = append(payload, 0) // border block count = 0
 
 	err := conn.WritePacket(&packet.LevelChunk{
-		Position:      pos,
-		Dimension:     0,
-		SubChunkCount: subChunkCount,
-		CacheEnabled:  false,
-		RawPayload:    buf.Bytes(),
+		Position:        pos,
+		Dimension:       0,
+		SubChunkCount:   protocol.SubChunkRequestModeLimited,
+		HighestSubChunk: highest,
+		CacheEnabled:    false,
+		RawPayload:      payload,
 	})
 	if err != nil {
 		log.Printf("[Bedrock] Failed to send chunk (%d,%d): %v", cx, cz, err)

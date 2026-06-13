@@ -1,6 +1,6 @@
 serverName: LivingWorld Server
 motd: LivingWorld Server
-pluginsDir: ./plugins
+pluginsDir: ""
 
 # Default gamemode assigned to brand-new players on first join. 0=survival,
 # 1=creative, 2=adventure, 3=spectator. Returning players keep whatever
