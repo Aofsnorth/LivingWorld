@@ -30,9 +30,9 @@ world:
   directory: worlds # base folder; default dimension saves under <directory>/dimensions
   autosaveSeconds: 300 # periodic autosave; 0 = save on shutdown only
   difficulty: peaceful # peaceful | easy | normal | hard
-  spawnMobs: false # enable/disable natural mob spawning (true = mobs spawn, false = no new mobs)
-  dayNightCycle: true # advance the sun/moon (false = fixed time)
-  weatherCycle: true # automatic clear->rain->thunder director (vanilla doWeatherCycle)
+  spawnMobs: true # enable/disable natural mob spawning (true = mobs spawn, false = no new mobs)
+  dayNightCycle: false # advance the sun/moon (false = fixed time)
+  weatherCycle: false # automatic clear->rain->thunder director (vanilla doWeatherCycle)
   # Per-phase duration ranges, in seconds. Each phase rolls an integer in
   # [min, max] then runs that long before transitioning. Set min==max to pin
   # the phase to a fixed duration; 0 falls back to the vanilla default for
