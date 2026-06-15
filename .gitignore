@@ -38,9 +38,12 @@ docs/
 plan/
 
 VANILLA_FEATURE_INVENTORY.md
-.github
 .mavis
 .opencode
 .commandcode
+
+# Build output (CI release artifacts)
+dist/
+release/
 
 config.yml

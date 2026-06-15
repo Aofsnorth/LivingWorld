@@ -1,23 +1,24 @@
 package noise
 
+import (
+	"crypto/md5"
+	"encoding/binary"
+)
+
 // WorldgenRandom is LivingWorld's façade in front of the Xoroshiro / Legacy
 // backends. It mirrors vanilla's net.minecraft.world.level.levelgen.
-// WorldgenRandom: the per-chunk, per-feature random everyone in worldgen
-// reads. The backend (Xoroshiro or Legacy) is chosen once at world context
-// build from the dimension's noise_settings.legacy_random_source flag.
+// WorldgenRandom: the per-chunk, per-feature random everyone in worldgen reads.
+// The backend (Xoroshiro or Legacy) is chosen once at world-context build from
+// the dimension's noise_settings.legacy_random_source flag.
 //
-// Mojang's "seeding helpers" live here verbatim — setPopulationSeed,
-// setFeatureSeed, setCarverSeed, setLargeFeatureSeed,
-// setLargeFeatureWithSalt, seedSlimeChunk. Worldgen code calls these by
-// name; keeping the contract literal makes downstream code map one-to-one
-// to the Mojang source for audits.
+// The seeding helpers below implement Mojang's actual formulas verbatim (they
+// re-seed the backend via SetSeed and mix with raw nextLong draws), so a given
+// world seed reproduces Mojang's per-chunk/per-feature streams.
 type WorldgenRandom struct {
 	backend PRNG
 }
 
-// NewWorldgenRandom builds a WorldgenRandom with a Xoroshiro backend. The
-// caller may swap the backend via SetBackend if the dimension opts into
-// legacy_random_source.
+// NewWorldgenRandom builds a WorldgenRandom with a Xoroshiro backend.
 func NewWorldgenRandom(seed int64) *WorldgenRandom {
 	return &WorldgenRandom{backend: NewXoroshiro(uint64(seed))}
 }
@@ -27,127 +28,126 @@ func NewWorldgenRandomLegacy(seed int64) *WorldgenRandom {
 	return &WorldgenRandom{backend: NewLegacy(seed)}
 }
 
-// SetBackend swaps the underlying PRNG. Used by the worldgen context builder
-// after reading the noise_settings flag.
+// SetBackend swaps the underlying PRNG (used by the context builder after
+// reading the noise_settings flag).
 func (r *WorldgenRandom) SetBackend(b PRNG) { r.backend = b }
 
 // Backend returns the current backend. Exposed for tests / debug.
 func (r *WorldgenRandom) Backend() PRNG { return r.backend }
 
-// SeedSlimeChunk matches vanilla RandomSupport.seedSlimeChunk: mixes a chunk
-// XZ with the world seed to produce a 64-bit chunk seed. The actual slime
-// check (Math.sqrt(seed*seed + 9871) & 1) is the responsibility of the
-// caller.
-func SeedSlimeChunk(worldSeed int64, chunkX, chunkZ int32) int64 {
-	r := NewWorldgenRandom(worldSeed)
-	r.SetPopulationSeed(uint64(worldSeed), chunkX, chunkZ)
-	return r.NextLong()
+// SetSeed re-seeds the backend (WorldgenRandom.setSeed).
+func (r *WorldgenRandom) SetSeed(seed int64) { r.backend.SetSeed(seed) }
+
+// SetPopulationSeed implements vanilla WorldgenRandom.setDecorationSeed: it
+// re-seeds the backend to a per-chunk decoration seed derived from the world
+// seed and the chunk's block XZ, and returns that seed (callers pass it to
+// SetFeatureSeed). The "| 1" forces the multipliers odd, exactly as Mojang does.
+func (r *WorldgenRandom) SetPopulationSeed(worldSeed uint64, blockX, blockZ int32) int64 {
+	r.backend.SetSeed(int64(worldSeed))
+	l := r.backend.NextLong() | 1
+	m := r.backend.NextLong() | 1
+	n := int64(blockX)*l + int64(blockZ)*m ^ int64(worldSeed)
+	r.backend.SetSeed(n)
+	return n
 }
 
-// SetPopulationSeed matches vanilla's WorldgenRandom.setPopulationSeed.
-// Combines the world seed with the chunk's block XZ into a stable sub-seed
-// that every per-chunk random call is based on. The mixing constant
-// 0x6C078627 is from Mojang's RandomSupport.
-func (r *WorldgenRandom) SetPopulationSeed(worldSeed uint64, blockX, blockZ int32) {
-	ux, uz := int64(blockX), int64(blockZ)
-	switch b := r.backend.(type) {
-	case *Xoroshiro:
-		hi := SplitMix64(worldSeed)
-		lo := worldSeed ^ uint64(ux*0x6C078627) ^ uint64(uz*0x5C7FE60D)
-		r.backend = NewXoroshiroRaw(hi, SplitMix64(lo))
-	case *Legacy:
-		b.seed = (worldSeed + uint64(ux*0x6C078627) + uint64(uz*0x5C7FE60D)) & ((1 << 48) - 1)
-	default:
-		r.backend = b.Fork()
-	}
+// SetFeatureSeed implements vanilla WorldgenRandom.setFeatureSeed: the
+// decoration seed plus the feature's index and 10000×step ordinal.
+func (r *WorldgenRandom) SetFeatureSeed(decorationSeed int64, featureIndex int32, stepOrdinal int32) {
+	r.backend.SetSeed(decorationSeed + int64(featureIndex) + int64(10000*stepOrdinal))
 }
 
-// SetFeatureSeed matches vanilla's WorldgenRandom.setFeatureSeed. The
-// population seed is what setPopulationSeed produced; the feature index is
-// the index in the placed-feature list for the current decoration step;
-// the step ordinal is the GenerationStep.CarvingStep enum value. This
-// produces the per-feature sub-stream every worldgen feature relies on.
-func (r *WorldgenRandom) SetFeatureSeed(populationSeed int64, featureIndex int32, stepOrdinal int32) {
-	ufi, uso := int64(featureIndex), int64(stepOrdinal)
-	switch b := r.backend.(type) {
-	case *Xoroshiro:
-		hi := SplitMix64(uint64(populationSeed))
-		lo := uint64(populationSeed) ^ uint64(ufi*0xCB52D77D) ^ uint64(uso*0x9E3779B1)
-		r.backend = NewXoroshiroRaw(hi, SplitMix64(lo))
-	case *Legacy:
-		b.seed = (uint64(populationSeed) + uint64(ufi*0xCB52D77D) + uint64(uso*0x9E3779B1)) & ((1 << 48) - 1)
-	default:
-		r.backend = b.Fork()
-	}
+// SetCarverSeed implements vanilla WorldgenRandom.setCarverSeed.
+func (r *WorldgenRandom) SetCarverSeed(worldSeed int64, chunkX, chunkZ int32) {
+	r.backend.SetSeed(worldSeed)
+	l := r.backend.NextLong()
+	m := r.backend.NextLong()
+	r.backend.SetSeed(int64(chunkX)*l ^ int64(chunkZ)*m ^ worldSeed)
 }
 
-// SetCarverSeed matches vanilla's WorldgenRandom.setCarverSeed — used by
-// the cave / canyon carvers to get a chunk-stable random stream.
-func (r *WorldgenRandom) SetCarverSeed(worldSeed int64, blockX, blockZ int32) {
-	ux, uz := int64(blockX), int64(blockZ)
-	switch b := r.backend.(type) {
-	case *Xoroshiro:
-		hi := SplitMix64(uint64(worldSeed))
-		lo := uint64(worldSeed) ^ uint64(ux*0x6C078627) ^ uint64(uz*0x5C7FE60D)
-		r.backend = NewXoroshiroRaw(hi, SplitMix64(lo))
-	case *Legacy:
-		b.seed = (uint64(worldSeed) + uint64(ux*0x6C078627) + uint64(uz*0x5C7FE60D)) & ((1 << 48) - 1)
-	default:
-		r.backend = b.Fork()
-	}
-}
-
-// SetLargeFeatureSeed matches vanilla's WorldgenRandom.setLargeFeatureSeed.
-// Feeds the world seed, the structure's chunk XZ, and a salt (the
-// structure set's salt field). Used by structure starts so neighbouring
-// structures are decorrelated.
+// SetLargeFeatureSeed implements vanilla WorldgenRandom.setLargeFeatureSeed.
 func (r *WorldgenRandom) SetLargeFeatureSeed(worldSeed int64, chunkX, chunkZ int32) {
-	cx, cz := int64(chunkX), int64(chunkZ)
-	switch b := r.backend.(type) {
-	case *Xoroshiro:
-		hi := SplitMix64(uint64(worldSeed))
-		lo := uint64(worldSeed) ^ uint64(cx*0x6C078627) ^ uint64(cz*0x5C7FE60D)
-		r.backend = NewXoroshiroRaw(hi, SplitMix64(lo))
-	case *Legacy:
-		b.seed = (uint64(worldSeed) + uint64(cx*0x6C078627) + uint64(cz*0x5C7FE60D)) & ((1 << 48) - 1)
-	default:
-		r.backend = b.Fork()
-	}
+	r.backend.SetSeed(worldSeed)
+	l := r.backend.NextLong()
+	m := r.backend.NextLong()
+	r.backend.SetSeed(int64(chunkX)*l ^ int64(chunkZ)*m ^ worldSeed)
 }
 
-// SetLargeFeatureWithSalt matches vanilla's WorldgenRandom.setLargeFeatureWithSalt.
-// Same as SetLargeFeatureSeed but the caller supplies a salt. Used by
-// stronghold rings and other structures that need an extra mixing value.
-func (r *WorldgenRandom) SetLargeFeatureWithSalt(worldSeed int64, chunkX, chunkZ, salt int32) {
-	cx, cz, s := int64(chunkX), int64(chunkZ), int64(salt)
-	switch b := r.backend.(type) {
-	case *Xoroshiro:
-		hi := SplitMix64(uint64(worldSeed))
-		lo := uint64(worldSeed) ^ uint64(cx*0x6C078627) ^ uint64(cz*0x5C7FE60D) ^ uint64(s*0x55F0D0E5)
-		r.backend = NewXoroshiroRaw(hi, SplitMix64(lo))
-	case *Legacy:
-		b.seed = (uint64(worldSeed) + uint64(cx*0x6C078627) + uint64(cz*0x5C7FE60D) + uint64(s*0x55F0D0E5)) & ((1 << 48) - 1)
-	default:
-		r.backend = b.Fork()
-	}
+// SetLargeFeatureWithSalt implements vanilla WorldgenRandom.setLargeFeatureWithSalt.
+func (r *WorldgenRandom) SetLargeFeatureWithSalt(worldSeed int64, regionX, regionZ, salt int32) {
+	r.backend.SetSeed(int64(regionX)*341873128712 + int64(regionZ)*132897987541 + worldSeed + int64(salt))
 }
 
-// SetDecorationSeed matches vanilla's WorldgenRandom.setDecorationSeed —
-// the inner seed used by the decoration pass for the global step. It
-// returns a 64-bit value that the caller stores for later setFeatureSeed
-// calls.
+// SeedSlimeChunk returns the seed vanilla feeds to a java.util.Random to decide
+// whether (chunkX,chunkZ) is a slime chunk (the check is nextInt(10) == 0 on a
+// Legacy source built from this seed).
+func SeedSlimeChunk(worldSeed int64, chunkX, chunkZ int32) int64 {
+	return worldSeed +
+		int64(chunkX*chunkX*0x4C1906) +
+		int64(chunkX*0x5AC0DB) +
+		int64(chunkZ*chunkZ)*0x4307A7 +
+		int64(chunkZ*0x5F24F) ^ 0x3AD8025F
+}
+
+// SetDecorationSeed is the package-level convenience used where a fresh
+// generator is built per call (returns the decoration seed; see SetPopulationSeed).
 func SetDecorationSeed(worldSeed int64, blockX, blockZ int32) int64 {
-	r := NewWorldgenRandom(worldSeed)
-	r.SetPopulationSeed(uint64(worldSeed), blockX, blockZ)
-	return r.NextLong()
+	return NewWorldgenRandom(worldSeed).SetPopulationSeed(uint64(worldSeed), blockX, blockZ)
 }
 
 // --- passthrough PRNG methods -----------------------------------------
 
-func (r *WorldgenRandom) NextInt() int32             { return r.backend.NextInt() }
+func (r *WorldgenRandom) NextInt() int32               { return r.backend.NextInt() }
 func (r *WorldgenRandom) NextIntBounded(b int32) int32 { return r.backend.NextIntBounded(b) }
-func (r *WorldgenRandom) NextLong() int64            { return r.backend.NextLong() }
-func (r *WorldgenRandom) NextFloat() float32         { return r.backend.NextFloat() }
-func (r *WorldgenRandom) NextDouble() float64        { return r.backend.NextDouble() }
-func (r *WorldgenRandom) NextBoolean() bool          { return r.backend.NextBoolean() }
-func (r *WorldgenRandom) Fork() PRNG                 { return r.backend.Fork() }
+func (r *WorldgenRandom) NextLong() int64              { return r.backend.NextLong() }
+func (r *WorldgenRandom) NextFloat() float32           { return r.backend.NextFloat() }
+func (r *WorldgenRandom) NextDouble() float64          { return r.backend.NextDouble() }
+func (r *WorldgenRandom) NextBoolean() bool            { return r.backend.NextBoolean() }
+func (r *WorldgenRandom) Fork() PRNG                   { return r.backend.Fork() }
+
+// --- positional forking (vanilla XoroshiroPositionalRandomFactory) ----
+
+// XoroshiroPositional derives independent Xoroshiro streams addressed by world
+// coordinates or by a name hash, matching Mojang's
+// XoroshiroPositionalRandomFactory. It is the seeding mechanism behind named
+// noises ("minecraft:temperature", …) and per-position feature placement.
+type XoroshiroPositional struct {
+	seedLo, seedHi uint64
+}
+
+// At returns the stream for block position (x,y,z): XoroshiroRandomSource(
+// Mth.getSeed(x,y,z) ^ seedLo, seedHi).
+func (f *XoroshiroPositional) At(x, y, z int) *Xoroshiro {
+	return newXoroshiroState(uint64(mthGetSeed(x, y, z))^f.seedLo, f.seedHi)
+}
+
+// FromHashOf returns the stream for a name: XoroshiroRandomSource(md5[0:8] ^
+// seedLo, md5[8:16] ^ seedHi), with the MD5 bytes read big-endian (Java's
+// Longs.fromBytes). This is how Mojang seeds each named worldgen noise.
+func (f *XoroshiroPositional) FromHashOf(name string) *Xoroshiro {
+	lo, hi := md5Seed(name)
+	return newXoroshiroState(lo^f.seedLo, hi^f.seedHi)
+}
+
+// mthGetSeed mirrors net.minecraft.util.Mth.getSeed. Note the first multiply is
+// a 32-bit int multiply (overflowing) BEFORE the widen to long, exactly as Java
+// evaluates it — the int32 cast preserves that wraparound.
+func mthGetSeed(x, y, z int) int64 {
+	l := int64(int32(x)*3129871) ^ int64(z)*116129781 ^ int64(y)
+	l = l*l*42317861 + l*11
+	return l >> 16
+}
+
+// md5Seed returns the two 64-bit words of MD5(name), big-endian, matching
+// Java's Hashing.md5().hashString(name) + Longs.fromBytes split.
+func md5Seed(name string) (lo, hi uint64) {
+	sum := md5.Sum([]byte(name))
+	return binary.BigEndian.Uint64(sum[0:8]), binary.BigEndian.Uint64(sum[8:16])
+}
+
+// SeedFromHashOf returns a standalone Xoroshiro seeded purely from a name hash
+// (no positional base), i.e. XoroshiroRandomSource(md5[0:8], md5[8:16]).
+func SeedFromHashOf(name string) *Xoroshiro {
+	lo, hi := md5Seed(name)
+	return newXoroshiroState(lo, hi)
+}

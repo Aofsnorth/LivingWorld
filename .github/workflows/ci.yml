@@ -1,0 +1,73 @@
+# LivingWorld CI
+#
+# Per Phase 0 of docs/plan/Master_Plan.md §6 the CI skeleton enforces the
+# operating constraints (Master_Plan §2): build, vet, govulncheck, and
+# first-party test suite must all stay green.
+#
+# This workflow runs on push and pull request against main. It is the
+# canonical enforcement point for the "build stays green" rule; do not
+# merge anything that makes it red.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install Go (matches go.mod toolchain)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: download modules
+        run: go mod download
+
+      - name: build
+        # Per Master_Plan §2 constraint #1: go build ./... must succeed after
+        # every change set; CI is the enforcement point.
+        run: go build ./...
+
+      - name: vet
+        # Catch suspicious constructs (printf format mismatches, unreachable
+        # code, lock-copy mistakes, etc.) before they reach main.
+        run: go vet ./...
+
+      - name: test
+        # Phase 0 introduces the first-party test foundation; this is where
+        # parity regressions in registry/combat/world get caught first.
+        run: go test ./...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: run govulncheck
+        # Phase 0 closes the 5 reachable stdlib advisories listed in TODO §7.
+        # Treat any new finding as a release blocker.
+        run: govulncheck ./...

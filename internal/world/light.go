@@ -33,26 +33,70 @@ func (le *LightEngine) QueueUpdate(cx, cz int) {
 }
 
 // ProcessUpdates recomputes light for all queued chunks and clears the queue.
-// Called from the tick loop.
-func (le *LightEngine) ProcessUpdates() {
+// Called from the tick loop. It returns the chunks whose light actually changed,
+// so the caller can re-send light to players (a no-op relight — common when a
+// neighbour load doesn't affect already-correct open terrain — reports nothing
+// and triggers no network traffic).
+func (le *LightEngine) ProcessUpdates() []ChunkPos {
 	le.mu.Lock()
 	pending := le.pending
 	le.pending = make(map[ChunkPos]struct{})
 	le.mu.Unlock()
 
-	for pos := range pending {
-		// Keep the world read lock for the whole recompute. ComputeChunkLight's
-		// world-coordinate helpers intentionally use getChunkUnlocked because chunk
-		// generation calls this while already holding world.mu; without a lock here,
-		// tick-time light recomputation can race a concurrent chunk load/unload and
-		// panic on a concurrent map read/write.
-		le.world.mu.RLock()
-		chunk := le.world.chunks[pos]
-		if chunk != nil {
-			le.ComputeChunkLight(chunk, pos.X, pos.Z)
-		}
-		le.world.mu.RUnlock()
+	if len(pending) == 0 {
+		return nil
 	}
+
+	// Keep the world read lock for the whole batch. ComputeChunkLight's
+	// world-coordinate helpers intentionally use getChunkUnlocked because chunk
+	// generation calls this while already holding world.mu; without a lock here,
+	// tick-time light recomputation can race a concurrent chunk load/unload and
+	// panic on a concurrent map read/write. Fingerprints are snapshotted for the
+	// whole batch BEFORE any recompute so a cross-chunk write from one relight is
+	// still detected as a change on the chunk it touched.
+	type relit struct {
+		pos    ChunkPos
+		chunk  *Chunk
+		before uint64
+	}
+	le.world.mu.RLock()
+	defer le.world.mu.RUnlock()
+
+	items := make([]relit, 0, len(pending))
+	for pos := range pending {
+		if c := le.world.chunks[pos]; c != nil {
+			items = append(items, relit{pos: pos, chunk: c, before: lightFingerprint(c)})
+		}
+	}
+	for _, it := range items {
+		le.ComputeChunkLight(it.chunk, it.pos.X, it.pos.Z)
+	}
+	var changed []ChunkPos
+	for _, it := range items {
+		if lightFingerprint(it.chunk) != it.before {
+			changed = append(changed, it.pos)
+		}
+	}
+	return changed
+}
+
+// lightFingerprint is an FNV-1a hash over a chunk's sky and block light, used to
+// detect whether a recompute actually changed anything (cheap relative to the
+// BFS, ~98 KB per chunk).
+func lightFingerprint(c *Chunk) uint64 {
+	const (
+		offset = uint64(14695981039346656037)
+		prime  = uint64(1099511628211)
+	)
+	h := offset
+	for i := range c.sections {
+		for _, arr := range [2][]byte{c.sections[i].skyLight, c.sections[i].blockLight} {
+			for _, b := range arr {
+				h = (h ^ uint64(b)) * prime
+			}
+		}
+	}
+	return h
 }
 
 // lightPos is a world-coordinate position used during BFS propagation.
@@ -313,123 +357,78 @@ func (le *LightEngine) computeHeightmap(chunk *Chunk, cx, cz int) {
 	}
 }
 
-// computeSkyLight initializes sky light for a chunk using column scan + BFS.
+// stepLoss is the sky/block light lost crossing into a block of the given
+// opacity: at least 1 per block, more for translucent blocks. Matches vanilla's
+// max(1, opacity).
+func stepLoss(opacity uint8) uint8 {
+	if opacity < 1 {
+		return 1
+	}
+	return opacity
+}
+
+// lightOffsets are the 6 cardinal neighbour directions used by light BFS. The
+// last entry {0,-1,0} (straight down) is special-cased for sky light.
+var lightOffsets = [6][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}}
+
+const lightTopY = MinWorldHeight + SectionsPerChunk*16 - 1 // highest canonical Y (319)
+
+// computeSkyLight recomputes sky light for a chunk from scratch using a single
+// seeded BFS, matching vanilla semantics:
+//   - every block above its column heightmap has direct sky access (15);
+//   - light propagates losing max(1, opacity) per step, EXCEPT straight down into
+//     a fully transparent block, which loses nothing — a sunlit vertical shaft
+//     stays at 15 until something attenuating blocks it.
+//
+// Every one of the chunk's own sky-light cells is reinitialised here (15 above
+// the heightmap, 0 below) before the BFS fills the rest, so a recompute after a
+// block change correctly lowers stale-bright cells. Cross-chunk reads pull from
+// already-loaded neighbours via the world-coord helpers, so a shared edge that
+// was lit before its neighbour existed settles correctly once the neighbour is
+// queued for relight (see World.queueNeighborRelight).
 func (le *LightEngine) computeSkyLight(chunk *Chunk, cx, cz int) {
-	// Phase 1: Scan each column from top down, set sky light for blocks with direct sky access
+	var queue []lightPos
+
+	// Seed: reinitialise the column and collect every sky-exposed source. Seeding
+	// all exposed cells (not just the lowest) is required so light still reaches
+	// under overhangs/floating terrain from the side.
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
 			heightY := int(chunk.GetHeightmap(x, z))
-
-			// Set sky light = 15 for all air blocks above the highest solid block
-			for y := MinWorldHeight + SectionsPerChunk*16 - 1; y > heightY; y-- {
+			worldX, worldZ := cx*16+x, cz*16+z
+			for y := lightTopY; y > heightY; y-- {
 				chunk.SetSkyLight(x, y, z, 15)
+				queue = append(queue, lightPos{worldX, y, worldZ})
 			}
-
-			// Below the highest block, scan down and set light based on opacity
-			currentLight := uint8(15)
 			for y := heightY; y >= MinWorldHeight; y-- {
-				blockID := chunk.GetBlock(x, y, z).ID()
-				opacity := GetLightProps(blockID).Opacity
-
-				// Reduce light by opacity
-				if currentLight > opacity {
-					currentLight -= opacity
-				} else {
-					currentLight = 0
-				}
-
-				chunk.SetSkyLight(x, y, z, currentLight)
-
-				// Apply distance falloff (1 light per block)
-				if currentLight > 1 {
-					currentLight -= 1
-				} else {
-					currentLight = 0
-				}
-
-				// If light is 0, everything below is also 0
-				if currentLight == 0 {
-					for y2 := y - 1; y2 >= MinWorldHeight; y2-- {
-						chunk.SetSkyLight(x, y2, z, 0)
-					}
-					break
-				}
+				chunk.SetSkyLight(x, y, z, 0)
 			}
 		}
 	}
 
-	// Phase 2: BFS from light/dark boundaries to spread light horizontally and into caves
-	var queue []lightPos
-	for x := 0; x < 16; x++ {
-		for z := 0; z < 16; z++ {
-			for y := MinWorldHeight; y < MinWorldHeight+SectionsPerChunk*16; y++ {
-				currentLight := chunk.GetSkyLight(x, y, z)
-				if currentLight == 0 {
-					continue
-				}
-
-				// Check if any neighbor has lower light (potential spread boundary)
-				worldX := cx*16 + x
-				worldZ := cz*16 + z
-				for _, offset := range [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}} {
-					nx, ny, nz := worldX+offset[0], y+offset[1], worldZ+offset[2]
-					if ny < MinWorldHeight || ny >= MinWorldHeight+SectionsPerChunk*16 {
-						continue
-					}
-
-					neighborLight := le.getSkyLightWorld(nx, ny, nz)
-					// If neighbor has lower light and is transparent, queue for propagation
-					if neighborLight < currentLight {
-						neighborBlockID := le.getBlockIDWorld(nx, ny, nz)
-						opacity := GetLightProps(neighborBlockID).Opacity
-						if opacity < 15 { // transparent
-							queue = append(queue, lightPos{worldX, y, worldZ})
-							break // Only queue once per position
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// BFS: spread sky light to neighbors
-	visited := make(map[lightPos]bool)
+	// BFS: monotonically raise neighbour light until nothing can be brightened.
 	for len(queue) > 0 {
 		pos := queue[0]
 		queue = queue[1:]
-
-		if visited[pos] {
+		cur := le.getSkyLightWorld(pos.x, pos.y, pos.z)
+		if cur == 0 {
 			continue
 		}
-		visited[pos] = true
-
-		currentLight := le.getSkyLightWorld(pos.x, pos.y, pos.z)
-		if currentLight == 0 {
-			continue
-		}
-
-		// Try to spread to each neighbor
-		for _, offset := range [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}} {
-			nx, ny, nz := pos.x+offset[0], pos.y+offset[1], pos.z+offset[2]
-
-			if ny < MinWorldHeight || ny >= MinWorldHeight+SectionsPerChunk*16 {
+		for _, off := range lightOffsets {
+			nx, ny, nz := pos.x+off[0], pos.y+off[1], pos.z+off[2]
+			if ny < MinWorldHeight || ny > lightTopY {
 				continue
 			}
+			opacity := GetLightProps(le.getBlockIDWorld(nx, ny, nz)).Opacity
 
-			neighborBlockID := le.getBlockIDWorld(nx, ny, nz)
-			opacity := GetLightProps(neighborBlockID).Opacity
-
-			// Calculate new light level at neighbor (falloff by 1 + opacity, same as block light)
-			newLight := uint8(0)
-			if currentLight > opacity+1 {
-				newLight = currentLight - opacity - 1
+			var newLight uint8
+			if off == [3]int{0, -1, 0} && cur == 15 && opacity == 0 {
+				newLight = 15 // straight down through a transparent block: no loss
+			} else if loss := stepLoss(opacity); cur > loss {
+				newLight = cur - loss
 			}
 
-			// Get current neighbor light
-			neighborLight := le.getSkyLightWorld(nx, ny, nz)
-
-			// If new light is brighter, update and queue
-			if newLight > neighborLight {
+			if newLight > le.getSkyLightWorld(nx, ny, nz) {
 				le.setSkyLightWorld(nx, ny, nz, newLight)
 				queue = append(queue, lightPos{nx, ny, nz})
 			}
@@ -437,64 +436,47 @@ func (le *LightEngine) computeSkyLight(chunk *Chunk, cx, cz int) {
 	}
 }
 
-// computeBlockLight initializes block light for a chunk using BFS from light sources.
+// computeBlockLight recomputes block light for a chunk from scratch using BFS
+// from emitters, losing max(1, opacity) per step. Every cell is reinitialised to
+// its own emission first, so a recompute after a light source is removed
+// correctly clears stale light.
 func (le *LightEngine) computeBlockLight(chunk *Chunk, cx, cz int) {
-	// Phase 1: Find all light-emitting blocks and set their emission
 	var queue []lightPos
+	// Seed: reinitialise every cell to its own emission and collect emitters.
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
-			for y := MinWorldHeight; y < MinWorldHeight+SectionsPerChunk*16; y++ {
-				blockID := chunk.GetBlock(x, y, z).ID()
-				emission := GetLightProps(blockID).Emission
-
+			worldX, worldZ := cx*16+x, cz*16+z
+			for y := MinWorldHeight; y <= lightTopY; y++ {
+				emission := GetLightProps(chunk.GetBlock(x, y, z).ID()).Emission
+				chunk.SetBlockLight(x, y, z, emission)
 				if emission > 0 {
-					chunk.SetBlockLight(x, y, z, emission)
-					worldX := cx*16 + x
-					worldZ := cz*16 + z
 					queue = append(queue, lightPos{worldX, y, worldZ})
 				}
 			}
 		}
 	}
 
-	// Phase 2: BFS to spread block light from sources
-	visited := make(map[lightPos]bool)
+	// BFS: monotonically raise neighbour light until nothing can be brightened.
 	for len(queue) > 0 {
 		pos := queue[0]
 		queue = queue[1:]
-
-		if visited[pos] {
+		cur := le.getBlockLightWorld(pos.x, pos.y, pos.z)
+		if cur == 0 {
 			continue
 		}
-		visited[pos] = true
-
-		currentLight := le.getBlockLightWorld(pos.x, pos.y, pos.z)
-		if currentLight == 0 {
-			continue
-		}
-
-		// Try to spread to each neighbor
-		for _, offset := range [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}} {
-			nx, ny, nz := pos.x+offset[0], pos.y+offset[1], pos.z+offset[2]
-
-			if ny < MinWorldHeight || ny >= MinWorldHeight+SectionsPerChunk*16 {
+		for _, off := range lightOffsets {
+			nx, ny, nz := pos.x+off[0], pos.y+off[1], pos.z+off[2]
+			if ny < MinWorldHeight || ny > lightTopY {
 				continue
 			}
+			opacity := GetLightProps(le.getBlockIDWorld(nx, ny, nz)).Opacity
 
-			neighborBlockID := le.getBlockIDWorld(nx, ny, nz)
-			opacity := GetLightProps(neighborBlockID).Opacity
-
-			// Calculate new light level at neighbor (falloff by 1 + opacity)
-			newLight := uint8(0)
-			if currentLight > opacity+1 {
-				newLight = currentLight - opacity - 1
+			var newLight uint8
+			if loss := stepLoss(opacity); cur > loss {
+				newLight = cur - loss
 			}
 
-			// Get current neighbor light
-			neighborLight := le.getBlockLightWorld(nx, ny, nz)
-
-			// If new light is brighter, update and queue
-			if newLight > neighborLight {
+			if newLight > le.getBlockLightWorld(nx, ny, nz) {
 				le.setBlockLightWorld(nx, ny, nz, newLight)
 				queue = append(queue, lightPos{nx, ny, nz})
 			}

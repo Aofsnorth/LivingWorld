@@ -1,101 +1,125 @@
 package noise
 
-import "math"
+import (
+	"math"
+	"strconv"
+)
 
-// Perlin is a 2D/3D Perlin gradient-noise sampler with a seed-shuffled
-// permutation table. It is the building block of the NormalNoise field
-// sampler, and is also used directly for ore placement and small-scale
-// climate perturbations.
+// This file implements Mojang's improved-Perlin noise stack bit-faithfully:
 //
-// Output range is approximately [-1, 1]; the empirical distribution of
-// |noise| peaks around 0.4, with rare excursions near 1. The implementation
-// follows Ken Perlin's "improved noise" (2002): quintic fade function, the
-// 12-edge gradient table, and the (a, b, c, d) lattice-sampling shape from
-// the reference pseudocode.
-type Perlin struct {
-	perm [512]int
+//   - improvedNoise  : net.minecraft.world.level.levelgen.synth.ImprovedNoise —
+//     a single gradient-noise octave with an RNG-drawn lattice origin and the
+//     fixed 16-vector SimplexNoise.GRADIENT table.
+//   - Perlin         : a thin public wrapper around one improvedNoise (kept for
+//     the carver / ore / pipeline callers that want a single seeded field).
+//   - PerlinNoise    : net.minecraft.world.level.levelgen.synth.PerlinNoise —
+//     the octave stack, with per-octave streams forked positionally via
+//     fromHashOf("octave_N") and the lowest-freq input/value factors.
+
+// perlinGradient is SimplexNoise.GRADIENT — the 16 gradient vectors Mojang dots
+// against (dx,dy,dz). Indexed by hash&15.
+var perlinGradient = [16][3]float64{
+	{1, 1, 0}, {-1, 1, 0}, {1, -1, 0}, {-1, -1, 0},
+	{1, 0, 1}, {-1, 0, 1}, {1, 0, -1}, {-1, 0, -1},
+	{0, 1, 1}, {0, -1, 1}, {0, 1, -1}, {0, -1, -1},
+	{1, 1, 0}, {0, -1, 1}, {-1, 1, 0}, {0, -1, -1},
 }
 
-// NewPerlin builds a Perlin whose gradients are shuffled with a Xoroshiro
-// stream derived from seed. Two runs of the same seed produce identical
-// fields (this is the property the worldgen determinism contract depends
-// on).
-func NewPerlin(seed int64) *Perlin {
-	var p Perlin
-	var base [256]int
-	for i := range base {
-		base[i] = i
-	}
-	r := NewXoroshiro(uint64(seed))
-	for i := 255; i > 0; i-- {
-		j := int(r.NextIntBounded(int32(i + 1)))
-		base[i], base[j] = base[j], base[i]
-	}
-	for i := range p.perm {
-		p.perm[i] = base[i&255]
-	}
-	return &p
+func gradDot(hash int, x, y, z float64) float64 {
+	g := perlinGradient[hash&15]
+	return g[0]*x + g[1]*y + g[2]*z
 }
 
-func fade(t float64) float64       { return t * t * t * (t*(t*6-15) + 10) }
+// smoothstep is Mth.smoothstep: 6t^5 - 15t^4 + 10t^3 (the quintic fade).
+func smoothstep(t float64) float64 { return t * t * t * (t*(t*6-15) + 10) }
+
 func lerp(t, a, b float64) float64 { return a + t*(b-a) }
 
-// grad3 is Ken Perlin's improved-noise gradient. Used for both 2D and 3D
-// (the 2D case just passes z=0).
-func grad3(h int, x, y, z float64) float64 {
-	h &= 15
-	u := x
-	if h >= 8 {
-		u = y
+func lerp2(tx, ty, d00, d10, d01, d11 float64) float64 {
+	return lerp(ty, lerp(tx, d00, d10), lerp(tx, d01, d11))
+}
+
+func lerp3(tx, ty, tz, d000, d100, d010, d110, d001, d101, d011, d111 float64) float64 {
+	return lerp(tz, lerp2(tx, ty, d000, d100, d010, d110), lerp2(tx, ty, d001, d101, d011, d111))
+}
+
+// improvedNoise is one octave of Mojang's ImprovedNoise.
+type improvedNoise struct {
+	xo, yo, zo float64
+	p          [256]uint8
+}
+
+// newImprovedNoise builds an octave from a random source, drawing the lattice
+// origin (xo,yo,zo) and the permutation table exactly as ImprovedNoise(RandomSource).
+func newImprovedNoise(r PRNG) *improvedNoise {
+	n := &improvedNoise{
+		xo: r.NextDouble() * 256,
+		yo: r.NextDouble() * 256,
+		zo: r.NextDouble() * 256,
 	}
-	v := z
-	if h < 4 {
-		v = y
-	} else if h == 12 || h == 14 {
-		v = x
+	for i := range n.p {
+		n.p[i] = uint8(i)
 	}
-	if h&1 != 0 {
-		u = -u
+	for i := 0; i < 256; i++ {
+		j := int(r.NextIntBounded(int32(256 - i)))
+		n.p[i], n.p[i+j] = n.p[i+j], n.p[i]
 	}
-	if h&2 != 0 {
-		v = -v
-	}
-	return u + v
+	return n
+}
+
+func (n *improvedNoise) pAt(i int) int { return int(n.p[i&255]) }
+
+// noise samples this octave at (x,y,z) in roughly [-1, 1].
+func (n *improvedNoise) noise(x, y, z float64) float64 {
+	dx := x + n.xo
+	dy := y + n.yo
+	dz := z + n.zo
+	ix := int(math.Floor(dx))
+	iy := int(math.Floor(dy))
+	iz := int(math.Floor(dz))
+	fx := dx - float64(ix)
+	fy := dy - float64(iy)
+	fz := dz - float64(iz)
+	return n.sampleAndLerp(ix, iy, iz, fx, fy, fz)
+}
+
+func (n *improvedNoise) sampleAndLerp(gx, gy, gz int, dx, dy, dz float64) float64 {
+	i := n.pAt(gx)
+	j := n.pAt(gx + 1)
+	k := n.pAt(i + gy)
+	l := n.pAt(i + gy + 1)
+	m := n.pAt(j + gy)
+	nn := n.pAt(j + gy + 1)
+	d := gradDot(n.pAt(k+gz), dx, dy, dz)
+	e := gradDot(n.pAt(m+gz), dx-1, dy, dz)
+	f := gradDot(n.pAt(l+gz), dx, dy-1, dz)
+	g := gradDot(n.pAt(nn+gz), dx-1, dy-1, dz)
+	h := gradDot(n.pAt(k+gz+1), dx, dy, dz-1)
+	o := gradDot(n.pAt(m+gz+1), dx-1, dy, dz-1)
+	q := gradDot(n.pAt(l+gz+1), dx, dy-1, dz-1)
+	s := gradDot(n.pAt(nn+gz+1), dx-1, dy-1, dz-1)
+	return lerp3(smoothstep(dx), smoothstep(dy), smoothstep(dz), d, e, f, g, h, o, q, s)
+}
+
+// Perlin is a single-octave gradient field used directly by the carver, ore,
+// and pipeline samplers. Output is roughly [-1, 1].
+type Perlin struct{ n *improvedNoise }
+
+// NewPerlin builds a Perlin from a 64-bit seed (the RNG draws the lattice origin
+// and permutation). Two runs of the same seed produce identical fields.
+func NewPerlin(seed int64) *Perlin {
+	return &Perlin{n: newImprovedNoise(NewXoroshiro(uint64(seed)))}
 }
 
 // Noise2D samples 2D Perlin noise in roughly [-1, 1].
-func (p *Perlin) Noise2D(x, y float64) float64 { return p.Noise3D(x, y, 0) }
+func (p *Perlin) Noise2D(x, y float64) float64 { return p.n.noise(x, y, 0) }
 
 // Noise3D samples 3D Perlin noise in roughly [-1, 1].
-func (p *Perlin) Noise3D(x, y, z float64) float64 {
-	xi := int(math.Floor(x)) & 255
-	yi := int(math.Floor(y)) & 255
-	zi := int(math.Floor(z)) & 255
-	xf := x - math.Floor(x)
-	yf := y - math.Floor(y)
-	zf := z - math.Floor(z)
-	u, v, w := fade(xf), fade(yf), fade(zf)
+func (p *Perlin) Noise3D(x, y, z float64) float64 { return p.n.noise(x, y, z) }
 
-	a := p.perm[xi] + yi
-	aa := p.perm[a] + zi
-	ab := p.perm[a+1] + zi
-	b := p.perm[xi+1] + yi
-	ba := p.perm[b] + zi
-	bb := p.perm[b+1] + zi
-
-	x1 := lerp(u, grad3(p.perm[aa], xf, yf, zf), grad3(p.perm[ba], xf-1, yf, zf))
-	x2 := lerp(u, grad3(p.perm[ab], xf, yf-1, zf), grad3(p.perm[bb], xf-1, yf-1, zf))
-	y1 := lerp(v, x1, x2)
-	x3 := lerp(u, grad3(p.perm[aa+1], xf, yf, zf-1), grad3(p.perm[ba+1], xf-1, yf, zf-1))
-	x4 := lerp(u, grad3(p.perm[ab+1], xf, yf-1, zf-1), grad3(p.perm[bb+1], xf-1, yf-1, zf-1))
-	y2 := lerp(v, x3, x4)
-	return lerp(w, y1, y2)
-}
-
-// Octaves2D sums octaves layers of 2D Perlin noise (fractal Brownian
-// motion), normalized to roughly [-1, 1]. persistence scales amplitude
-// per octave; lacunarity scales frequency per octave. octaves < 1 returns
-// 0. The reference contract is the same one used by Biome climate sampling.
+// Octaves2D sums octaves layers of 2D noise (fractal Brownian motion),
+// normalized to roughly [-1, 1]. persistence scales amplitude per octave;
+// lacunarity scales frequency per octave.
 func (p *Perlin) Octaves2D(x, y float64, octaves int, persistence, lacunarity float64) float64 {
 	if octaves < 1 {
 		return 0
@@ -112,4 +136,54 @@ func (p *Perlin) Octaves2D(x, y float64, octaves int, persistence, lacunarity fl
 		return 0
 	}
 	return total / max
+}
+
+// PerlinNoise is Mojang's octave stack. octaves[i] is nil when amplitudes[i]==0.
+type PerlinNoise struct {
+	octaves               []*improvedNoise
+	amplitudes            []float64
+	lowestFreqInputFactor float64
+	lowestFreqValueFactor float64
+}
+
+// NewPerlinNoise builds an octave stack matching PerlinNoise.create: each
+// non-zero octave gets its own ImprovedNoise forked positionally from the
+// source via fromHashOf("octave_<n>"). firstOctave is typically negative.
+func NewPerlinNoise(r *Xoroshiro, firstOctave int, amplitudes []float64) *PerlinNoise {
+	pn := &PerlinNoise{
+		octaves:    make([]*improvedNoise, len(amplitudes)),
+		amplitudes: amplitudes,
+	}
+	pf := r.ForkPositional()
+	for i := range amplitudes {
+		if amplitudes[i] != 0 {
+			pn.octaves[i] = newImprovedNoise(pf.FromHashOf("octave_" + strconv.Itoa(firstOctave+i)))
+		}
+	}
+	n := len(amplitudes)
+	pn.lowestFreqInputFactor = math.Pow(2, float64(firstOctave))
+	pn.lowestFreqValueFactor = math.Pow(2, float64(n-1)) / (math.Pow(2, float64(n)) - 1)
+	return pn
+}
+
+// perlinWrap is PerlinNoise.wrap: keeps coordinates within a 2^25 window so the
+// double lattice indices stay exact.
+func perlinWrap(v float64) float64 {
+	return v - math.Floor(v/3.3554432e7+0.5)*3.3554432e7
+}
+
+// GetValue samples the octave stack at (x,y,z).
+func (pn *PerlinNoise) GetValue(x, y, z float64) float64 {
+	var total float64
+	inFactor := pn.lowestFreqInputFactor
+	valFactor := pn.lowestFreqValueFactor
+	for i, oct := range pn.octaves {
+		if oct != nil {
+			g := oct.noise(perlinWrap(x*inFactor), perlinWrap(y*inFactor), perlinWrap(z*inFactor))
+			total += pn.amplitudes[i] * g * valFactor
+		}
+		inFactor *= 2
+		valFactor /= 2
+	}
+	return total
 }

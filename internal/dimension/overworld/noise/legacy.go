@@ -30,40 +30,36 @@ func (l *Legacy) nextBits(bits uint) uint64 {
 	return l.advance() >> (48 - bits)
 }
 
-// NextInt returns a uniform int32 (sign-corrected).
+// NextInt returns a uniform int32 — Java's java.util.Random.next(32), the raw
+// signed 32-bit value (NOT sign-corrected).
 func (l *Legacy) NextInt() int32 {
-	v := int32(l.nextBits(32))
-	if v < 0 {
-		return -v
-	}
-	return v
+	return int32(uint32(l.nextBits(32)))
 }
 
-// NextIntBounded returns a uniform int in [0, bound). Matches the
-// nextInt(int) contract: unbiased via the rejection-sampling shape.
+// NextIntBounded returns a uniform int in [0, bound), matching
+// java.util.Random.nextInt(int): power-of-two fast path plus rejection sampling.
 func (l *Legacy) NextIntBounded(bound int32) int32 {
 	if bound <= 0 {
 		panic("noise: NextIntBounded requires bound > 0")
 	}
-	// Mojang: if (bound & -bound) == bound { return next(31) * bound >> 31 }
-	if bound&(-bound) == bound {
-		return int32(int64(l.nextBits(31)) * int64(bound) >> 31)
+	if bound&(bound-1) == 0 { // power of two
+		return int32(int64(bound) * int64(l.nextBits(31)) >> 31)
 	}
+	m := bound - 1
 	for {
-		bits := l.nextBits(31)
-		v := bits % uint64(bound)
-		if bits-uint64(bound)*v < 0 {
-			continue
+		bits := int32(l.nextBits(31))
+		v := bits % bound
+		if bits-v+m >= 0 {
+			return v
 		}
-		return int32(v)
 	}
 }
 
-// NextLong returns a uniform 64-bit value.
+// NextLong returns a uniform 64-bit value (java.util.Random.nextLong).
 func (l *Legacy) NextLong() int64 {
-	hi := l.nextBits(32)
-	lo := l.nextBits(32)
-	return int64(hi)<<32 | int64(lo)
+	hi := int32(uint32(l.nextBits(32)))
+	lo := int32(uint32(l.nextBits(32)))
+	return int64(hi)<<32 + int64(lo)
 }
 
 // NextFloat returns a uniform float in [0, 1).
@@ -71,13 +67,21 @@ func (l *Legacy) NextFloat() float32 {
 	return float32(l.nextBits(24)) / float32(1<<24)
 }
 
-// NextDouble returns a uniform double in [0, 1).
+// NextDouble returns a uniform double in [0, 1), matching
+// java.util.Random.nextDouble: (next(26)<<27 + next(27)) * 2^-53.
 func (l *Legacy) NextDouble() float64 {
-	return float64(l.nextBits(26)) / float64(1<<26) // / (1<<26)
+	hi := int64(l.nextBits(26)) << 27
+	lo := int64(l.nextBits(27))
+	return float64(hi+lo) * (1.0 / (1 << 53))
 }
 
 // NextBoolean returns a uniform coin flip.
 func (l *Legacy) NextBoolean() bool { return l.nextBits(1) != 0 }
+
+// SetSeed re-seeds the LCG (java.util.Random.setSeed).
+func (l *Legacy) SetSeed(seed int64) {
+	l.seed = (uint64(seed) ^ 0x5DEECE66D) & ((1 << 48) - 1)
+}
 
 // Seed returns the current 48-bit state. Useful for debugging.
 func (l *Legacy) Seed() uint64 { return l.seed }

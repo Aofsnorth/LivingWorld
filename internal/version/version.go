@@ -58,6 +58,20 @@ func (e Edition) String() string {
 // tests and version-matrix generators.
 var AllEditions = []Edition{Java, Bedrock}
 
+// buildTag is injected at compile time via -ldflags from the CI release
+// workflow. It holds the git tag that produced this binary (e.g. "v0.1.0-beta").
+// When empty, the binary was built outside the release pipeline.
+var buildTag string
+
+// BuildTag returns the git tag embedded at compile time, or "dev" if the
+// binary was not produced by the release pipeline.
+func BuildTag() string {
+	if buildTag == "" {
+		return "dev"
+	}
+	return buildTag
+}
+
 // Capability is a single feature flag a given LWVersion may or may not
 // have. Bitset layout is stable per LWVersion group; new bits must be
 // added at the next unused index so consumers can do bitwise tests

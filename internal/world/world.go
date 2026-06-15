@@ -168,6 +168,7 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 			// for every section and renders the surface pitch black at noon.
 			if w.light != nil {
 				w.light.ComputeChunkLight(c, cx, cz)
+				w.queueNeighborRelight(cx, cz)
 			}
 			return c
 		}
@@ -182,8 +183,27 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 	// Phase 4b: compute light for newly loaded/generated chunks.
 	if w.light != nil {
 		w.light.ComputeChunkLight(chunk, cx, cz)
+		w.queueNeighborRelight(cx, cz)
 	}
 	return chunk
+}
+
+// queueNeighborRelight queues the four already-loaded cardinal neighbours of a
+// just-loaded chunk for light recomputation on the next tick. A chunk that was
+// lit before this neighbour existed treated the missing neighbour as opaque/dark
+// at the shared edge, leaving an order-dependent dark seam; recomputing the
+// neighbours (which now read this chunk's real light via the world-coord helpers)
+// settles the seam symmetrically.
+//
+// Precondition: the caller holds w.mu (so reading w.chunks is safe). QueueUpdate
+// takes its own lock and never re-enters w.mu, and ComputeChunkLight is NOT run
+// synchronously here — the work is deferred to the tick's ProcessUpdates.
+func (w *World) queueNeighborRelight(cx, cz int) {
+	for _, d := range [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+		if w.chunks[ChunkPos{cx + d[0], cz + d[1]}] != nil {
+			w.light.QueueUpdate(cx+d[0], cz+d[1])
+		}
+	}
 }
 
 func (w *World) UnloadChunk(cx, cz int) {

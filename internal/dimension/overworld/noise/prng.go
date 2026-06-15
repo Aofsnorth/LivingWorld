@@ -16,6 +16,8 @@ type PRNG interface {
 	NextDouble() float64
 	// NextBoolean returns a coin flip.
 	NextBoolean() bool
+	// SetSeed re-seeds the stream from a 64-bit seed (vanilla setSeed).
+	SetSeed(seed int64)
 	// Fork returns an independent stream derived from this one.
 	Fork() PRNG
 }

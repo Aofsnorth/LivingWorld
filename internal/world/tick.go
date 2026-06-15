@@ -148,7 +148,9 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// up-to-date light levels.
 	for _, w := range worlds {
 		if w.Light() != nil {
-			w.Light().ProcessUpdates()
+			for _, pos := range w.Light().ProcessUpdates() {
+				m.PublishLightUpdate(pos.X, pos.Z)
+			}
 		}
 	}
 

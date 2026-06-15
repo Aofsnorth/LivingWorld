@@ -26,6 +26,7 @@ type Manager struct {
 	worlds       map[string]*World
 	defaultWorld *World
 	blockEvents  *BlockEventBus
+	lightEvents  *LightEventBus
 	drops        *drops.Store
 	mobs         *mobs.Store
 	dropRNG      *rand.Rand
@@ -165,6 +166,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		worlds:           make(map[string]*World),
 		blockEvents:      NewBlockEventBus(),
+		lightEvents:      NewLightEventBus(),
 		drops:            drops.New(),
 		mobs:             mobs.New(),
 		projectiles:      mobs.NewProjectileStore(),
@@ -497,6 +499,21 @@ func (m *Manager) SubscribeBlockUpdates(id string, buffer int) <-chan BlockUpdat
 
 func (m *Manager) UnsubscribeBlockUpdates(id string) {
 	m.blockEvents.Unsubscribe(id)
+}
+
+// SubscribeLightUpdates returns a channel of chunks whose light was recomputed
+// and changed during a tick. The Java bridge uses it to re-send light to players.
+func (m *Manager) SubscribeLightUpdates(id string, buffer int) <-chan LightUpdateEvent {
+	return m.lightEvents.Subscribe(id, buffer)
+}
+
+func (m *Manager) UnsubscribeLightUpdates(id string) {
+	m.lightEvents.Unsubscribe(id)
+}
+
+// PublishLightUpdate announces that chunk (cx,cz) had its light changed.
+func (m *Manager) PublishLightUpdate(cx, cz int) {
+	m.lightEvents.Publish(LightUpdateEvent{X: cx, Z: cz})
 }
 
 func (m *Manager) PublishBlockUpdate(source BlockUpdateSource, x, y, z int, blockID int32) {
