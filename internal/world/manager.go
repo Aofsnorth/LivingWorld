@@ -160,6 +160,12 @@ type Manager struct {
 	// per-edition packet.
 	mobSoundMu    sync.RWMutex
 	mobSoundHooks []func(emits []mobs.SoundEmit)
+
+	// hunger tracks per-player food/saturation/exhaustion mechanics.
+	hunger *HungerTracker
+	// scheduledTicks is the block-update priority queue (redstone,
+	// fluids, gravity neighbor notifies, etc.).
+	scheduledTicks *ScheduledTickSystem
 }
 
 func NewManager() *Manager {
@@ -174,6 +180,8 @@ func NewManager() *Manager {
 		crackManager:     NewCrackManager(),
 		effectEvents:     NewWorldEffectBus(),
 		spawnMobsEnabled: true,
+		hunger:           NewHungerTracker(),
+		scheduledTicks:   NewScheduledTickSystem(),
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld
@@ -255,6 +263,14 @@ func (m *Manager) Mobs() *mobs.Store { return m.mobs }
 // to OnSpawn/OnDespawn to render the projectile (Java SpawnEntity +
 // EntityMetadata, Bedrock AddActor).
 func (m *Manager) Projectiles() *mobs.ProjectileStore { return m.projectiles }
+
+// Hunger returns the per-player hunger/exhaustion tracker. Bridges
+// register players on join and add exhaustion from sprint/jump/attack.
+func (m *Manager) Hunger() *HungerTracker { return m.hunger }
+
+// ScheduledTicks returns the block-update priority queue. Bridges
+// schedule neighbor notifies from block changes.
+func (m *Manager) ScheduledTicks() *ScheduledTickSystem { return m.scheduledTicks }
 
 // OnExplosion registers a listener for creeper explosions. The world tick
 // publishes the result after applying damage and knockback; bridges

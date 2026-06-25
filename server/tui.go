@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"livingworld/internal/harness"
 	"livingworld/internal/infrastructure/logging"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -155,12 +157,19 @@ func (m tuiModel) headerView() string {
 
 // RunTUI starts the server and runs an interactive terminal UI (live status
 // header + scrolling log panel + command input) until the user quits with
-// "stop"/Ctrl-C, then shuts down gracefully. Use Run for a plain (non-TUI)
-// console, e.g. when stdout is not a terminal.
+// "stop"/Ctrl-C, then shuts down gracefully via the application harness.
+//
+// The TUI owns the terminal and stdin, so the harness is constructed with
+// noop signal handling (Ctrl-C is handled by bubbletea) and without the
+// console component; the TUI's "stop" command and Ctrl-C both drive shutdown
+// through Harness.Stop. Use Run for a plain (non-TUI) console, e.g. when
+// stdout is not a terminal.
 func (s *Server) RunTUI() error {
 	store := &logStore{}
 	logging.SetOutput(store)
-	if err := s.Start(); err != nil {
+
+	h := s.NewHarness(harness.WithNoopSignals())
+	if err := h.Start(context.Background()); err != nil {
 		logging.SetOutput(os.Stderr)
 		return err
 	}
@@ -173,15 +182,15 @@ func (s *Server) RunTUI() error {
 	m := tuiModel{
 		srv:   s,
 		store: store,
-		con:   newConsole(s, store, func() {}),
+		con:   newConsole(s, store, func() { _ = h.Stop() }),
 		input: ti,
 		start: time.Now(),
 	}
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 
 	logging.SetOutput(os.Stderr) // restore plain logging for shutdown
-	s.logger.Info("Shutting down LivingWorld...")
-	s.Stop()
-	s.logger.Info("LivingWorld stopped")
+	// Ensure teardown even if the TUI exited without an explicit "stop";
+	// Harness.Stop is idempotent.
+	_ = h.Stop()
 	return err
 }

@@ -137,13 +137,28 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	m.mu.RUnlock()
 
 	// Phase 1: consume player inputs. No-op today (see tickLoop comment).
-	// Phase 2: scheduled block ticks. No-op (Phase 4d).
+	// Phase 2: scheduled block ticks. Process the priority queue of
+	// future block updates (redstone, fluids, gravity neighbor notifies).
+	for _, w := range worlds {
+		m.scheduledTicks.Process(w)
+	}
 	// Phase 3: random ticks. Grass spread is the only consumer right now
 	// (see internal/world/grass.go); the function is cheap and runs over
 	// every loaded chunk at a fixed budget per tick.
 	m.grassTick(rng)
 
-	// Phase 3b: light propagation (Phase 4b). Process any queued light updates
+	// Phase 3a: gravity blocks (sand, gravel, anvil). Samples random
+	// positions and drops unsupported blocks to the nearest solid surface.
+	m.gravityTick(rng)
+
+	// Phase 3b: extended random ticks (leaf decay, ice melt, crop growth,
+	// fire spread, mushroom spread, sugar cane/cactus growth, farmland
+	// dehydration). Runs alongside grass at the same tick budget.
+	for _, w := range worlds {
+		m.randomTickWorld(rng, w)
+	}
+
+	// Phase 3c: light propagation (Phase 4b). Process any queued light updates
 	// from block changes. This runs before mob AI so spawning decisions can use
 	// up-to-date light levels.
 	for _, w := range worlds {
@@ -153,6 +168,10 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 			}
 		}
 	}
+
+	// Phase 3d: hunger mechanics. Process exhaustion drain, saturation
+	// healing, and starvation damage for all tracked players.
+	m.hunger.Tick()
 
 	// Phase 4: mob AI at 20 Hz. The legacy StartMobAI ticked mobs.TickHz
 	// times per second (also 20 Hz), so cadence is preserved.

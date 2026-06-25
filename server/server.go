@@ -15,12 +15,10 @@
 package server
 
 import (
+	"context"
 	"math/rand"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"time"
 
 	"livingworld/config"
@@ -475,30 +473,15 @@ func (s *Server) Stop() {
 	}
 }
 
-// Run starts the server and blocks until SIGINT/SIGTERM, then shuts down
-// gracefully (saving worlds). It returns the Start error, if any.
+// Run starts the server and blocks until SIGINT/SIGTERM (or the console
+// "stop" command), then shuts down gracefully via the application harness.
+// The harness owns signal handling, the operator console, ordered component
+// shutdown, and health reporting; see NewHarness for the extensibility seam.
+// It returns the Start error, if any.
 func (s *Server) Run() error {
-	if err := s.Start(); err != nil {
-		return err
-	}
-
-	// Start the operator console; "stop" triggers the same graceful shutdown as
-	// SIGINT/SIGTERM.
-	stop := make(chan struct{})
-	var once sync.Once
-	go newConsole(s, os.Stdout, func() { once.Do(func() { close(stop) }) }).run(os.Stdin)
-	s.logger.Info("Console ready — type 'help' for commands")
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case <-quit:
-	case <-stop:
-	}
-	s.logger.Info("Shutting down LivingWorld...")
-	s.Stop()
-	s.logger.Info("LivingWorld stopped")
-	return nil
+	h := s.NewHarness()
+	_ = h.Register(&consoleComponent{srv: s, out: os.Stdout, stop: func() { _ = h.Stop() }})
+	return h.Run(context.Background())
 }
 
 // Plugins returns the plugin manager for registering plugins and event handlers.

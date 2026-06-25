@@ -43,11 +43,22 @@ func (s *Server) resyncBedrockBlock(conn *minecraft.Conn, pos protocol.BlockPos)
 }
 
 func (s *Server) breakBedrockBlock(bs *bedrockSession, pos protocol.BlockPos) {
-	// Do not allow breaking bedrock or air. This is still a minimal survival
-	// placeholder; real hardness/drop logic belongs in a block service.
+	// Do not allow breaking air. Bedrock (ID 1) is only breakable in creative
+	// mode — this is still a minimal survival placeholder; real hardness/drop
+	// logic belongs in a block service.
 	current := s.wm.GetDefaultWorld().GetBlock(int(pos[0]), int(pos[1]), int(pos[2]))
-	if current.ID() == 0 || current.ID() == 1 {
-		return
+	if current.ID() == 0 {
+		return // can't break air
+	}
+	if current.ID() == 1 {
+		// Bedrock: only breakable in creative mode (gamemode 1).
+		isCreative := false
+		if p := bs.pm.GetPlayer(bs.id); p != nil {
+			isCreative = p.Gamemode == 1
+		}
+		if !isCreative {
+			return
+		}
 	}
 
 	// Send the break animation + sound to every Bedrock viewer BEFORE the block

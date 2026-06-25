@@ -113,11 +113,16 @@ func (m *Manager) setWorldBlockAndPublish(w *World, x, y, z int, block Block) {
 }
 
 func loadedBlockID(w *World, x, y, z int) (int32, bool) {
-	c := w.GetChunk(x>>4, z>>4)
+	// Use floor-division for negative coordinates (same as ChunkCoord).
+	// x>>4 is WRONG for negative x: -1>>4 = -1 in Go (arithmetic shift)
+	// but int(-0.5)>>4 = 0, not -1. ChunkCoord handles this correctly.
+	cx, cz := int(ChunkCoord(float64(x))), int(ChunkCoord(float64(z)))
+	c := w.GetChunk(cx, cz)
 	if c == nil {
 		return AirID, false
 	}
-	return c.GetBlock(x&15, y, z&15).ID(), true
+	lx, lz := x&15, z&15
+	return c.GetBlock(lx, y, lz).ID(), true
 }
 
 func grassCanSurvive(w *World, x, y, z int) bool {
@@ -178,19 +183,12 @@ func (w *World) loadedChunkPositions() []chunkWorldPos {
 // -1 if the column has no loaded chunks yet. Cheaper than walking
 // every Y just to know which layer to sample.
 func (w *World) HeightmapTop(x, z int) int {
-	cx, cz := ChunkCoord(float64(x)), ChunkCoord(float64(z))
-	c := w.GetChunk(int(cx), int(cz))
+	cx, cz := int(ChunkCoord(float64(x))), int(ChunkCoord(float64(z)))
+	c := w.GetChunk(cx, cz)
 	if c == nil {
 		return -1
 	}
-	// GetHeightmap uses chunk-local X/Z (0..15), so reduce.
 	lx, lz := x&15, z&15
-	if lx < 0 {
-		lx += ChunkSize
-	}
-	if lz < 0 {
-		lz += ChunkSize
-	}
 	h := c.GetHeightmap(lx, lz)
 	return int(h)
 }
