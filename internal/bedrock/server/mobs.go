@@ -142,6 +142,50 @@ func addMobActor(m mobs.Mob) *packet.AddActor {
 		Yaw:             float32(m.Yaw),
 		HeadYaw:         float32(m.HeadYaw),
 		EntityMetadata:  mobEntityMetadata(m),
+		// EntityProperties supplies the integer values the client's Molang
+		// interpreter reads via query.property('minecraft:climate_variant')
+		// and query.property('minecraft:sound_variant'). Without these the
+		// Bedrock client logs "query.property called on an actor without a
+		// property component" for every pig/cow it renders (vanilla RP
+		// defines those Molang expressions in pig.entity.json /
+		// cow.entity.json). The Index maps to the property's declaration
+		// order in the vanilla BP description.properties block:
+		//   pig  -> [climate_variant=0, sound_variant=1]
+		//   cow  -> [climate_variant=0]
+		// Values follow the vanilla enum order:
+		//   climate_variant: 0=temperate, 1=warm, 2=cold
+		//   sound_variant:   0=baby,       1=default (adult)
+		// LivingWorld does not track climate per-mob yet, so default to
+		// temperate; sound_variant follows Baby so adult pigs play the adult
+		// sound and baby pigs play the baby sound.
+		EntityProperties: mobEntityProperties(m),
+	}
+}
+
+// mobEntityProperties returns the Bedrock EntityProperties for mob types whose
+// vanilla client-side Molang depends on a registered property component. Types
+// without such properties get an empty struct (serialised as two empty slices).
+func mobEntityProperties(m mobs.Mob) protocol.EntityProperties {
+	switch m.Type {
+	case "minecraft:pig":
+		soundVariant := int32(1) // default/adult
+		if m.Baby {
+			soundVariant = 0 // baby
+		}
+		return protocol.EntityProperties{
+			IntegerProperties: []protocol.IntegerEntityProperty{
+				{Index: 0, Value: 0}, // climate_variant = temperate
+				{Index: 1, Value: soundVariant},
+			},
+		}
+	case "minecraft:cow":
+		return protocol.EntityProperties{
+			IntegerProperties: []protocol.IntegerEntityProperty{
+				{Index: 0, Value: 0}, // climate_variant = temperate
+			},
+		}
+	default:
+		return protocol.EntityProperties{}
 	}
 }
 
