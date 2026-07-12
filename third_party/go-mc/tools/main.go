@@ -42,6 +42,13 @@ var generators = []generator{
 	{"registryid", genRegistryID},
 	{"biome", genBiome},
 	{"lang", genLang},
+	{"vanilladata", genVanilladata},
+}
+
+func genVanilladata(jsonDir, goMCRoot string) error {
+	worldgenDir := filepath.Join(goMCRoot, "temp", "cache", "worldgen", filepath.Base(jsonDir))
+	vanilladataDir := filepath.Join(goMCRoot, "..", "..", "internal", "dimension", "overworld", "vanilladata")
+	return GenerateVanilladata(worldgenDir, vanilladataDir)
 }
 
 func main() {
