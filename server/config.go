@@ -13,6 +13,18 @@ import (
 	"livingworld/config"
 )
 
+// Config is the server configuration. It is an alias of the YAML config type, so
+// it can be built in code or loaded from a file via LoadConfig.
+type Config = config.Config
+
+// DefaultConfig returns a ready-to-run configuration (superflat world, offline
+// mode, persistence enabled).
+func DefaultConfig() *Config { return config.Default() }
+
+// LoadConfig reads configuration from a YAML file, falling back to defaults for
+// any missing fields.
+func LoadConfig(path string) (*Config, error) { return config.Load(path) }
+
 // LoadConfigFile loads server configuration from a YAML (.yml/.yaml) or TOML
 // (.toml) file, layered over DefaultConfig. The format is chosen by the file
 // extension. A missing file is not an error: the defaults are returned.
