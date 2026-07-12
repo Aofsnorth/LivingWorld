@@ -4,9 +4,16 @@ import (
 	"log"
 	"sync"
 
+	dfworld "github.com/df-mc/dragonfly/server/world"
 	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
+
+func init() {
+	// Finalise the vanilla Bedrock block registry so that runtime-ID lookups work
+	// independently of a Dragonfly world instance.
+	dfworld.DefaultBlockRegistry.Finalize()
+}
 
 // ChunkCache is a thread-safe cache wrapper for Bedrock chunks to prevent concurrent
 // access issues between player connection loops and block update loops.
@@ -34,7 +41,7 @@ func BlockRID(name string, properties ...map[string]any) uint32 {
 	if len(properties) > 0 {
 		props = properties[0]
 	}
-	rid, ok := dfchunk.StateToRuntimeID(name, props)
+	rid, ok := dfworld.DefaultBlockRegistry.StateToRuntimeID(name, props)
 	if !ok {
 		log.Printf("[Bedrock] Could not resolve runtime ID for %s", name)
 		return 0

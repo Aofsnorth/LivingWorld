@@ -139,14 +139,19 @@ func detectGoMCRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting working directory: %v", err)
 	}
-	for d := wd; d != "/" && d != "."; d = filepath.Dir(d) {
+	for d := wd; d != "/" && d != "."; {
 		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
-		if err != nil {
-			continue
+		if err == nil {
+			content := strings.ReplaceAll(string(data), "\r\n", "\n")
+			if strings.Contains(content, "module github.com/Tnze/go-mc\n") {
+				return d, nil
+			}
 		}
-		if strings.Contains(string(data), "module github.com/Tnze/go-mc\n") {
-			return d, nil
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
 		}
+		d = parent
 	}
 	return "", fmt.Errorf("cannot find go-mc root from %s (need go.mod with module github.com/Tnze/go-mc)", wd)
 }

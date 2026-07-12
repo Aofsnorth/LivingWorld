@@ -16,6 +16,12 @@ import (
 	"github.com/df-mc/dragonfly/server/world/mcdb"
 )
 
+func init() {
+	// The Bedrock importer resolves runtime IDs through Dragonfly's default
+	// vanilla registry. Finalise it here so conversion works without a world.
+	dfworld.DefaultBlockRegistry.Finalize()
+}
+
 // ErrBedrockUnsupported is returned by the Bedrock export path, which is not
 // implemented yet (writing a LevelDB world from LivingWorld blocks).
 var ErrBedrockUnsupported = errors.New(
@@ -93,7 +99,7 @@ func bedrockChunkToLiving(c *chunk.Chunk, living *world.Chunk) int {
 		}
 		for x := 0; x < 16; x++ {
 			for z := 0; z < 16; z++ {
-				name, _, ok := chunk.RuntimeIDToState(c.Block(uint8(x), int16(y), uint8(z), 0))
+				name, _, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(c.Block(uint8(x), int16(y), uint8(z), 0))
 				if !ok {
 					continue
 				}

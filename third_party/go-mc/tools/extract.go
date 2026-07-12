@@ -59,11 +59,25 @@ func runExtract(goMCRoot, version, runtime string, dryRun bool) (string, error) 
 	fmt.Fprintln(os.Stderr)
 	if runtime == "host" {
 		fmt.Fprintln(os.Stderr, "Phase 2: Extracting data on host directly...")
+
+		classDir := filepath.Join(cacheDir, "extract-classes")
+		if err := os.MkdirAll(classDir, 0o755); err != nil {
+			return "", fmt.Errorf("creating extract class dir: %w", err)
+		}
 		if dryRun {
-			fmt.Fprintf(os.Stderr, "  command: java --source 21 %s %s\n", filepath.Join(javaDir, "ExtractAll.java"), version)
+			fmt.Fprintf(os.Stderr, "  command: javac -d %s %s && java -cp %s ExtractAll %s\n",
+				classDir, filepath.Join(javaDir, "ExtractAll.java"), classDir, version)
 			return filepath.Join(jsonsDir, version), nil
 		}
-		cmd := exec.Command("java", "--source", "21", filepath.Join(javaDir, "ExtractAll.java"), version)
+
+		compile := exec.Command("javac", "-d", classDir, filepath.Join(javaDir, "ExtractAll.java"))
+		compile.Stdout = os.Stdout
+		compile.Stderr = os.Stderr
+		if err := compile.Run(); err != nil {
+			return "", fmt.Errorf("compiling ExtractAll.java: %w", err)
+		}
+
+		cmd := exec.Command("java", "-cp", classDir, "ExtractAll", version)
 		cmd.Env = append(os.Environ(),
 			"MC_CACHE_DIR="+cacheDir,
 			"MC_JSONS_DIR="+jsonsDir,
