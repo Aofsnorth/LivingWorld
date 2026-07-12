@@ -1,7 +1,6 @@
 package vanilladata
 
 import (
-	"bytes"
 	"testing"
 )
 
@@ -46,18 +45,30 @@ func TestLoadStructure(t *testing.T) {
 }
 
 func TestLoadersReturnDefensiveCopies(t *testing.T) {
-	name := "overworld/base_3d_noise"
-	a, ok := LoadDensityFunction(name)
-	if !ok {
-		t.Fatalf("expected %s to exist", name)
+	cases := []struct {
+		name string
+		load func() ([]byte, bool)
+	}{
+		{"density", func() ([]byte, bool) { return LoadDensityFunction("overworld/base_3d_noise") }},
+		{"noise settings", func() ([]byte, bool) { return LoadNoiseSettings("overworld") }},
+		{"noise", func() ([]byte, bool) { return LoadNoise("temperature") }},
+		{"structure", func() ([]byte, bool) { return LoadStructure("village/plains/houses/plains_small_house_1") }},
 	}
-	b, _ := LoadDensityFunction(name)
-	if len(a) == 0 {
-		t.Fatalf("expected non-empty data")
-	}
-	a[0] = ^a[0]
-	if a[0] == b[0] {
-		t.Fatalf("LoadDensityFunction returned the same backing array")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, ok := tc.load()
+			if !ok {
+				t.Fatalf("expected data to exist")
+			}
+			b, _ := tc.load()
+			if len(a) == 0 {
+				t.Fatalf("expected non-empty data")
+			}
+			a[0] = ^a[0]
+			if a[0] == b[0] {
+				t.Fatalf("%s returned the same backing array", tc.name)
+			}
+		})
 	}
 }
 
@@ -73,21 +84,5 @@ func TestLoadMissingKey(t *testing.T) {
 	}
 	if _, ok := LoadStructure("does/not/exist"); ok {
 		t.Fatalf("expected missing structure to return false")
-	}
-}
-
-func TestLoadStructureReturnsCopy(t *testing.T) {
-	key := "village/plains/houses/plains_small_house_1"
-	a, ok := LoadStructure(key)
-	if !ok {
-		t.Fatalf("expected %s to exist", key)
-	}
-	b, _ := LoadStructure(key)
-	if len(a) == 0 {
-		t.Fatalf("expected non-empty data")
-	}
-	a[0] = ^a[0]
-	if bytes.Equal(a, b) {
-		t.Fatalf("LoadStructure returned the same backing array")
 	}
 }
