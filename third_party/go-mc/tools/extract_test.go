@@ -21,8 +21,12 @@ func TestExtractWorldgenData(t *testing.T) {
 		"noise/temperature.json",
 		"structures/village/plains/houses/plains_small_house_1.nbt",
 	} {
-		if _, err := os.Stat(filepath.Join(dir, f)); os.IsNotExist(err) {
+		_, err := os.Stat(filepath.Join(dir, f))
+		if os.IsNotExist(err) {
 			t.Fatalf("expected extracted file %s", f)
+		}
+		if err != nil {
+			t.Fatalf("stat %s: %v", f, err)
 		}
 	}
 }

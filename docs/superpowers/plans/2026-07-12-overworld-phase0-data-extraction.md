@@ -65,7 +65,7 @@ func TestExtractWorldgenData(t *testing.T) {
 	for _, f := range []string{
 		"density_function/overworld/base_3d_noise.json",
 		"noise_settings/overworld.json",
-		"worldgen/noise/temperature.json",
+		"noise/temperature.json",
 		"structures/village/plains/houses/plains_small_house_1.nbt",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, f)); os.IsNotExist(err) {
@@ -109,7 +109,7 @@ func ExtractWorldgenData(jar, outDir string) error {
 	for _, f := range zr.File {
 		for _, p := range prefixes {
 			if strings.HasPrefix(f.Name, p) && !strings.HasSuffix(f.Name, "/") {
-				rel := strings.TrimPrefix(f.Name, "data/minecraft/")
+				rel := strings.TrimPrefix(strings.TrimPrefix(f.Name, "data/minecraft/"), "worldgen/")
 				dst := filepath.Join(outDir, rel)
 				if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 					return err
@@ -148,7 +148,35 @@ Expected: PASS.
 
 - [ ] **Step 5: Wire into main**
 
-Modify `third_party/go-mc/tools/main.go` to call `ExtractWorldgenData` after the existing extraction, writing to `temp/cache/worldgen/<version>/`.
+Modify `third_party/go-mc/tools/main.go` to call `ExtractWorldgenData` after `runExtract` returns, writing to `temp/cache/worldgen/<version>/`.
+
+Example `main.go` integration:
+
+```go
+if version != "" {
+    // ... existing runExtract call ...
+
+    cacheDir := filepath.Join(goMCRoot, "temp", "cache")
+    worldgenDir := filepath.Join(cacheDir, "worldgen", version)
+    if _, err := os.Stat(worldgenDir); err != nil {
+        jarPath, err := downloadServerJar(cacheDir, goMCRoot, version)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "tools: download server jar: %v\n", err)
+            os.Exit(1)
+        }
+        if err := ExtractWorldgenData(jarPath, worldgenDir); err != nil {
+            fmt.Fprintf(os.Stderr, "tools: extract worldgen: %v\n", err)
+            os.Exit(1)
+        }
+    }
+}
+
+// Then add GenerateVanilladata to the generators list:
+// generators = append(generators, generator{"vanilladata", func(jsonDir, goMCRoot string) error {
+//     return GenerateVanilladata(filepath.Join(goMCRoot, "temp", "cache", "worldgen", filepath.Base(jsonDir)),
+//         filepath.Join(goMCRoot, "..", "..", "internal", "dimension", "overworld", "vanilladata"))
+// }})
+```
 
 - [ ] **Step 6: Commit**
 

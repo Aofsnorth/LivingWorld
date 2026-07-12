@@ -6,10 +6,15 @@ package main
 //  2. Container extracts data from the jar (no internet needed)
 //  3. Go host generates Go source from the extracted JSON
 //
+// Worldgen data (density functions, noise, noise settings, world presets, and
+// structure NBTs) is also extracted from the server jar into
+// temp/cache/worldgen/<version>/ by ExtractWorldgenData.
+//
 // Directory layout (relative to go-mc root):
 //
 //	tools/java/                     Java extractor sources (committed)
 //	temp/cache/                     cached server jars + libs (gitignored)
+//	temp/cache/worldgen/<version>/  worldgen JSON + NBT (gitignored)
 //	temp/jsons/<version>/           output JSON files (gitignored)
 
 import (
@@ -200,7 +205,7 @@ func detectRuntime() string {
 func ExtractWorldgenData(jar, outDir string) error {
 	zr, err := zip.OpenReader(jar)
 	if err != nil {
-		return err
+		return fmt.Errorf("open server jar %s: %w", jar, err)
 	}
 	defer zr.Close()
 
@@ -209,16 +214,16 @@ func ExtractWorldgenData(jar, outDir string) error {
 	if !zipHasPrefix(&zr.Reader, "data/minecraft/") {
 		inner, err := findBundledInnerJar(&zr.Reader)
 		if err != nil {
-			return err
+			return fmt.Errorf("locate bundled inner jar: %w", err)
 		}
 		data, err := readZipFile(inner)
 		if err != nil {
-			return err
+			return fmt.Errorf("read bundled inner jar: %w", err)
 		}
 		br := bytes.NewReader(data)
 		innerZR, err := zip.NewReader(br, int64(len(data)))
 		if err != nil {
-			return err
+			return fmt.Errorf("open bundled inner jar: %w", err)
 		}
 		return extractWorldgenFromZipReader(innerZR, outDir)
 	}
@@ -276,8 +281,14 @@ func extractWorldgenFromZipReader(zr *zip.Reader, outDir string) error {
 				continue
 			}
 			rel := strings.TrimPrefix(strings.TrimPrefix(f.Name, "data/minecraft/"), "worldgen/")
+			// Vanilla stores structure templates under `data/minecraft/structure/...` (singular).
+			// Map them to `structures/...` (plural) so the rest of the pipeline uses a consistent
+			// key prefix for `LoadStructure`.
 			if strings.HasPrefix(rel, "structure/") {
 				rel = "structures/" + strings.TrimPrefix(rel, "structure/")
+			}
+			if !filepath.IsLocal(rel) {
+				continue
 			}
 			dst := filepath.Join(outDir, rel)
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
