@@ -156,6 +156,7 @@ func (d *MojangLoginHandler) AcceptLogin(conn *net.Conn, protocol int32) (name s
 		pk.UUID(id),
 		pk.String(name),
 		pk.Array(properties),
+		pk.Boolean(false), // strictErrorHandling: 1.21.5+ field (false = client silently ignores packet errors)
 	))
 	if err != nil {
 		return
