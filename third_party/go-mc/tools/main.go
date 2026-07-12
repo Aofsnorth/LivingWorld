@@ -100,6 +100,25 @@ func main() {
 			}
 		}
 
+		if dryRun {
+			return
+		}
+
+		// Extract worldgen JSON and NBT files for the new vanilladata package.
+		cacheDir := filepath.Join(goMCRoot, "temp", "cache")
+		worldgenDir := filepath.Join(cacheDir, "worldgen", version)
+		if _, err := os.Stat(worldgenDir); err != nil {
+			jarPath, err := downloadServerJar(cacheDir, goMCRoot, version)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "tools: download server jar: %v\n", err)
+				os.Exit(1)
+			}
+			if err := ExtractWorldgenData(jarPath, worldgenDir); err != nil {
+				fmt.Fprintf(os.Stderr, "tools: extract worldgen: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		if genOnly {
 			return
 		}

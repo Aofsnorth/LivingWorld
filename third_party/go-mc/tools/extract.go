@@ -13,7 +13,10 @@ package main
 //	temp/jsons/<version>/           output JSON files (gitignored)
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,4 +192,106 @@ func detectRuntime() string {
 		return "docker"
 	}
 	return ""
+}
+
+// ExtractWorldgenData pulls worldgen JSON and NBT files from a Minecraft server
+// jar into outDir. The jar may be the bundled distribution jar (which contains an
+// inner server jar) or the inner server jar itself.
+func ExtractWorldgenData(jar, outDir string) error {
+	zr, err := zip.OpenReader(jar)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	// If the supplied jar is a bundled distribution (1.21+), extract and process
+	// the inner server jar.
+	if !zipHasPrefix(&zr.Reader, "data/minecraft/") {
+		inner, err := findBundledInnerJar(&zr.Reader)
+		if err != nil {
+			return err
+		}
+		data, err := readZipFile(inner)
+		if err != nil {
+			return err
+		}
+		br := bytes.NewReader(data)
+		innerZR, err := zip.NewReader(br, int64(len(data)))
+		if err != nil {
+			return err
+		}
+		return extractWorldgenFromZipReader(innerZR, outDir)
+	}
+	return extractWorldgenFromZipReader(&zr.Reader, outDir)
+}
+
+func zipHasPrefix(zr *zip.Reader, prefix string) bool {
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func findBundledInnerJar(zr *zip.Reader) (*zip.File, error) {
+	var inner *zip.File
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "META-INF/versions/") && strings.HasSuffix(f.Name, ".jar") {
+			if inner == nil || f.UncompressedSize64 > inner.UncompressedSize64 {
+				inner = f
+			}
+		}
+	}
+	if inner == nil {
+		return nil, fmt.Errorf("no inner server jar found in bundled jar")
+	}
+	return inner, nil
+}
+
+func readZipFile(f *zip.File) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+func extractWorldgenFromZipReader(zr *zip.Reader, outDir string) error {
+	prefixes := []string{
+		"data/minecraft/worldgen/density_function/",
+		"data/minecraft/worldgen/noise/",
+		"data/minecraft/worldgen/noise_settings/",
+		"data/minecraft/worldgen/world_preset/",
+		"data/minecraft/structure/",
+	}
+
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, "/") {
+			continue
+		}
+		for _, p := range prefixes {
+			if !strings.HasPrefix(f.Name, p) {
+				continue
+			}
+			rel := strings.TrimPrefix(strings.TrimPrefix(f.Name, "data/minecraft/"), "worldgen/")
+			if strings.HasPrefix(rel, "structure/") {
+				rel = "structures/" + strings.TrimPrefix(rel, "structure/")
+			}
+			dst := filepath.Join(outDir, rel)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			data, err := readZipFile(f)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, data, 0o644); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
 }
