@@ -47,3 +47,6 @@ dist/
 release/
 
 config.yml
+
+# Worktrees
+.worktrees/

@@ -26,11 +26,22 @@ type ScheduledTickEntry struct {
 // TickQueue is a min-heap of scheduled block updates, ordered by TickNum.
 type TickQueue []*ScheduledTickEntry
 
-func (q TickQueue) Len() int            { return len(q) }
-func (q TickQueue) Less(i, j int) bool  { return q[i].TickNum < q[j].TickNum }
-func (q TickQueue) Swap(i, j int)       { q[i], q[j] = q[j], q[i]; q[i].index = i; q[j].index = j }
-func (q *TickQueue) Push(x interface{}) { e := x.(*ScheduledTickEntry); e.index = len(*q); *q = append(*q, e) }
-func (q *TickQueue) Pop() interface{}   { old := *q; n := len(old); e := old[n-1]; old[n-1] = nil; *q = old[:n-1]; return e }
+func (q TickQueue) Len() int           { return len(q) }
+func (q TickQueue) Less(i, j int) bool { return q[i].TickNum < q[j].TickNum }
+func (q TickQueue) Swap(i, j int)      { q[i], q[j] = q[j], q[i]; q[i].index = i; q[j].index = j }
+func (q *TickQueue) Push(x interface{}) {
+	e := x.(*ScheduledTickEntry)
+	e.index = len(*q)
+	*q = append(*q, e)
+}
+func (q *TickQueue) Pop() interface{} {
+	old := *q
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = nil
+	*q = old[:n-1]
+	return e
+}
 
 // ScheduledTickSystem manages the priority queue of future block updates
 // and dispatches them when their tick number arrives.
@@ -145,4 +156,12 @@ func (s *ScheduledTickSystem) QueueSize() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.queue.Len()
+}
+
+// processScheduledTicks runs Phase 2 scheduled block ticks for every loaded
+// world. It drains the block-update priority queue once per 20 Hz tick.
+func (m *Manager) processScheduledTicks(worlds []*World) {
+	for _, w := range worlds {
+		m.scheduledTicks.Process(w)
+	}
 }

@@ -139,9 +139,7 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// Phase 1: consume player inputs. No-op today (see tickLoop comment).
 	// Phase 2: scheduled block ticks. Process the priority queue of
 	// future block updates (redstone, fluids, gravity neighbor notifies).
-	for _, w := range worlds {
-		m.scheduledTicks.Process(w)
-	}
+	m.processScheduledTicks(worlds)
 	// Phase 3: random ticks. Grass spread is the only consumer right now
 	// (see internal/world/grass.go); the function is cheap and runs over
 	// every loaded chunk at a fixed budget per tick.
