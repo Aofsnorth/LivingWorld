@@ -1,19 +1,13 @@
 package world
 
 import (
-	"fmt"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"livingworld/internal/drops"
-	"livingworld/internal/loot"
 	"livingworld/internal/mobs"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -272,89 +266,6 @@ func (m *Manager) Hunger() *HungerTracker { return m.hunger }
 // schedule neighbor notifies from block changes.
 func (m *Manager) ScheduledTicks() *ScheduledTickSystem { return m.scheduledTicks }
 
-// OnExplosion registers a listener for creeper explosions. The world tick
-// publishes the result after applying damage and knockback; bridges
-// translate it into the per-edition explosion event (Java
-// ClientboundGameExplosion, Bedrock LevelEvent{Explode}).
-func (m *Manager) OnExplosion(fn mobs.ExplosionListener) {
-	m.explosionMu.Lock()
-	m.explosionHooks = append(m.explosionHooks, fn)
-	m.explosionMu.Unlock()
-}
-
-// PublishExplosion fires every registered listener. Called from the
-// aiExplode callback in the world tick.
-func (m *Manager) PublishExplosion(result mobs.ExplosionResult) {
-	m.explosionMu.RLock()
-	hooks := append([]mobs.ExplosionListener{}, m.explosionHooks...)
-	m.explosionMu.RUnlock()
-	for _, h := range hooks {
-		h(result)
-	}
-}
-
-// OnMobSound registers a listener that receives a SoundEmit list
-// each tick. The world tick pre-computes the list in Phase 4 (after
-// AI + despawn) and PublishMobSounds fans it out to every bridge.
-func (m *Manager) OnMobSound(fn func(emits []mobs.SoundEmit)) {
-	m.mobSoundMu.Lock()
-	m.mobSoundHooks = append(m.mobSoundHooks, fn)
-	m.mobSoundMu.Unlock()
-}
-
-// PublishMobSounds fans the SoundEmit list out to every listener.
-// Listeners are expected to translate each emit into the per-edition
-// sound packet and broadcast it. Empty lists are still passed (so
-// listeners can short-circuit cheaply) — the world tick gates the
-// call on len(emits) > 0 already.
-func (m *Manager) PublishMobSounds(emits []mobs.SoundEmit) {
-	m.mobSoundMu.RLock()
-	hooks := append([]func(emits []mobs.SoundEmit){}, m.mobSoundHooks...)
-	m.mobSoundMu.RUnlock()
-	for _, h := range hooks {
-		h(emits)
-	}
-}
-
-// OnItemPickup registers a callback invoked when a player picks up an item.
-// Used by the Bedrock server to send pickup animation + inventory sync.
-func (m *Manager) OnItemPickup(fn func(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64)) {
-	m.pickupMu.Lock()
-	m.pickupCallback = fn
-	m.pickupMu.Unlock()
-}
-
-// NotifyItemPickup calls the registered pickup callback if one exists.
-func (m *Manager) NotifyItemPickup(playerUUID [16]byte, dropEntityID int64, playerEntityID uint64) {
-	m.pickupMu.RLock()
-	cb := m.pickupCallback
-	m.pickupMu.RUnlock()
-	if cb != nil {
-		cb(playerUUID, dropEntityID, playerEntityID)
-	}
-}
-
-// DropBlockLoot rolls the vanilla bare-hand loot for the block that was at
-// (x,y,z) and spawns the resulting item entities into the drop store, centred on
-// the block. blockID is the canonical world block id that was broken. Call this
-// BEFORE replacing the block with air.
-func (m *Manager) DropBlockLoot(blockID int32, x, y, z int) {
-	name := StateName(blockID)
-	m.dropMu.Lock()
-	stacks := loot.Rolls(name, m.dropRNG)
-	m.dropMu.Unlock()
-	for _, st := range stacks {
-		m.drops.Spawn(st.Item, st.Count, float64(x)+0.5, float64(y)+0.25, float64(z)+0.5)
-	}
-}
-
-// PlayerDropItem spawns a single item stack at the player as if the player hit
-// Q / Ctrl+Q. The throw arc is derived from yaw so the item visibly leaves the
-// player's hand instead of just popping up at their feet.
-func (m *Manager) PlayerDropItem(item string, count int, x, y, z, yaw float64) {
-	m.drops.SpawnFromPlayer(item, count, x, y, z, yaw)
-}
-
 func (m *Manager) GetWorld(name string) *World {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -419,86 +330,6 @@ func (m *Manager) SetMobAIHeldItem(fn func(playerUUID [16]byte) string) {
 	m.locatorMu.Unlock()
 }
 
-// SetMobAICallbacks wires the side-effect hooks the AI fires when a hostile
-// mob lands a melee hit, a skeleton fires, or a creeper explodes. Each hook
-// may be nil — the AI degrades gracefully (a skeleton with no arrow hook
-// still draws, but doesn't spawn the projectile).
-//
-// M1: extended with hitEffect, throw, shootProjectile, and waterAt
-// hooks. Callers that don't need them can pass nil.
-func (m *Manager) SetMobAICallbacks(
-	melee func([16]byte, int64, float32),
-	arrow func(int64, float64, float64, float64, float64, float64),
-	explode func(int64, float64, float64, float64, float64),
-	projectileHit func(int64, [16]byte),
-	fireDamage func(int64, float32),
-	sound func([]mobs.SoundEmit),
-	hitEffect func([16]byte, int64, mobs.HitEffect),
-	throw func([16]byte, int64, float32),
-	shootProjectile func(int64, float64, float64, float64, float64, float64, string),
-	waterAt func(int, int, int) bool,
-) {
-	m.locatorMu.Lock()
-	m.aiMeleeAttack = melee
-	m.aiShootArrow = arrow
-	m.aiExplode = explode
-	m.aiProjectileHit = projectileHit
-	m.aiFireDamage = fireDamage
-	m.aiSound = sound
-	m.aiHitEffect = hitEffect
-	m.aiThrow = throw
-	m.aiShootProjectile = shootProjectile
-	m.aiWaterAt = waterAt
-	m.locatorMu.Unlock()
-}
-
-// SetEffectTickCallback (M6) wires the per-tick effect engine. Called
-// once at server boot from server.go, after both the world manager and
-// the player manager are constructed. The closure is invoked from
-// Phase 4e of runOneTick and is responsible for walking every connected
-// player's effect bag, applying per-tick damage, and publishing
-// EffectStatusRemove for expired effects.
-//
-// Kept separate from SetMobAICallbacks so the existing 10-arg signature
-// stays stable and the player manager (which knows about the per-player
-// effect bag) owns the implementation.
-func (m *Manager) SetEffectTickCallback(fn func()) {
-	m.locatorMu.Lock()
-	m.aiTickEffects = fn
-	m.locatorMu.Unlock()
-}
-
-// SetIFramesTickCallback (M7) wires the I-frames countdown engine.
-// The closure is invoked from Phase 4e (right after the effect
-// tick) and walks the player map, decrementing any IFrames > 0
-// counter. The world package stays protocol-agnostic; the
-// player manager owns the IFrames field.
-func (m *Manager) SetIFramesTickCallback(fn func()) {
-	m.locatorMu.Lock()
-	m.aiTickIFrames = fn
-	m.locatorMu.Unlock()
-}
-
-// SetMobSplitCallback registers a hook called from the world tick
-// Phase 4 cleanup when a despawning mob has def.SplitsOnDeath. The
-// closure spawns 2 children at the parent's last position with
-// Size-1. May be nil (no splits).
-func (m *Manager) SetMobSplitCallback(fn func(w *World, mobID int64)) {
-	m.locatorMu.Lock()
-	m.mobSpawnSplits = fn
-	m.locatorMu.Unlock()
-}
-
-// SetMobDropCallback registers a hook called from the world tick
-// Phase 4 cleanup when a despawning mob drops loot. The closure
-// rolls the drops and calls drops.Store.Spawn for each. May be
-// nil.
-func (m *Manager) SetMobDropCallback(fn func(w *World, mobID int64)) {
-	m.locatorMu.Lock()
-	m.mobSpawnDrops = fn
-	m.locatorMu.Unlock()
-}
-
 func (m *Manager) GetAllWorlds() []*World {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -507,109 +338,4 @@ func (m *Manager) GetAllWorlds() []*World {
 		worlds = append(worlds, w)
 	}
 	return worlds
-}
-
-func (m *Manager) SubscribeBlockUpdates(id string, buffer int) <-chan BlockUpdateEvent {
-	return m.blockEvents.Subscribe(id, buffer)
-}
-
-func (m *Manager) UnsubscribeBlockUpdates(id string) {
-	m.blockEvents.Unsubscribe(id)
-}
-
-// SubscribeLightUpdates returns a channel of chunks whose light was recomputed
-// and changed during a tick. The Java bridge uses it to re-send light to players.
-func (m *Manager) SubscribeLightUpdates(id string, buffer int) <-chan LightUpdateEvent {
-	return m.lightEvents.Subscribe(id, buffer)
-}
-
-func (m *Manager) UnsubscribeLightUpdates(id string) {
-	m.lightEvents.Unsubscribe(id)
-}
-
-// PublishLightUpdate announces that chunk (cx,cz) had its light changed.
-func (m *Manager) PublishLightUpdate(cx, cz int) {
-	m.lightEvents.Publish(LightUpdateEvent{X: cx, Z: cz})
-}
-
-func (m *Manager) PublishBlockUpdate(source BlockUpdateSource, x, y, z int, blockID int32) {
-	m.blockEvents.Publish(BlockUpdateEvent{Source: source, X: x, Y: y, Z: z, BlockID: blockID})
-}
-
-func (m *Manager) SetBlockAndPublish(source BlockUpdateSource, x, y, z int, block Block) {
-	m.GetDefaultWorld().SetBlock(x, y, z, block)
-	m.PublishBlockUpdate(source, x, y, z, block.ID())
-}
-
-func (m *Manager) SubscribeWorldEffects(id string, buffer int) <-chan WorldEffectEvent {
-	return m.effectEvents.Subscribe(id, buffer)
-}
-
-func (m *Manager) UnsubscribeWorldEffects(id string) {
-	m.effectEvents.Unsubscribe(id)
-}
-
-func (m *Manager) PublishWorldEffect(ev WorldEffectEvent) {
-	m.effectEvents.Publish(ev)
-}
-
-// PublishCrack publishes a crack-overlay update (stage>=0) or clear (stage<0) for
-// a block being broken by breaker, originating from source.
-func (m *Manager) PublishCrack(source BlockUpdateSource, breaker uuid.UUID, x, y, z int, stage int32) {
-	m.effectEvents.Publish(WorldEffectEvent{
-		Kind: EffectCrackProgress, Source: source, X: x, Y: y, Z: z, Stage: stage, Breaker: breaker,
-	})
-}
-
-// PublishBlockDestroy publishes a finished-break effect (particles+sound) for the
-// block of canonical id blockID at (x,y,z), originating from source.
-func (m *Manager) PublishBlockDestroy(source BlockUpdateSource, breaker uuid.UUID, x, y, z int, blockID int32) {
-	m.effectEvents.Publish(WorldEffectEvent{
-		Kind: EffectBlockDestroy, Source: source, X: x, Y: y, Z: z, BlockID: blockID, Breaker: breaker,
-	})
-}
-
-// EnablePersistence attaches storage to every world. The default logical world
-// keeps the name "world" for API compatibility but persists under
-// <baseDir>/dimensions, matching the dimension-oriented on-disk layout.
-func (m *Manager) EnablePersistence(baseDir string) error {
-	for _, w := range m.GetAllWorlds() {
-		storageName := w.Name()
-		if w == m.defaultWorld && storageName == legacyDefaultWorldStorageName {
-			storageName = defaultDimensionStorageName
-			if err := migrateLegacyDefaultWorldStorage(baseDir); err != nil {
-				return err
-			}
-		}
-		store, err := NewRegionStorage(filepath.Join(baseDir, storageName))
-		if err != nil {
-			return err
-		}
-		w.SetStorage(store)
-	}
-	return nil
-}
-
-func migrateLegacyDefaultWorldStorage(baseDir string) error {
-	legacyDir := filepath.Join(baseDir, legacyDefaultWorldStorageName)
-	dimensionDir := filepath.Join(baseDir, defaultDimensionStorageName)
-	if _, err := os.Stat(dimensionDir); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat dimension storage %s: %w", dimensionDir, err)
-	}
-	info, err := os.Stat(legacyDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat legacy world storage %s: %w", legacyDir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("legacy world storage %s is not a directory", legacyDir)
-	}
-	if err := os.Rename(legacyDir, dimensionDir); err != nil {
-		return fmt.Errorf("rename legacy world storage %s -> %s: %w", legacyDir, dimensionDir, err)
-	}
-	return nil
 }
