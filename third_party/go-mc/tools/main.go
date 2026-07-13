@@ -47,6 +47,11 @@ var generators = []generator{
 
 func genVanilladata(jsonDir, goMCRoot string) error {
 	worldgenDir := filepath.Join(goMCRoot, "temp", "cache", "worldgen", filepath.Base(jsonDir))
+	if _, err := os.Stat(worldgenDir); os.IsNotExist(err) {
+		// Positional-argument flow (generating from an explicit JSON directory)
+		// does not extract worldgen data, so there is nothing to generate.
+		return nil
+	}
 	vanilladataDir := filepath.Join(goMCRoot, "..", "..", "internal", "dimension", "overworld", "vanilladata")
 	return GenerateVanilladata(worldgenDir, vanilladataDir)
 }

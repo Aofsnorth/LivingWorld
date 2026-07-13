@@ -13,12 +13,18 @@ import (
 // GenerateVanilladata reads extracted vanilla worldgen JSON/NBT files from srcDir
 // and writes generated Go source files for the vanilladata package into dstDir.
 func GenerateVanilladata(srcDir, dstDir string) error {
+	if _, err := os.Stat(srcDir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("worldgen source directory not found: %s", srcDir)
+		}
+		return err
+	}
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return err
 	}
 
 	density := map[string]json.RawMessage{}
-	if err := collectJSON(filepath.Join(srcDir, "density_function", "overworld"), "overworld", density); err != nil {
+	if err := collectJSON(filepath.Join(srcDir, "density_function"), "", density); err != nil {
 		return err
 	}
 
@@ -91,7 +97,7 @@ func writeDataGo(dstDir string, density, noiseSettings, noises map[string]json.R
 	}
 	defer f.Close()
 
-	if _, err := fmt.Fprint(f, "package vanilladata\n\nimport \"encoding/json\"\n\n"); err != nil {
+	if _, err := fmt.Fprint(f, generatedHeader("vanillagen.go", "worldgen")+"\npackage vanilladata\n\nimport \"encoding/json\"\n\n"); err != nil {
 		return err
 	}
 	if err := writeMap(f, "DensityFunctions", density); err != nil {
@@ -207,7 +213,7 @@ func copyFile(src, dst string) error {
 
 func writeStructuresGo(dstDir string) error {
 	path := filepath.Join(dstDir, "structures.go")
-	content := `package vanilladata
+	content := generatedHeader("vanillagen.go", "structures") + `package vanilladata
 
 import (
 	"embed"

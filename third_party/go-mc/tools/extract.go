@@ -268,7 +268,6 @@ func extractWorldgenFromZipReader(zr *zip.Reader, outDir string) error {
 		"data/minecraft/worldgen/density_function/",
 		"data/minecraft/worldgen/noise/",
 		"data/minecraft/worldgen/noise_settings/",
-		"data/minecraft/worldgen/world_preset/",
 		"data/minecraft/structure/",
 	}
 
