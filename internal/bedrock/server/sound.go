@@ -25,12 +25,12 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
-// Bedrock hardcoded LevelSoundEvent ids. From the Bedrock protocol
-// reference; values are stable across versions for the legacy events.
+// Bedrock hardcoded LevelSoundEvent names. These correspond to the
+// string identifiers in gophertunnel v1.57+ (modern Bedrock).
 const (
-	bedrockSoundBow        uint32 = 5
-	bedrockSoundHurtFlesh  uint32 = 24
-	bedrockSoundMobWarning uint32 = 33 // creeper primed-hiss
+	bedrockSoundBow        = packet.SoundEventBow
+	bedrockSoundHurtFlesh  = packet.SoundEventHurt
+	bedrockSoundMobWarning = packet.SoundEventMobWarning // creeper primed-hiss
 )
 
 // mobPosOf looks up the mob's current position by its entityID so

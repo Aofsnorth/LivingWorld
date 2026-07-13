@@ -34,7 +34,9 @@ worlds-nether/
 worlds-end/
 .kiro
 
-docs/
+docs/*
+!docs/superpowers/
+!docs/superpowers/**
 plan/
 
 VANILLA_FEATURE_INVENTORY.md

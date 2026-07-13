@@ -57,7 +57,7 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		_, _ = pk.VarInt(1).WriteTo(&buf)           // known pack count
 		_, _ = pk.String("minecraft").WriteTo(&buf) // namespace
 		_, _ = pk.String("core").WriteTo(&buf)      // id
-		_, _ = pk.String("26.1").WriteTo(&buf)      // version
+		_, _ = pk.String("26.2").WriteTo(&buf)      // version
 		if err := conn.WritePacket(pk.Packet{
 			ID:   int32(packetid.ClientboundConfigSelectKnownPacks),
 			Data: buf.Bytes(),

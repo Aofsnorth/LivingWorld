@@ -49,7 +49,7 @@ func encodePlayerMetadata(p player.PlayerSnapshot) []byte {
 	return buf.Bytes()
 }
 
-func (h *Handler775) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPos world.Position, exists bool) error {
+func (h *Handler776) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPos world.Position, exists bool) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}

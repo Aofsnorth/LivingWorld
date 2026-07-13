@@ -22,7 +22,7 @@ func main() {
 
 	// Replicate SendChunk's conversion for chunk (5,7).
 	wchunk := g.Generate(5, 7)
-	ch := dfchunk.New(airRID, rng)
+	ch := dfchunk.New(dfworld.DefaultBlockRegistry, rng)
 	maxY := int(rng.Max())
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {

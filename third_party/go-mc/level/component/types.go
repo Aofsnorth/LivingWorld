@@ -247,6 +247,11 @@ type SlotData struct {
 	RawComponents []byte
 }
 
+// ItemStackTemplate is an alias for SlotData for 26.2+ components that use
+// the server-side item-stack-template type (e.g. sulfur_cube_content).
+// The wire format is identical to SlotData.
+type ItemStackTemplate = SlotData
+
 func (s *SlotData) ReadFrom(r io.Reader) (n int64, err error) {
 	n, err = s.Count.ReadFrom(r)
 	if err != nil || s.Count <= 0 {

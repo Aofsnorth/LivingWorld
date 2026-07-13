@@ -151,12 +151,16 @@ func (d *MojangLoginHandler) AcceptLogin(conn *net.Conn, protocol int32) (name s
 		}
 	}
 	// send login success
-	err = conn.WritePacket(pk.Marshal(
-		packetid.ClientboundLoginLoginFinished,
+	// strictErrorHandling: 1.21.5+ / protocol 776+ field (false = client silently ignores packet errors)
+	fields := []pk.FieldEncoder{
 		pk.UUID(id),
 		pk.String(name),
 		pk.Array(properties),
-	))
+	}
+	if protocol >= 776 {
+		fields = append(fields, pk.Boolean(false))
+	}
+	err = conn.WritePacket(pk.Marshal(packetid.ClientboundLoginLoginFinished, fields...))
 	if err != nil {
 		return
 	}
@@ -169,7 +173,6 @@ func (d *MojangLoginHandler) AcceptLogin(conn *net.Conn, protocol int32) (name s
 
 	// SKIP config phase - go directly to play state
 	// TODO: fix packet IDs before enabling config phase
-	_ = protocol
 	return
 }
 

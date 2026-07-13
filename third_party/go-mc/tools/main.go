@@ -42,6 +42,18 @@ var generators = []generator{
 	{"registryid", genRegistryID},
 	{"biome", genBiome},
 	{"lang", genLang},
+	{"vanilladata", genVanilladata},
+}
+
+func genVanilladata(jsonDir, goMCRoot string) error {
+	worldgenDir := filepath.Join(goMCRoot, "temp", "cache", "worldgen", filepath.Base(jsonDir))
+	if _, err := os.Stat(worldgenDir); os.IsNotExist(err) {
+		// Positional-argument flow (generating from an explicit JSON directory)
+		// does not extract worldgen data, so there is nothing to generate.
+		return nil
+	}
+	vanilladataDir := filepath.Join(goMCRoot, "..", "..", "internal", "dimension", "overworld", "vanilladata")
+	return GenerateVanilladata(worldgenDir, vanilladataDir)
 }
 
 func main() {
@@ -94,9 +106,24 @@ func main() {
 				os.Exit(1)
 			}
 			jsonDir = dir
+		}
 
-			if dryRun {
-				return
+		if dryRun {
+			return
+		}
+
+		// Extract worldgen JSON and NBT files for the new vanilladata package.
+		cacheDir := filepath.Join(goMCRoot, "temp", "cache")
+		worldgenDir := filepath.Join(cacheDir, "worldgen", version)
+		if _, err := os.Stat(worldgenDir); os.IsNotExist(err) || forceExtract {
+			jarPath, err := downloadServerJar(cacheDir, goMCRoot, version)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "tools: download server jar: %v\n", err)
+				os.Exit(1)
+			}
+			if err := ExtractWorldgenData(jarPath, worldgenDir); err != nil {
+				fmt.Fprintf(os.Stderr, "tools: extract worldgen: %v\n", err)
+				os.Exit(1)
 			}
 		}
 
@@ -139,14 +166,19 @@ func detectGoMCRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting working directory: %v", err)
 	}
-	for d := wd; d != "/" && d != "."; d = filepath.Dir(d) {
+	for d := wd; d != "/" && d != "."; {
 		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
-		if err != nil {
-			continue
+		if err == nil {
+			content := strings.ReplaceAll(string(data), "\r\n", "\n")
+			if strings.Contains(content, "module github.com/Tnze/go-mc\n") {
+				return d, nil
+			}
 		}
-		if strings.Contains(string(data), "module github.com/Tnze/go-mc\n") {
-			return d, nil
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
 		}
+		d = parent
 	}
 	return "", fmt.Errorf("cannot find go-mc root from %s (need go.mod with module github.com/Tnze/go-mc)", wd)
 }

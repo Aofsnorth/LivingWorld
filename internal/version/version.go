@@ -130,13 +130,13 @@ var (
 	regMu  sync.RWMutex
 	registry = []LWVersion{
 		{
-			Label:           "26 (A)",
-			JavaProtocol:    775,
-			JavaBuilds:      []string{"1.21.1", "1.21.2"},
-			BedrockProtocol: 975,
-			BedrockBuilds:   []string{"1.26.10", "1.26.20", "1.26.23"},
+			Label:           "26 (B)",
+			JavaProtocol:    776,
+			JavaBuilds:      []string{"26.2"},
+			BedrockProtocol: 1001,
+			BedrockBuilds:   []string{"26.32"},
 			Capabilities:    CapCustomPlayerModels | CapNetherUpdateNotes,
-			ChangelogURL:    "https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-A",
+			ChangelogURL:    "https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B",
 		},
 	}
 )

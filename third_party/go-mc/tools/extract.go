@@ -6,14 +6,22 @@ package main
 //  2. Container extracts data from the jar (no internet needed)
 //  3. Go host generates Go source from the extracted JSON
 //
+// Worldgen data (density functions, noise, noise settings, world presets, and
+// structure NBTs) is also extracted from the server jar into
+// temp/cache/worldgen/<version>/ by ExtractWorldgenData.
+//
 // Directory layout (relative to go-mc root):
 //
 //	tools/java/                     Java extractor sources (committed)
 //	temp/cache/                     cached server jars + libs (gitignored)
+//	temp/cache/worldgen/<version>/  worldgen JSON + NBT (gitignored)
 //	temp/jsons/<version>/           output JSON files (gitignored)
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,11 +67,25 @@ func runExtract(goMCRoot, version, runtime string, dryRun bool) (string, error) 
 	fmt.Fprintln(os.Stderr)
 	if runtime == "host" {
 		fmt.Fprintln(os.Stderr, "Phase 2: Extracting data on host directly...")
+
+		classDir := filepath.Join(cacheDir, "extract-classes")
+		if err := os.MkdirAll(classDir, 0o755); err != nil {
+			return "", fmt.Errorf("creating extract class dir: %w", err)
+		}
 		if dryRun {
-			fmt.Fprintf(os.Stderr, "  command: java --source 21 %s %s\n", filepath.Join(javaDir, "ExtractAll.java"), version)
+			fmt.Fprintf(os.Stderr, "  command: javac -d %s %s && java -cp %s ExtractAll %s\n",
+				classDir, filepath.Join(javaDir, "ExtractAll.java"), classDir, version)
 			return filepath.Join(jsonsDir, version), nil
 		}
-		cmd := exec.Command("java", "--source", "21", filepath.Join(javaDir, "ExtractAll.java"), version)
+
+		compile := exec.Command("javac", "-d", classDir, filepath.Join(javaDir, "ExtractAll.java"))
+		compile.Stdout = os.Stdout
+		compile.Stderr = os.Stderr
+		if err := compile.Run(); err != nil {
+			return "", fmt.Errorf("compiling ExtractAll.java: %w", err)
+		}
+
+		cmd := exec.Command("java", "-cp", classDir, "ExtractAll", version)
 		cmd.Env = append(os.Environ(),
 			"MC_CACHE_DIR="+cacheDir,
 			"MC_JSONS_DIR="+jsonsDir,
@@ -175,4 +197,111 @@ func detectRuntime() string {
 		return "docker"
 	}
 	return ""
+}
+
+// ExtractWorldgenData pulls worldgen JSON and NBT files from a Minecraft server
+// jar into outDir. The jar may be the bundled distribution jar (which contains an
+// inner server jar) or the inner server jar itself.
+func ExtractWorldgenData(jar, outDir string) error {
+	zr, err := zip.OpenReader(jar)
+	if err != nil {
+		return fmt.Errorf("open server jar %s: %w", jar, err)
+	}
+	defer zr.Close()
+
+	// If the supplied jar is a bundled distribution (1.21+), extract and process
+	// the inner server jar.
+	if !zipHasPrefix(&zr.Reader, "data/minecraft/") {
+		inner, err := findBundledInnerJar(&zr.Reader)
+		if err != nil {
+			return fmt.Errorf("locate bundled inner jar: %w", err)
+		}
+		data, err := readZipFile(inner)
+		if err != nil {
+			return fmt.Errorf("read bundled inner jar: %w", err)
+		}
+		br := bytes.NewReader(data)
+		innerZR, err := zip.NewReader(br, int64(len(data)))
+		if err != nil {
+			return fmt.Errorf("open bundled inner jar: %w", err)
+		}
+		return extractWorldgenFromZipReader(innerZR, outDir)
+	}
+	return extractWorldgenFromZipReader(&zr.Reader, outDir)
+}
+
+func zipHasPrefix(zr *zip.Reader, prefix string) bool {
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func findBundledInnerJar(zr *zip.Reader) (*zip.File, error) {
+	var inner *zip.File
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "META-INF/versions/") && strings.HasSuffix(f.Name, ".jar") {
+			if inner == nil || f.UncompressedSize64 > inner.UncompressedSize64 {
+				inner = f
+			}
+		}
+	}
+	if inner == nil {
+		return nil, fmt.Errorf("no inner server jar found in bundled jar")
+	}
+	return inner, nil
+}
+
+func readZipFile(f *zip.File) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+func extractWorldgenFromZipReader(zr *zip.Reader, outDir string) error {
+	prefixes := []string{
+		"data/minecraft/worldgen/density_function/",
+		"data/minecraft/worldgen/noise/",
+		"data/minecraft/worldgen/noise_settings/",
+		"data/minecraft/structure/",
+	}
+
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, "/") {
+			continue
+		}
+		for _, p := range prefixes {
+			if !strings.HasPrefix(f.Name, p) {
+				continue
+			}
+			rel := strings.TrimPrefix(strings.TrimPrefix(f.Name, "data/minecraft/"), "worldgen/")
+			// Vanilla stores structure templates under `data/minecraft/structure/...` (singular).
+			// Map them to `structures/...` (plural) so the rest of the pipeline uses a consistent
+			// key prefix for `LoadStructure`.
+			if strings.HasPrefix(rel, "structure/") {
+				rel = "structures/" + strings.TrimPrefix(rel, "structure/")
+			}
+			if !filepath.IsLocal(rel) {
+				continue
+			}
+			dst := filepath.Join(outDir, rel)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			data, err := readZipFile(f)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, data, 0o644); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
 }

@@ -5,7 +5,7 @@ import (
 
 	lwworld "livingworld/internal/world"
 
-	dfchunk "github.com/df-mc/dragonfly/server/world/chunk"
+	dfworld "github.com/df-mc/dragonfly/server/world"
 )
 
 // ridCache memoizes world state ID -> Bedrock runtime ID. Chunk serialization
@@ -95,7 +95,7 @@ var javaNameRemaps = map[string]string{
 // BedrockRIDToLivingWorldBlockID maps a Bedrock runtime ID back to a canonical
 // world block ID by resolving its namespaced name in the global palette.
 func BedrockRIDToLivingWorldBlockID(rid uint32) int32 {
-	name, _, ok := dfchunk.RuntimeIDToState(rid)
+	name, _, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(rid)
 	if !ok {
 		return lwworld.AirID
 	}

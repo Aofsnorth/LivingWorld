@@ -19,7 +19,6 @@ func (c *ChunkConverter) SendChunk(
 	chunkCache *ChunkCache,
 ) {
 	rng := dfworld.Overworld.Range()
-	airRID := BlockRID("minecraft:air")
 	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
 	maxY := int(rng.Max()) // 319; world blocks live at Y >= 0
 
@@ -31,7 +30,7 @@ func (c *ChunkConverter) SendChunk(
 
 	if !ok {
 		wchunk := w.LoadChunk(cx, cz)
-		ch = dfchunk.New(airRID, rng)
+		ch = dfchunk.New(dfworld.DefaultBlockRegistry, rng)
 
 		for x := 0; x < 16; x++ {
 			for z := 0; z < 16; z++ {
@@ -118,7 +117,6 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 ) {
 	rng := dfworld.Overworld.Range()
 	center := pk.Position
-	airRID := BlockRID("minecraft:air")
 	plainsBiomeID := uint32(dfbiome.Plains{}.EncodeBiome())
 	maxY := int(rng.Max())
 
@@ -145,7 +143,7 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		chunkCache.Mu.RUnlock()
 		if !ok {
 			wchunk := w.LoadChunk(int(absX), int(absZ))
-			ch = dfchunk.New(airRID, rng)
+			ch = dfchunk.New(dfworld.DefaultBlockRegistry, rng)
 			for x := 0; x < 16; x++ {
 				for z := 0; z < 16; z++ {
 					// Canonical Y: scan the full -64..319 column (see SendChunk).
