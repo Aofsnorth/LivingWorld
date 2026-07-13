@@ -20,6 +20,9 @@ type PRNG interface {
 	SetSeed(seed int64)
 	// Fork returns an independent stream derived from this one.
 	Fork() PRNG
+	// Consume advances the stream without returning values. Used by the
+	// legacy PerlinNoise branch to skip octaves whose amplitude is 0.
+	Consume(count int)
 }
 
 // Xoroshirolike is a type constraint covering the two PRNG backends

@@ -170,3 +170,11 @@ func (x *Xoroshiro) Fork() PRNG {
 func (x *Xoroshiro) ForkPositional() *XoroshiroPositional {
 	return &XoroshiroPositional{seedLo: x.next(), seedHi: x.next()}
 }
+
+// Consume advances the xoroshiro state without returning values, matching
+// XoroshiroRandomSource.consumeCount.
+func (x *Xoroshiro) Consume(count int) {
+	for i := 0; i < count; i++ {
+		x.next()
+	}
+}

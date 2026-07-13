@@ -71,6 +71,12 @@ func (n *improvedNoise) pAt(i int) int { return int(n.p[i&255]) }
 
 // noise samples this octave at (x,y,z) in roughly [-1, 1].
 func (n *improvedNoise) noise(x, y, z float64) float64 {
+	return n.sample(x, y, z, 0, 0)
+}
+
+// sample is the full ImprovedNoise.sample implementation, including the
+// yScale/yLimit smearing used by BlendedNoise.
+func (n *improvedNoise) sample(x, y, z, yScale, yLimit float64) float64 {
 	dx := x + n.xo
 	dy := y + n.yo
 	dz := z + n.zo
@@ -80,25 +86,35 @@ func (n *improvedNoise) noise(x, y, z float64) float64 {
 	fx := dx - float64(ix)
 	fy := dy - float64(iy)
 	fz := dz - float64(iz)
-	return n.sampleAndLerp(ix, iy, iz, fx, fy, fz)
+
+	var y6 float64
+	if yScale != 0 {
+		t := fy
+		if yLimit >= 0 && yLimit < fy {
+			t = yLimit
+		}
+		y6 = math.Floor(t/yScale+1e-7) * yScale
+	}
+
+	return n.sampleAndLerp(ix, iy, iz, fx, fy-y6, fz, fy)
 }
 
-func (n *improvedNoise) sampleAndLerp(gx, gy, gz int, dx, dy, dz float64) float64 {
+func (n *improvedNoise) sampleAndLerp(gx, gy, gz int, dx, yGradient, dz, ySmooth float64) float64 {
 	i := n.pAt(gx)
 	j := n.pAt(gx + 1)
 	k := n.pAt(i + gy)
 	l := n.pAt(i + gy + 1)
 	m := n.pAt(j + gy)
 	nn := n.pAt(j + gy + 1)
-	d := gradDot(n.pAt(k+gz), dx, dy, dz)
-	e := gradDot(n.pAt(m+gz), dx-1, dy, dz)
-	f := gradDot(n.pAt(l+gz), dx, dy-1, dz)
-	g := gradDot(n.pAt(nn+gz), dx-1, dy-1, dz)
-	h := gradDot(n.pAt(k+gz+1), dx, dy, dz-1)
-	o := gradDot(n.pAt(m+gz+1), dx-1, dy, dz-1)
-	q := gradDot(n.pAt(l+gz+1), dx, dy-1, dz-1)
-	s := gradDot(n.pAt(nn+gz+1), dx-1, dy-1, dz-1)
-	return lerp3(smoothstep(dx), smoothstep(dy), smoothstep(dz), d, e, f, g, h, o, q, s)
+	d := gradDot(n.pAt(k+gz), dx, yGradient, dz)
+	e := gradDot(n.pAt(m+gz), dx-1, yGradient, dz)
+	f := gradDot(n.pAt(l+gz), dx, yGradient-1, dz)
+	g := gradDot(n.pAt(nn+gz), dx-1, yGradient-1, dz)
+	h := gradDot(n.pAt(k+gz+1), dx, yGradient, dz-1)
+	o := gradDot(n.pAt(m+gz+1), dx-1, yGradient, dz-1)
+	q := gradDot(n.pAt(l+gz+1), dx, yGradient-1, dz-1)
+	s := gradDot(n.pAt(nn+gz+1), dx-1, yGradient-1, dz-1)
+	return lerp3(smoothstep(dx), smoothstep(ySmooth), smoothstep(dz), d, e, f, g, h, o, q, s)
 }
 
 // Perlin is a single-octave gradient field used directly by the carver, ore,
@@ -166,6 +182,28 @@ func NewPerlinNoise(r *Xoroshiro, firstOctave int, amplitudes []float64) *Perlin
 	return pn
 }
 
+// NewPerlinNoiseLegacy builds the legacy branch of PerlinNoise: the first
+// -firstOctave octaves are created sequentially from the source (no positional
+// forking), with consume(262) called for skipped/zero amplitudes. This is the
+// path BlendedNoise uses.
+func NewPerlinNoiseLegacy(r PRNG, firstOctave int, amplitudes []float64) *PerlinNoise {
+	pn := &PerlinNoise{
+		octaves:    make([]*improvedNoise, len(amplitudes)),
+		amplitudes: amplitudes,
+	}
+	for i := -firstOctave; i >= 0; i-- {
+		if i >= 0 && i < len(amplitudes) && amplitudes[i] != 0 {
+			pn.octaves[i] = newImprovedNoise(r)
+		} else {
+			r.Consume(262)
+		}
+	}
+	n := len(amplitudes)
+	pn.lowestFreqInputFactor = math.Pow(2, float64(firstOctave))
+	pn.lowestFreqValueFactor = math.Pow(2, float64(n-1)) / (math.Pow(2, float64(n)) - 1)
+	return pn
+}
+
 // perlinWrap is PerlinNoise.wrap: keeps coordinates within a 2^25 window so the
 // double lattice indices stay exact.
 func perlinWrap(v float64) float64 {
@@ -174,16 +212,51 @@ func perlinWrap(v float64) float64 {
 
 // GetValue samples the octave stack at (x,y,z).
 func (pn *PerlinNoise) GetValue(x, y, z float64) float64 {
+	return pn.sample(x, y, z, 0, 0)
+}
+
+// Sample is the full PerlinNoise.sample with optional yScale/yLimit.
+func (pn *PerlinNoise) sample(x, y, z, yScale, yLimit float64) float64 {
 	var total float64
 	inFactor := pn.lowestFreqInputFactor
 	valFactor := pn.lowestFreqValueFactor
 	for i, oct := range pn.octaves {
 		if oct != nil {
-			g := oct.noise(perlinWrap(x*inFactor), perlinWrap(y*inFactor), perlinWrap(z*inFactor))
+			g := oct.sample(
+				perlinWrap(x*inFactor),
+				perlinWrap(y*inFactor),
+				perlinWrap(z*inFactor),
+				yScale*inFactor,
+				yLimit*inFactor,
+			)
 			total += pn.amplitudes[i] * g * valFactor
 		}
 		inFactor *= 2
 		valFactor /= 2
 	}
 	return total
+}
+
+// GetOctaveNoise returns the i-th octave from the highest frequency down
+// (0 = highest, 1 = second highest, ...). Returns nil for missing/zeroed octaves.
+func (pn *PerlinNoise) GetOctaveNoise(i int) *improvedNoise {
+	idx := len(pn.octaves) - 1 - i
+	if idx < 0 || idx >= len(pn.octaves) {
+		return nil
+	}
+	return pn.octaves[idx]
+}
+
+// EdgeValue returns the maximum value the octave stack can reach when all
+// octaves are clamped at the given edge value. This is PerlinNoise.edgeValue.
+func (pn *PerlinNoise) EdgeValue(x float64) float64 {
+	var value float64
+	valFactor := pn.lowestFreqValueFactor
+	for i := range pn.octaves {
+		if pn.octaves[i] != nil {
+			value += pn.amplitudes[i] * x * valFactor
+		}
+		valFactor /= 2
+	}
+	return value
 }

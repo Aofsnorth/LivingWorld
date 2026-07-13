@@ -9,31 +9,33 @@
 package context
 
 import (
+	"encoding/json"
+
 	"livingworld/internal/dimension/overworld/biome"
 	"livingworld/internal/dimension/overworld/carver"
 	"livingworld/internal/dimension/overworld/climate"
 	"livingworld/internal/dimension/overworld/density"
-	"livingworld/internal/dimension/overworld/feature"
 	"livingworld/internal/dimension/overworld/noise"
 	"livingworld/internal/dimension/overworld/ore"
 	"livingworld/internal/dimension/overworld/registry"
 	"livingworld/internal/dimension/overworld/structure"
 	"livingworld/internal/dimension/overworld/surface"
+	"livingworld/internal/dimension/overworld/vanilladata"
 )
 
 // Context is the Overworld's per-world worldgen context. It is
 // constructed once via New and reused for every chunk.
 type Context struct {
-	Seed      int64
-	Reg       *registry.Registry
-	Sampler   *climate.Sampler
-	Final     density.FinalDensity
-	Aquifer   *aquiferHelper
-	Surface   *surface.Program
-	Carvers   []carver.Carver
-	Ores      []ore.Config
-	Struct    *structure.Planner
-	NoiseCtx  density.Context
+	Seed     int64
+	Reg      *registry.Registry
+	Sampler  *climate.Sampler
+	Final    density.FinalDensity
+	Aquifer  *aquiferHelper
+	Surface  *surface.Program
+	Carvers  []carver.Carver
+	Ores     []ore.Config
+	Struct   *structure.Planner
+	NoiseCtx density.Context
 }
 
 // aquiferHelper bridges the aquifer package's constructor with the
@@ -50,24 +52,36 @@ type aquiferHelper struct {
 func New(seed int64) *Context {
 	reg := registry.NewOverworld()
 	seeds := climate.AxisSeeds{
-		TemperatureFirst: 0x7E2A_F1A0 ^ seed,
-		TemperatureSecond: 0x8A92_F1A0 ^ seed,
-		HumidityFirst: 0x7E2A_F1A0 ^ seed*31,
-		HumiditySecond: 0x8A92_F1A0 ^ seed*31,
-		ContinentalnessFirst: 0x1_F1A0 ^ seed*37,
+		TemperatureFirst:      0x7E2A_F1A0 ^ seed,
+		TemperatureSecond:     0x8A92_F1A0 ^ seed,
+		HumidityFirst:         0x7E2A_F1A0 ^ seed*31,
+		HumiditySecond:        0x8A92_F1A0 ^ seed*31,
+		ContinentalnessFirst:  0x1_F1A0 ^ seed*37,
 		ContinentalnessSecond: 0x8A92_F1A0 ^ seed*37,
-		ErosionFirst: 0x7E2A_F1A0 ^ seed*41,
-		ErosionSecond: 0x8A92_F1A0 ^ seed*41,
-		WeirdnessFirst: 0x7E2A_F1A0 ^ seed*43,
-		WeirdnessSecond: 0x8A92_F1A0 ^ seed*43,
-		DepthFirst: 0x7E2A_F1A0 ^ seed*47,
-		DepthSecond: 0x8A92_F1A0 ^ seed*47,
+		ErosionFirst:          0x7E2A_F1A0 ^ seed*41,
+		ErosionSecond:         0x8A92_F1A0 ^ seed*41,
+		WeirdnessFirst:        0x7E2A_F1A0 ^ seed*43,
+		WeirdnessSecond:       0x8A92_F1A0 ^ seed*43,
+		DepthFirst:            0x7E2A_F1A0 ^ seed*47,
+		DepthSecond:           0x8A92_F1A0 ^ seed*47,
 	}
 	sampler := climate.NewSampler(seeds, 1.0/4.0)
-	nc := density.Context{Seed: seed, Climate: samplerAxisAdapterFor(sampler)}
-	final := density.BuildFinalDensity(nc, nc.Climate, density.NoiseSet{})
+
+	noises := buildNoiseSet(seed)
+	noiseCtx := density.NewContext(seed, noises)
+
+	settingsRaw, ok := vanilladata.LoadNoiseSettings("overworld")
+	if !ok {
+		panic("overworld noise_settings not found")
+	}
+	tree, err := density.ParseFinalDensity(noiseCtx, settingsRaw)
+	if err != nil {
+		panic(err)
+	}
+	final := density.FinalDensity{Tree: tree}
+
 	aq := &aquiferHelper{Apply: nil}
-	_ = aq // populated by dimension facade after wiring aquifer package
+	_ = aq
 	surf := surface.NewOverworldProgram()
 	cars := []carver.Carver{carver.NewOverworldCave(), carver.NewOverworldCanyon()}
 	ores := ore.AllOverworldOres()
@@ -82,40 +96,25 @@ func New(seed int64) *Context {
 		Carvers:  cars,
 		Ores:     ores,
 		Struct:   planner,
-		NoiseCtx: nc,
+		NoiseCtx: noiseCtx,
 	}
 }
 
-// samplerAxisAdapter lets a climate.Sampler satisfy the
-// density.ClimateReader interface without an import cycle.
-type samplerAxisAdapter struct{ S *climate.Sampler }
-
-func (a samplerAxisAdapter) Axis(axis int, x, y, z int) float64 {
-	p := a.S.Sample(x, y, z)
-	switch axis {
-	case 0:
-		return p.Temperature
-	case 1:
-		return p.Humidity
-	case 2:
-		return p.Continentalness
-	case 3:
-		return p.Erosion
-	case 4:
-		return p.Weirdness
-	case 5:
-		return p.Depth
+func buildNoiseSet(seed int64) density.NoiseSet {
+	type params struct {
+		FirstOctave int       `json:"firstOctave"`
+		Amplitudes  []float64 `json:"amplitudes"`
 	}
-	return 0
-}
 
-func samplerAxisAdapterFor(s *climate.Sampler) samplerAxisAdapter {
-	return samplerAxisAdapter{S: s}
-}
-
-func samplerAxisAdapterOrig(s *climate.Sampler) density.ClimateReader { return samplerAxisAdapterFor(s) }
-func init() {
-	_ = samplerAxisAdapterOrig
-	_ = feature.AllSteps
-	_ = noise.NewXoroshiro
+	pos := noise.NewXoroshiro(uint64(seed)).ForkPositional()
+	noises := make(density.NoiseSet, len(vanilladata.Noises))
+	for name, raw := range vanilladata.Noises {
+		var p params
+		if err := json.Unmarshal(raw, &p); err != nil {
+			panic(err)
+		}
+		r := pos.FromHashOf(name)
+		noises[name] = noise.NewNormalNoiseFromParams(r, p.FirstOctave, p.Amplitudes)
+	}
+	return noises
 }

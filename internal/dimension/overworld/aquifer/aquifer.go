@@ -30,10 +30,10 @@ type Aquifer struct {
 }
 
 // New builds an aquifer for the given density context.
-func New(c density.Context, cr density.ClimateReader, seaLevel int) *Aquifer {
+func New(c density.Context, seaLevel int) *Aquifer {
 	return &Aquifer{
 		SeaLevel: seaLevel,
-		Fields:   density.BuildAquiferFields(c, cr),
+		Fields:   density.BuildAquiferFields(c),
 	}
 }
 

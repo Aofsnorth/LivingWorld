@@ -104,6 +104,7 @@ func (r *WorldgenRandom) NextFloat() float32           { return r.backend.NextFl
 func (r *WorldgenRandom) NextDouble() float64          { return r.backend.NextDouble() }
 func (r *WorldgenRandom) NextBoolean() bool            { return r.backend.NextBoolean() }
 func (r *WorldgenRandom) Fork() PRNG                   { return r.backend.Fork() }
+func (r *WorldgenRandom) Consume(n int)                { r.backend.Consume(n) }
 
 // --- positional forking (vanilla XoroshiroPositionalRandomFactory) ----
 

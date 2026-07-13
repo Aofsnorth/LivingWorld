@@ -94,3 +94,11 @@ func (l *Legacy) Fork() PRNG {
 	n.advance()
 	return n
 }
+
+// Consume advances the LCG state without returning values, matching
+// LegacyRandomSource.consumeCount.
+func (l *Legacy) Consume(count int) {
+	for i := 0; i < count; i++ {
+		l.advance()
+	}
+}
