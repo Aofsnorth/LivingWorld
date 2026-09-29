@@ -1,0 +1,188 @@
+package registry
+
+import (
+	"encoding/json"
+	"os"
+	"slices"
+	"testing"
+)
+
+// These tests assert the DATA CONTRACT we build, not a round-tripped NBT
+// decode. Whether the bytes are actually accepted is decided by RegCheck
+// (tools/java/RegCheck.java), which runs the real 26.3 codecs over the exact
+// bytes cmd/regdump produces. These tests keep the table from drifting.
+
+// 26.3 made monster_spawn_light_level an IntProvider. Sending a bare int made
+// the whole minecraft:overworld entry fail to parse on a 26.3 client.
+func TestDimensionTypeMonsterSpawnLightIsIntProvider(t *testing.T) {
+	dim := buildOverworldDimension()
+
+	if got := dim.MonsterSpawnLightLevel.Type; got != "minecraft:uniform" {
+		t.Errorf("provider type = %q, want minecraft:uniform", got)
+	}
+	if dim.MonsterSpawnLightLevel.MinInclusive != 0 {
+		t.Errorf("min_inclusive = %d, want 0", dim.MonsterSpawnLightLevel.MinInclusive)
+	}
+	if dim.MonsterSpawnLightLevel.MaxInclusive != 7 {
+		t.Errorf("max_inclusive = %d, want 7", dim.MonsterSpawnLightLevel.MaxInclusive)
+	}
+	if dim.MonsterSpawnBlockLightLimit != 0 {
+		t.Errorf("monster_spawn_block_light_limit = %d, want 0", dim.MonsterSpawnBlockLightLimit)
+	}
+}
+
+// The attributes map vanilla actually ENCODES over the network carries only
+// audio/visual keys. The gameplay attributes (bed_rule, straw_bed_rule,
+// respawn_anchor_works, nether_portal_spawns_piglin) exist in the datapack
+// JSON but are not part of DimensionType.NETWORK_CODEC's output — the client
+// falls back to local defaults for them. Verified field-by-field against
+// vanilla's own encoding via tools/java/VanillaDump + tools/java/Diff.
+func TestOverworldAttributesMatchVanillaNetworkForm(t *testing.T) {
+	attrs := buildOverworldAttributes()
+
+	want := []string{
+		"minecraft:audio/ambient_sounds",
+		"minecraft:audio/background_music",
+		"minecraft:visual/ambient_light_color",
+		"minecraft:visual/cloud_color",
+		"minecraft:visual/cloud_height",
+		"minecraft:visual/fog_color",
+		"minecraft:visual/sky_color",
+	}
+	for _, k := range want {
+		if _, ok := attrs[k]; !ok {
+			t.Errorf("attribute %q missing; vanilla's network form includes it", k)
+		}
+	}
+	if len(attrs) != len(want) {
+		t.Errorf("have %d attributes, want exactly %d (vanilla network form)", len(attrs), len(want))
+	}
+	for _, k := range []string{
+		"minecraft:gameplay/bed_rule",
+		"minecraft:gameplay/straw_bed_rule",
+		"minecraft:gameplay/respawn_anchor_works",
+		"minecraft:gameplay/nether_portal_spawns_piglin",
+	} {
+		if _, ok := attrs[k]; ok {
+			t.Errorf("attribute %q must NOT be sent; vanilla omits it over the network", k)
+		}
+	}
+}
+
+// Holder<SoundEvent> fields are encoded as plain id strings — the same form
+// vanilla's DimensionType.NETWORK_CODEC emits (verified with tools/java/Diff:
+// our earlier {sound_id:...} compounds showed up as TYPE mismatches against
+// vanilla's own bytes). They bind to the client's static sound_event registry.
+func TestOverworldSoundFieldsAreReferenceStrings(t *testing.T) {
+	attrs := buildOverworldAttributes()
+
+	mood := attrs["minecraft:audio/ambient_sounds"].(map[string]any)["mood"].(map[string]any)
+	checkSoundRef(t, "ambient_sounds.mood.sound", mood["sound"], "minecraft:ambient.cave")
+	if _, isFloat64 := mood["offset"].(float64); !isFloat64 {
+		t.Errorf("ambient_sounds.mood.offset = %T, want float64 (NBT double, like vanilla)", mood["offset"])
+	}
+
+	music := attrs["minecraft:audio/background_music"].(map[string]any)
+	for _, key := range []string{"creative", "default"} {
+		entry := music[key].(map[string]any)
+		want := "minecraft:music.creative"
+		if key == "default" {
+			want = "minecraft:music.game"
+		}
+		checkSoundRef(t, "background_music."+key+".sound", entry["sound"], want)
+	}
+}
+
+func checkSoundRef(t *testing.T, field string, got any, wantID string) {
+	t.Helper()
+	if got != wantID {
+		t.Errorf("%s = %v (%T), want plain reference string %q", field, got, got, wantID)
+	}
+}
+
+// The dimension_type infiniburn field is "#minecraft:infiniburn_overworld",
+// and the 26.3 client resolves it against the block tags sent in UpdateTags.
+// Missing that section aborted every join with "Missing tag ... in
+// 'minecraft:block'". The ids must match the minecraft:block registry order
+// of the current vanilla version (26.3: netherrack=334, magma_block=729).
+func TestInfiniburnBlockTagData(t *testing.T) {
+	if BlockTagNameInfiniburnOverworld != "minecraft:infiniburn_overworld" {
+		t.Fatalf("tag name = %q", BlockTagNameInfiniburnOverworld)
+	}
+	got := BlockTagInfiniburnOverworld()
+	want := []int32{334, 729} // netherrack, magma_block
+	if len(got) != len(want) {
+		t.Fatalf("have %d members, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("member[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+// Cross-check against the extracted 26.3 registries dump when it is present
+// (third_party/go-mc/temp/jsons is generated by the extract pipeline and may
+// be absent on a clean checkout). This trips when a version bump changes the
+// block registry ids without updating the tag data.
+func TestInfiniburnBlockTagIDsMatchExtractedRegistries(t *testing.T) {
+	path := "../../../third_party/go-mc/temp/jsons/26.3/registries.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("extracted registries.json not present (%v); run the extract pipeline to enable", err)
+	}
+	var dump struct {
+		Block struct {
+			Entries map[string]struct {
+				ProtocolID int32 `json:"protocol_id"`
+			} `json:"entries"`
+		} `json:"minecraft:block"`
+	}
+	if err := json.Unmarshal(data, &dump); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	members := BlockTagInfiniburnOverworld()
+	for name, want := range map[string]int32{
+		"minecraft:netherrack":  334,
+		"minecraft:magma_block": 729,
+	} {
+		entry, ok := dump.Block.Entries[name]
+		if !ok {
+			t.Errorf("%s missing from extracted block registry", name)
+			continue
+		}
+		if entry.ProtocolID != want {
+			t.Errorf("%s registry id = %d, want %d (update BlockTagInfiniburnOverworld)", name, entry.ProtocolID, want)
+		}
+	}
+	slices.Sort(members)
+	if !slices.Equal(members, []int32{334, 729}) {
+		t.Errorf("tag members = %v, want [334 729]", members)
+	}
+}
+
+// The 26.3 trim material shape is description-as-Component + palette_id.
+// The old asset_name / ingredient / item_model_index triple made all eleven
+// entries fail to parse.
+func TestTrimMaterial26_3Shape(t *testing.T) {
+	if len(vanillaTrimMaterials) != 11 {
+		t.Fatalf("have %d trim materials, want 11", len(vanillaTrimMaterials))
+	}
+	seen := map[string]bool{}
+	for _, e := range vanillaTrimMaterials {
+		if seen[e.key] {
+			t.Errorf("duplicate key %q", e.key)
+		}
+		seen[e.key] = true
+
+		if e.val.Description.Translate == "" {
+			t.Errorf("%s: empty description.translate", e.key)
+		}
+		if e.val.Description.Color == "" {
+			t.Errorf("%s: empty description.color", e.key)
+		}
+		if e.val.PaletteID == "" {
+			t.Errorf("%s: empty palette_id", e.key)
+		}
+	}
+}

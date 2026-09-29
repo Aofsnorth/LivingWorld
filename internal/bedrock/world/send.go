@@ -65,25 +65,28 @@ func (c *ChunkConverter) SendChunk(
 	// of (rng.Height()>>4)+1 = 24 desyncs the client's heightmap against the
 	// world — the renderer then masks terrain into thin slabs around the
 	// heightmap surface (the "floating islands" rendering). Dragonfly does the
-	// same dance (see session.chunk.sendNetworkChunk) by emitting
-	// SubChunkRequestModeLimited and HighestSubChunk, then answering each
-	// SubChunkRequest via the sub-chunk entry path.
+	// same dance (see session.chunk.sendNetworkChunk) by sending an empty
+	// sub-chunk count with a SubChunkLimit, then answering each SubChunkRequest
+	// via the sub-chunk entry path.
 	chunkCache.Mu.RLock()
 	biomes := dfchunk.EncodeBiomes(ch, dfchunk.NetworkEncoding)
 	highest := ch.HighestFilledSubChunk()
 	chunkCache.Mu.RUnlock()
 
-	payload := make([]byte, 0, len(biomes)+1)
-	payload = append(payload, biomes...)
-	payload = append(payload, 0) // border block count = 0
+	// Sub-chunk request mode: an empty sub-chunk count plus an explicit
+	// SubChunkLimit is how a server asks the client to pull sub-chunks on
+	// demand. The inline payload then carries only biomes and the border
+	// block count, and each requested sub-chunk is answered through the
+	// SubChunkRequest path below.
+	payload := append(biomes, 0) // trailing border block count = 0
 
 	err := conn.WritePacket(&packet.LevelChunk{
-		Position:        pos,
-		Dimension:       0,
-		SubChunkCount:   protocol.SubChunkRequestModeLimited,
-		HighestSubChunk: highest,
-		CacheEnabled:    false,
-		RawPayload:      payload,
+		Position:      pos,
+		Dimension:     0,
+		SubChunkCount: 0,
+		SubChunkLimit: protocol.Option(int32(highest)),
+		CacheEnabled:  false,
+		RawPayload:    payload,
 	})
 	if err != nil {
 		log.Printf("[Bedrock] Failed to send chunk (%d,%d): %v", cx, cz, err)
@@ -185,7 +188,7 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		entries = append(entries, protocol.SubChunkEntry{
 			Offset:              offset,
 			Result:              protocol.SubChunkResultSuccess,
-			RawPayload:          rawData,
+			RawPayload:          protocol.Option(rawData),
 			HeightMapType:       protocol.HeightMapDataNone,
 			RenderHeightMapType: protocol.HeightMapDataNone,
 		})

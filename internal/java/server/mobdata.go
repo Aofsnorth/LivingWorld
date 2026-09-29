@@ -106,7 +106,7 @@ func spawnMobDataPacket(entityID int64, itemID int32, count int8) pk.Packet {
 		pk.VarInt(1), // present
 		pk.VarInt(itemID),
 		pk.Byte(count),
-		pk.NBT(nil), // empty NBT
+		pk.NBT(nil),           // empty NBT
 		pk.UnsignedByte(0xff), // metadata terminator
 	)
 }

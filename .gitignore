@@ -13,6 +13,7 @@ go.work.sum
 *.test
 *.out
 *.log
+tmp
 
 # IDEs and editors
 .vscode/
@@ -52,3 +53,9 @@ config.yml
 
 # Worktrees
 .worktrees/
+
+# Agent / harness scratch state
+.goal-mcp/
+logs/
+third_party/go-mc/logs/
+third_party/go-mc/temp/

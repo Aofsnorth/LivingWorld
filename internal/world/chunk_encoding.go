@@ -1,7 +1,6 @@
 package world
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -26,31 +25,35 @@ const chunkFormatVersion byte = 2
 //
 // Only blocks are persisted; light and biomes are regenerated on load. This keeps
 // files small (empty sections cost nothing) and gzip-friendly.
+// Encode serialises the chunk as the version byte, a section mask, then every
+// present section's 4096 block ids as little-endian uint32. The output buffer
+// is sized up front and filled in place: the previous bytes.Buffer version
+// issued ~98k tiny writes per chunk and dominated chunk persistence.
 func (c *Chunk) Encode() []byte {
-	var buf bytes.Buffer
-	buf.WriteByte(chunkFormatVersion)
-
 	var mask uint32
+	present := 0
 	for i := range c.sections {
 		if !c.sections[i].IsEmpty() {
 			mask |= 1 << uint(i)
+			present++
 		}
 	}
-	var maskBytes [4]byte
-	binary.LittleEndian.PutUint32(maskBytes[:], mask)
-	buf.Write(maskBytes[:])
 
-	var word [4]byte
+	out := make([]byte, 5+present*4096*4)
+	out[0] = chunkFormatVersion
+	binary.LittleEndian.PutUint32(out[1:5], mask)
+
+	pos := 5
 	for i := range c.sections {
 		if c.sections[i].IsEmpty() {
 			continue
 		}
 		for _, id := range c.sections[i].blocks {
-			binary.LittleEndian.PutUint32(word[:], uint32(id))
-			buf.Write(word[:])
+			binary.LittleEndian.PutUint32(out[pos:], uint32(id))
+			pos += 4
 		}
 	}
-	return buf.Bytes()
+	return out
 }
 
 // DecodeChunk reconstructs a chunk from bytes produced by Encode.

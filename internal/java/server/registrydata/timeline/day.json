@@ -139,19 +139,19 @@
       "keyframes": [
         {
           "ticks": 133,
-          "value": -1
+          "value": "#ffffffff"
         },
         {
           "ticks": 11867,
-          "value": -1
+          "value": "#ffffffff"
         },
         {
           "ticks": 13670,
-          "value": -15132378
+          "value": "#ff191926"
         },
         {
           "ticks": 22330,
-          "value": -15132378
+          "value": "#ff191926"
         }
       ],
       "modifier": "multiply"

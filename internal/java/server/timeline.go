@@ -13,16 +13,22 @@ import (
 var timelineFS embed.FS
 
 // timelineNBT loads a bundled vanilla timeline element (extracted verbatim from
-// 26.1.2.jar/data/minecraft/timeline) and encodes it as network NBT (nameless
-// root) for use as registry entry data.
+// 26.3-server.jar/data/minecraft/timeline) and encodes it as network NBT
+// (nameless root) for use as registry entry data.
 //
 // We send the FULL data (hasData=true) instead of relying on the client's
-// built-in "core" pack via SelectKnownPacks. Protocol 775 spans 26.1 / 26.1.1 /
-// 26.1.2, and the client matches a known pack by exact id+version; the server
-// cannot know the connecting client's patch version, so a single announced
-// version can never match all of them (this is exactly why 26.1.2 failed with
-// "Unbound values in registry minecraft:timeline"). Sending full data is
-// version-independent and always accepted, fixing 26.1.2 without breaking 26.1.
+// built-in "core" pack via SelectKnownPacks. The server cannot know the
+// connecting client's patch version, so a single announced known-pack version
+// can never match all of them; sending full data is version-independent and
+// always accepted.
+//
+// The bundled copies must be re-extracted whenever the target Minecraft
+// version moves: 26.3 changed minecraft:visual/cloud_color from a packed int
+// (-1 / -15132378) to a hex string ("#ffffffff" / "#ff191926"). A stale copy
+// fails the client's timeline decode, which leaves minecraft:timeline unbound
+// and makes the dimension_type "timelines" reference unresolvable — the
+// dimension_type then fails with "Failed to parse value ... for key
+// minecraft:overworld from server".
 func timelineNBT(element string) ([]byte, error) {
 	raw, err := timelineFS.ReadFile("registrydata/timeline/" + element + ".json")
 	if err != nil {

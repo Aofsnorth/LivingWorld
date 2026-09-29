@@ -80,7 +80,8 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		sneaking := p.InputData.Load(packet.InputFlagSneaking)
 		s.pm.UpdateSneak(bs.id, sneaking)
 
-		for _, action := range p.BlockActions {
+		actions, _ := p.BlockActions.Value()
+		for _, action := range actions {
 			switch action.Action {
 			case protocol.PlayerActionStartBreak:
 				breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID())

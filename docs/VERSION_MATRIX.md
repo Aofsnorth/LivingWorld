@@ -10,8 +10,8 @@
 
 | Label   | Edition  | Protocol | Accepted client builds              | Capabilities                                       | Changelog |
 |---------|----------|----------|-------------------------------------|----------------------------------------------------|-----------|
-| 26 (A)  | Java     | 775      | 1.21.1, 1.21.2                      | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-A) |
-| 26 (A)  | Bedrock  | 975      | 1.26.10, 1.26.20, 1.26.23          | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-A) |
+| 26 (B)  | Java     | 776      | 26.2                                | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B) |
+| 26 (B)  | Bedrock  | 2193     | 1.26.50                             | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B) |
 
 The "label" is the user-facing version group; LivingWorld releases a new
 label when the wire protocol changes for either edition. Patches within
@@ -35,6 +35,16 @@ expressed through the capability bitset.
 - **`livingworld-versioncheck`**: polls the upstream Mojang manifest
   against the local Java protocol number, exits non-zero when the
   matrix has drifted behind an official client.
+
+  > Mojang removed the `protocolVersion` field from both
+  > `version_manifest.json` and `version_manifest_v2.json`, so the tool can
+  > no longer read a protocol number off the manifest. It now resolves the
+  > manifest's `latest.release` id through the curated table in
+  > `version.JavaProtocolFor`, and a release that is **not** in that table is
+  > reported as drift ("add its protocol") rather than being silently treated
+  > as up to date — the old behaviour is what let LivingWorld sit on 26.2/776
+  > while 26.3/777 shipped. Bedrock has no public manifest, so that row is
+  > compared against gophertunnel's compiled-in `protocol.CurrentProtocol`.
 
 ## Adding a new letter (e.g. 26 (B))
 

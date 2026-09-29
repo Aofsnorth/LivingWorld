@@ -175,6 +175,21 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 
 	if w.generator != nil {
 		chunk = w.generator.Generate(cx, cz)
+		// Persist freshly generated terrain, not just edited chunks.
+		//
+		// Only SetBlock marks a chunk dirty, so before this a generated
+		// chunk was written to disk only if the player later edited it.
+		// Every other chunk was re-derived from the generator on each
+		// start, which meant bumping the Minecraft version silently rewrote
+		// all untouched terrain: the overworld pipeline is regenerated from
+		// the new vanilla data (density functions, noise settings, biomes),
+		// so a chunk that was never saved came back subtly — or drastically —
+		// different. Marking it dirty pins the terrain to the version that
+		// first generated it, which is what keeps an old world intact across
+		// a protocol update.
+		if w.storage != nil {
+			chunk.MarkDirty()
+		}
 	} else {
 		chunk = NewChunk()
 	}

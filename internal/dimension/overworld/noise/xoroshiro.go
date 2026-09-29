@@ -121,25 +121,28 @@ func (x *Xoroshiro) NextLong() int64 { return int64(x.next()) }
 // XoroshiroRandomSource.nextInt() == (int) nextLong(). NOT sign-corrected.
 func (x *Xoroshiro) NextInt() int32 { return int32(uint32(x.next())) }
 
-// NextIntBounded returns a uniform int in [0, bound). It draws a non-negative
-// 31-bit value (the top bits of next()) and applies java.util.Random's
-// power-of-two fast path / rejection sampling, so the result is always in range
-// and unbiased.
+// NextIntBounded returns a uniform int in [0, bound), reproducing
+// XoroshiroRandomSource.nextInt(int) bit for bit: a 64-bit Lemire multiply of
+// the FULL 32-bit next() output, with the unsigned-low-word rejection loop.
+// (The older java.util.Random 31-bit formulation produces a different draw
+// order, which would desynchronise every seeded stream in worldgen.)
 func (x *Xoroshiro) NextIntBounded(bound int32) int32 {
 	if bound <= 0 {
 		panic("noise: NextIntBounded requires bound > 0")
 	}
-	m := bound - 1
-	if bound&m == 0 { // power of two
-		return int32((int64(bound) * int64(x.next()>>33)) >> 31)
-	}
-	for {
-		bits := int32(x.next() >> 33) // non-negative 31-bit value
-		v := bits % bound
-		if bits-v+m >= 0 {
-			return v
+	n := int64(int32(x.next()))
+	m := uint64(n) & 0xFFFFFFFF
+	product := m * uint64(bound)
+	for uint32(product)&0xFFFFFFFF < uint32(bound) {
+		threshold := uint32((-int64(bound)) % int64(bound))
+		for uint32(product)&0xFFFFFFFF < threshold {
+			n = int64(int32(x.next()))
+			m = uint64(n) & 0xFFFFFFFF
+			product = m * uint64(bound)
 		}
+		break
 	}
+	return int32(product >> 32)
 }
 
 // NextFloat returns a uniform float in [0, 1): the top 24 bits times 2^-24.

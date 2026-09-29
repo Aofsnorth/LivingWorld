@@ -7,7 +7,7 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
+func (h *Handler777) HandlePacket(s Session, p pk.Packet) {
 	switch packetid.ServerboundPacketID(p.ID) {
 	case packetid.ServerboundGameMovePlayerPos:
 		s.HandleMovePos(p)
@@ -31,7 +31,7 @@ func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
 		s.HandleCreativeSlot(p)
 	case packetid.ServerboundGameSetCarriedItem:
 		s.HandleSetCarriedItem(p)
-	case packetid.ServerboundGameSwing:
+	case packetid.ServerboundGamePunch:
 		s.HandleSwing(p)
 	case packetid.ServerboundGamePlayerCommand:
 		s.HandlePlayerCommand(p)

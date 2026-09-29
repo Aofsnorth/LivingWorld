@@ -4,8 +4,9 @@
 //	climate noise (temperature, humidity, continentalness, erosion,
 //	weirdness) → terrain shaping splines (continents, ridges, jagged
 //	peaks, rivers) → biome decision tree → surface rules (grass / sand
-//	/ terracotta bands / snow, deepslate layer, bedrock floor) → cave
-//	carving (cheese + spaghetti) → 1.18-style ore distribution →
+//	/ terracotta bands / snow, deepslate layer, bedrock floor) →
+//	per-block solidity from the vanilla final_density tree (caves,
+//	pillars, overhangs included) → 1.18-style ore distribution →
 //	decoration (trees, plants, snow layers).
 //
 // Everything is a pure function of (worldSeed, blockX, blockZ): the
@@ -16,7 +17,10 @@
 package pipeline
 
 import (
+	owctx "livingworld/internal/dimension/overworld/context"
+	"livingworld/internal/dimension/overworld/density"
 	"livingworld/internal/world"
+	"sync"
 )
 
 // blockIDs caches every canonical block-state ID the generator places.
@@ -80,20 +84,27 @@ type Generator struct {
 	ids  blockIDs
 	ores []oreConfig
 
-	// 2D climate / shaping fields.
-	temperature *octaveNoise
-	humidity    *octaveNoise
-	continental *octaveNoise
-	erosion     *octaveNoise
-	weirdness   *octaveNoise
-	detail      *octaveNoise
-	jagged      *octaveNoise
-	surfNoise   *octaveNoise
+	// Vanilla final_density stack: the terrain shape source. Immutable
+	// after construction; densTmpl is a cache-less template copied per
+	// evaluation (density.Context.Fresh). cols memoizes whole corner
+	// columns across chunks and goroutines.
+	dens     density.FinalDensity
+	densTmpl density.Context
+	cols     densColumns
 
-	// 3D cave fields.
-	cheese     *octaveNoise
-	spaghetti1 *octaveNoise
-	spaghetti2 *octaveNoise
+	// tops memoizes terrainTop per world column (tree anchors are
+	// re-derived for every chunk in their 3×3 ring).
+	tops topMemo
+
+	// Vanilla climate stack: the six router functions the biome source
+	// samples (quartDecision). climateTmpl shares the density stack's
+	// noise set; biomes memoizes per-quart biome decisions.
+	climateF    density.ClimateFunctions
+	climateTmpl density.Context
+	biomes      biomeMemo
+
+	// 2D surface shaping field.
+	surfNoise *octaveNoise
 
 	// bandOffset shifts the badlands terracotta strata per world.
 	bandOffset int64
@@ -105,48 +116,57 @@ func NewGenerator(seed int64) *Generator {
 		seed: seed,
 		ids:  resolveBlockIDs(),
 
-		temperature: newOctaveNoise(seed, 1001, 3, 1.0/650),
-		humidity:    newOctaveNoise(seed, 1002, 3, 1.0/520),
-		continental: newOctaveNoise(seed, 1003, 5, 1.0/900),
-		erosion:     newOctaveNoise(seed, 1004, 4, 1.0/700),
-		weirdness:   newOctaveNoise(seed, 1005, 4, 1.0/420),
-		detail:      newOctaveNoise(seed, 1006, 3, 1.0/60),
-		jagged:      newOctaveNoise(seed, 1007, 4, 1.0/130),
-		surfNoise:   newOctaveNoise(seed, 1008, 2, 1.0/40),
-
-		cheese:     newOctaveNoise(seed, 2001, 2, 1.0/110),
-		spaghetti1: newOctaveNoise(seed, 2002, 1, 1.0/72),
-		spaghetti2: newOctaveNoise(seed, 2003, 1, 1.0/72),
+		surfNoise: newOctaveNoise(seed, 1008, 2, 1.0/40),
 
 		bandOffset: (seed%7 + 7) % 7,
 	}
+	densTmpl, dens, climate := owctx.VanillaStack(seed)
+	g.dens = dens
+	g.densTmpl = densTmpl
+	g.climateF = climate
+	g.climateTmpl = densTmpl
+	g.cols.m = make(map[[2]int]*[densLayers]float64, 1024)
+	g.tops.m = make(map[[2]int]int, 1024)
+	g.biomes.m = make(map[[3]int]biomeDecision, 1024)
 	g.ores = g.buildOreConfigs()
 	return g
 }
 
-// Generate builds chunk (cx, cz): terrain → surface → water → caves →
-// ores → decoration. Returns a fully materialised *world.Chunk.
+// topMemo is a bounded write-through cache of per-column terrain tops.
+// Entries are dropped wholesale past the cap, which is safe because
+// terrainTop is a pure function of (seed, x, z).
+type topMemo struct {
+	mu sync.Mutex
+	m  map[[2]int]int
+}
+
+// Generate builds chunk (cx, cz): terrain → surface → water → ores →
+// decoration. Caves are not a separate pass: they come out of the vanilla
+// final_density tree the terrain pass samples (see buildColumn). Returns a
+// fully materialised *world.Chunk.
 func (g *Generator) Generate(cx, cz int) *world.Chunk {
 	c := world.NewChunk()
+
+	// Pass 0: gather the vanilla final_density corner columns for this
+	// chunk's noise grid — shared with the tree-plan pass via the cache.
+	dens := g.buildChunkDensity(cx, cz)
 
 	// Pass 1: shape all 256 columns (height, biome, climate).
 	var cols [16][16]column
 	for lz := 0; lz < 16; lz++ {
 		for lx := 0; lx < 16; lx++ {
-			cols[lz][lx] = g.shapeColumn(cx*16+lx, cz*16+lz)
+			cols[lz][lx] = g.shapeColumnWith(dens.topAt(lx, lz), cx*16+lx, cz*16+lz)
 		}
 	}
 
-	// Pass 2: materialise the columns (stone body, surface, water).
+	// Pass 2: materialise the columns (per-block solidity, surface, water).
 	for lz := 0; lz < 16; lz++ {
 		for lx := 0; lx < 16; lx++ {
-			g.buildColumn(c, lx, lz, cx*16+lx, cz*16+lz, cols[lz][lx])
+			g.buildColumn(c, dens, lx, lz, cx*16+lx, cz*16+lz, cols[lz][lx])
 		}
 	}
 
-	// Pass 3: caves, then ores (veins show on cave walls), then trees /
-	// plants / snow.
-	g.carveCaves(c, &cols, cx, cz)
+	// Pass 3: ores (veins show on cave walls), then trees / plants / snow.
 	g.placeOres(c, &cols, cx, cz)
 	g.decorate(c, &cols, cx, cz)
 

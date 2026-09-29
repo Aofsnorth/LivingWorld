@@ -97,33 +97,3 @@ func clampI(v, lo, hi int) int {
 	}
 	return v
 }
-
-// smooth is the smoothstep ease on t in [0, 1].
-func smooth(t float64) float64 {
-	t = clampF(t, 0, 1)
-	return t * t * (3 - 2*t)
-}
-
-// spline is a piecewise-linear curve: for input v it interpolates
-// between the surrounding (in, out) points. Inputs must be ascending.
-type spline struct {
-	in  []float64
-	out []float64
-}
-
-func (s spline) at(v float64) float64 {
-	if v <= s.in[0] {
-		return s.out[0]
-	}
-	last := len(s.in) - 1
-	if v >= s.in[last] {
-		return s.out[last]
-	}
-	for i := 1; i <= last; i++ {
-		if v < s.in[i] {
-			t := (v - s.in[i-1]) / (s.in[i] - s.in[i-1])
-			return s.out[i-1] + t*(s.out[i]-s.out[i-1])
-		}
-	}
-	return s.out[last]
-}

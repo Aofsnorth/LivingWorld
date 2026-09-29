@@ -5,11 +5,28 @@ import (
 	mcregistry "github.com/Tnze/go-mc/registry"
 )
 
+// textComponent is the NBT form of a Minecraft text Component, i.e. the
+// object form of "translate"/"color" rather than a bare string.
+//
+// Source: 26.3-server.jar/data/minecraft/trim_material/amethyst.json
+type textComponent struct {
+	Translate string `nbt:"translate"`
+	Color     string `nbt:"color"`
+}
+
+// trimMaterial is the 26.3 shape. It is NOT the 1.21 shape: the old
+// asset_name / ingredient / item_model_index triple is gone, replaced by a
+// palette_id, and description became a full text Component instead of a
+// plain string.
+//
+// Sending the old shape made every 26.3 client abort the whole registry sync
+// with "Failed to parse value {asset_name:..., item_model_index:0.0f, ...}
+// for key minecraft:amethyst from server".
+//
+// Source: 26.3-server.jar/data/minecraft/trim_material/*.json
 type trimMaterial struct {
-	AssetName      string  `nbt:"asset_name"`
-	Ingredient     string  `nbt:"ingredient"`
-	ItemModelIndex float32 `nbt:"item_model_index"`
-	Description    string  `nbt:"description"`
+	Description textComponent `nbt:"description"`
+	PaletteID   string        `nbt:"palette_id"`
 }
 
 type trimPattern struct {
@@ -33,29 +50,37 @@ type instrument struct {
 	Description string  `nbt:"description"`
 }
 
+// trimMaterialEntry pairs a registry key with its 26.3 value.
+type trimMaterialEntry struct {
+	key string
+	val trimMaterial
+}
+
+// vanillaTrimMaterials is transcribed verbatim from
+// 26.3-server.jar/data/minecraft/trim_material/*.json.
+//
+// The pre-26.3 shape (asset_name / ingredient / item_model_index, with a
+// bare-string description) made every 26.3 client abort the whole registry
+// sync, so the table lives at package scope and is asserted by tests.
+var vanillaTrimMaterials = []trimMaterialEntry{
+	{"minecraft:amethyst", trimMaterial{textComponent{"trim_material.minecraft.amethyst", "#9A5CC6"}, "minecraft:trim/amethyst"}},
+	{"minecraft:copper", trimMaterial{textComponent{"trim_material.minecraft.copper", "#B4684D"}, "minecraft:trim/copper"}},
+	{"minecraft:diamond", trimMaterial{textComponent{"trim_material.minecraft.diamond", "#6EECD2"}, "minecraft:trim/diamond"}},
+	{"minecraft:emerald", trimMaterial{textComponent{"trim_material.minecraft.emerald", "#11A036"}, "minecraft:trim/emerald"}},
+	{"minecraft:gold", trimMaterial{textComponent{"trim_material.minecraft.gold", "#DEB12D"}, "minecraft:trim/gold"}},
+	{"minecraft:iron", trimMaterial{textComponent{"trim_material.minecraft.iron", "#ECECEC"}, "minecraft:trim/iron"}},
+	{"minecraft:lapis", trimMaterial{textComponent{"trim_material.minecraft.lapis", "#416E97"}, "minecraft:trim/lapis"}},
+	{"minecraft:netherite", trimMaterial{textComponent{"trim_material.minecraft.netherite", "#625859"}, "minecraft:trim/netherite"}},
+	{"minecraft:quartz", trimMaterial{textComponent{"trim_material.minecraft.quartz", "#E3D4C4"}, "minecraft:trim/quartz"}},
+	{"minecraft:redstone", trimMaterial{textComponent{"trim_material.minecraft.redstone", "#971607"}, "minecraft:trim/redstone"}},
+	{"minecraft:resin", trimMaterial{textComponent{"trim_material.minecraft.resin", "#FC7812"}, "minecraft:trim/resin"}},
+}
+
 func registerTrimData(r *mcregistry.Registries, sizes map[string]int) {
-	trimMaterials := []struct {
-		key, asset, item, desc string
-		idx                    float32
-	}{
-		{"minecraft:amethyst", "amethyst", "minecraft:amethyst_shard", "trim_material.minecraft.amethyst", 0.0},
-		{"minecraft:copper", "copper", "minecraft:copper_ingot", "trim_material.minecraft.copper", 0.0},
-		{"minecraft:diamond", "diamond", "minecraft:diamond", "trim_material.minecraft.diamond", 0.0},
-		{"minecraft:emerald", "emerald", "minecraft:emerald", "trim_material.minecraft.emerald", 0.0},
-		{"minecraft:gold", "gold", "minecraft:gold_ingot", "trim_material.minecraft.gold", 0.0},
-		{"minecraft:iron", "iron", "minecraft:iron_ingot", "trim_material.minecraft.iron", 0.0},
-		{"minecraft:lapis", "lapis", "minecraft:lapis_lazuli", "trim_material.minecraft.lapis", 0.0},
-		{"minecraft:netherite", "netherite", "minecraft:netherite_ingot", "trim_material.minecraft.netherite", 0.0},
-		{"minecraft:quartz", "quartz", "minecraft:quartz", "trim_material.minecraft.quartz", 0.0},
-		{"minecraft:redstone", "redstone", "minecraft:redstone", "trim_material.minecraft.redstone", 0.0},
-		{"minecraft:resin", "resin", "minecraft:resin_brick", "trim_material.minecraft.resin", 0.0},
+	for _, tm := range vanillaTrimMaterials {
+		r.Registry("minecraft:trim_material").(*mcregistry.Registry[nbt.RawMessage]).Put(tm.key, marshalNBT(tm.val))
 	}
-	for _, tm := range trimMaterials {
-		r.Registry("minecraft:trim_material").(*mcregistry.Registry[nbt.RawMessage]).Put(tm.key, marshalNBT(trimMaterial{
-			AssetName: tm.asset, Ingredient: tm.item, ItemModelIndex: tm.idx, Description: tm.desc,
-		}))
-	}
-	sizes["minecraft:trim_material"] = len(trimMaterials)
+	sizes["minecraft:trim_material"] = len(vanillaTrimMaterials)
 
 	trimPatterns := []struct {
 		key, asset, template, desc string

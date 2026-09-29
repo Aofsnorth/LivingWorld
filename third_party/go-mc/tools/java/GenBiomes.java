@@ -35,7 +35,7 @@ public class GenBiomes {
         Bootstrap.bootStrap();
 
         // Load all vanilla registries including data-driven ones (biomes, etc.).
-        var lookup = VanillaRegistries.createLookup();
+        var lookup = VanillaRegistries.createWorldLookup();
         var biomes = lookup.lookupOrThrow(Registries.BIOME);
 
         // Collect all biome names.

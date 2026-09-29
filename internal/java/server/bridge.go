@@ -7,14 +7,13 @@ import (
 
 	"livingworld/config"
 	"livingworld/internal/command"
-	javaregistry "livingworld/internal/java/registry"
 	"livingworld/internal/player"
 	"livingworld/internal/world"
 
 	"github.com/Tnze/go-mc/chat"
-	gmcommand "github.com/Tnze/go-mc/server/command"
 	gmnet "github.com/Tnze/go-mc/net"
 	gmserver "github.com/Tnze/go-mc/server"
+	gmcommand "github.com/Tnze/go-mc/server/command"
 )
 
 type javaBridge struct {
@@ -54,7 +53,10 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 	j.wm.OnWeatherChange(j.broadcastWeather)
 	ping := gmserver.NewPingInfo("LivingWorld Java", j.protocol, chat.Message{Text: cfg.MOTD}, nil)
 	playerList := gmserver.NewPlayerList(cfg.Java.MaxPlayers)
-	registries, registrySizes := javaregistry.Build()
+	// The configuration phase now mirrors a vanilla server's known-packs sync
+	// (see config.go / vanillasync.go): registry contents are sent data-less and
+	// resolved by the client from its own jar, so no registry payload needs to
+	// be built here anymore.
 	j.server = &gmserver.Server{
 		Logger:          log.Default(),
 		ListPingHandler: &javaListPing{ping: ping, playerList: playerList, sessions: j.sessions},
@@ -63,7 +65,7 @@ func newJavaBridge(cfg *config.Config, pm *player.Manager, wm *world.Manager) *j
 			Threshold:    256, // vanilla default: compress packets >=256B (chunks ~52KB raw -> a few KB)
 			LoginChecker: playerList,
 		},
-		ConfigHandler: &javaConfig{registries: registries, registrySizes: registrySizes, commands: buildCommandTree()},
+		ConfigHandler: &javaConfig{commands: buildCommandTree()},
 		GamePlay:      j,
 	}
 	return j

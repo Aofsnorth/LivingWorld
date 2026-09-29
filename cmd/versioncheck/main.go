@@ -1,19 +1,40 @@
-// Command versioncheck polls the upstream Mojang + Bedrock manifests
-// against the LWVersion matrix registered in internal/version, and
-// reports whether the supported protocol numbers are still current
-// (Master_Plan.md §6 Phase 2 / M1: "Poll Mojang manifest/changelog vs
-// the matrix; report new patches and whether a new letter is needed").
+// Command versioncheck polls the upstream Mojang manifest against the LWVersion
+// matrix registered in internal/version, and reports whether the supported
+// protocol numbers are still current (Master_Plan.md §6 Phase 2 / M1: "Poll
+// Mojang manifest/changelog vs the matrix; report new patches and whether a new
+// letter is needed").
 //
 // The tool is intentionally a thin, read-only CLI:
 //
-//   livingworld-versioncheck                # run a single check, exit 0/1
-//   livingworld-versioncheck -json          # JSON output for CI gating
-//   livingworld-versioncheck -matrix=false  # skip the matrix dump
+//	livingworld-versioncheck                # run a single check, exit 0/1
+//	livingworld-versioncheck -json          # JSON output for CI gating
+//	livingworld-versioncheck -matrix=false  # skip the matrix dump
 //
-// The default exit code is 0 when nothing in the matrix needs an
-// update, 1 when at least one protocol is upstream-current but not in
-// the local registry (so a CI job can be wired to fail the build when
-// LivingWorld is drifting behind official client support).
+// EXIT CODES
+//
+//	0  nothing to do
+//	1  drift: upstream moved ahead of the local matrix, or the local Bedrock
+//	   matrix disagrees with the gophertunnel we actually link against
+//	2  internal error (no versions registered, flags unparsable)
+//
+// # JAVA SIDE
+//
+// Mojang removed "protocolVersion" from both version_manifest.json and
+// version_manifest_v2.json, so the manifest can no longer be asked for a
+// protocol number directly. What it still carries is latest.release, the id
+// of the newest release. This tool therefore resolves that id through
+// version.JavaProtocolFor's curated table. An id the table does not know is
+// reported as drift with an explicit "add it" message rather than being
+// silently treated as fine — the previous implementation did the latter, which
+// is why LivingWorld stayed on 26.2/776 while 26.3/777 was already out.
+//
+// # BEDROCK SIDE
+//
+// There is no public Bedrock protocol manifest, so the previous version
+// hardcoded UpToDate=true and could never fail. Instead we compare the matrix
+// against gophertunnel's own compiled-in protocol.CurrentProtocol /
+// CurrentVersion: that is exactly the wire version this binary will speak, so
+// a disagreement is a real bug, not a guess. This check needs no network.
 package main
 
 import (
@@ -27,81 +48,64 @@ import (
 	"time"
 
 	"livingworld/internal/version"
+
+	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
-// upstreamMojangVersionManifest is the minimal slice of the Mojang
-// version manifest we need. The full manifest is huge; we only care
-// about (id, protocolVersion) per release.
-type upstreamMojangVersionManifest struct {
-	Versions []struct {
-		ID             string `json:"id"`
-		ProtocolVersion int   `json:"protocolVersion"`
-	} `json:"versions"`
+const mojangManifestURL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
+
+// mojangManifest is the slice of the version manifest this tool needs: the
+// id of the newest release. Note the absence of any protocol field — Mojang
+// dropped it, hence version.JavaProtocolFor.
+type mojangManifest struct {
+	Latest struct {
+		Release  string `json:"release"`
+		Snapshot string `json:"snapshot"`
+	} `json:"latest"`
 }
 
-const mojangManifestURL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
-
-// findMojang fetches the manifest and returns the protocol number for
-// the latest release whose id matches one of the supported Java
-// builds. The Mojang manifest is paged alphabetically, so we walk the
-// full list to find the highest protocol that shares an id prefix.
-//
-// Errors are returned verbatim so the caller can decide whether to
-// treat network failures as "drift unknown" (CI) or fatal.
-func findMojang() (latestProto int32, latestID string, err error) {
+// fetchLatestRelease returns the id of the newest published release.
+func fetchLatestRelease() (release string, snapshot string, err error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(mojangManifestURL)
 	if err != nil {
-		return 0, "", fmt.Errorf("fetch Mojang manifest: %w", err)
+		return "", "", fmt.Errorf("fetch Mojang manifest: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return 0, "", fmt.Errorf("Mojang manifest: HTTP %d", resp.StatusCode)
+		return "", "", fmt.Errorf("Mojang manifest: HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, "", fmt.Errorf("read Mojang manifest: %w", err)
+		return "", "", fmt.Errorf("read Mojang manifest: %w", err)
 	}
-	var m upstreamMojangVersionManifest
+	var m mojangManifest
 	if err := json.Unmarshal(body, &m); err != nil {
-		return 0, "", fmt.Errorf("decode Mojang manifest: %w", err)
+		return "", "", fmt.Errorf("decode Mojang manifest: %w", err)
 	}
-	// Walk all releases; the highest protocol number wins (the manifest
-	// is not guaranteed to be sorted by protocol). The id is taken from
-	// the same entry so the caller can cross-check.
-	supportedBuilds := map[string]bool{}
-	if cur, ok := version.Current(); ok {
-		for _, b := range cur.JavaBuilds {
-			supportedBuilds[b] = true
-		}
+	if m.Latest.Release == "" {
+		return "", "", fmt.Errorf("Mojang manifest has no latest.release")
 	}
-	for _, v := range m.Versions {
-		if !supportedBuilds[v.ID] {
-			continue
-		}
-		if int32(v.ProtocolVersion) > latestProto {
-			latestProto = int32(v.ProtocolVersion)
-			latestID = v.ID
-		}
-	}
-	return latestProto, latestID, nil
+	return m.Latest.Release, m.Latest.Snapshot, nil
 }
 
 // matrixRow is one row of the JSON report.
 type matrixRow struct {
-	Edition   string   `json:"edition"`
-	Label     string   `json:"label"`
-	Protocol  int32    `json:"protocol"`
-	Builds    []string `json:"builds"`
-	UpToDate  bool     `json:"up_to_date"`
-	LatestID  string   `json:"latest_id,omitempty"`
+	Edition  string   `json:"edition"`
+	Label    string   `json:"label"`
+	Protocol int32    `json:"protocol"`
+	Builds   []string `json:"builds"`
+	UpToDate bool     `json:"up_to_date"`
+	Source   string   `json:"source,omitempty"`
+	Detail   string   `json:"detail,omitempty"`
 }
 
 type matrixReport struct {
-	GeneratedAt time.Time     `json:"generated_at"`
-	Current     string        `json:"current_label"`
-	Rows        []matrixRow   `json:"rows"`
-	Drift       []string      `json:"drift,omitempty"`
+	GeneratedAt time.Time   `json:"generated_at"`
+	Current     string      `json:"current_label"`
+	LatestJava  string      `json:"latest_java_release,omitempty"`
+	Rows        []matrixRow `json:"rows"`
+	Drift       []string    `json:"drift,omitempty"`
 }
 
 func main() {
@@ -115,19 +119,39 @@ func main() {
 		os.Exit(2)
 	}
 
-	upstreamProto, upstreamID, err := findMojang()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "versioncheck: %v\n", err)
-		// Network failure is not a hard drift signal; surface it and
-		// still print the matrix so the operator can see the local
-		// state. CI jobs can choose to treat this exit code as soft.
+	// Bedrock first: it is an offline comparison against what this binary can
+	// actually speak, so it must not depend on the network.
+	bedrockRow, bedrockDrift := bedrockCheck(cur)
+
+	var javaRow matrixRow
+	var javaDrift []string
+	latestRelease, latestSnapshot, netErr := fetchLatestRelease()
+	if netErr != nil {
+		// Network failure is not a drift signal on its own. Say so plainly and
+		// still report the local state, but do not exit non-zero for it.
+		fmt.Fprintf(os.Stderr, "versioncheck: %v\n", netErr)
+		fmt.Fprintln(os.Stderr, "versioncheck: skipping the Java upstream check")
+		javaRow = matrixRow{
+			Edition:  version.Java.String(),
+			Label:    cur.Label,
+			Protocol: cur.JavaProtocol,
+			Builds:   append([]string(nil), cur.JavaBuilds...),
+			UpToDate: true,
+			Source:   "matrix (upstream check skipped)",
+			Detail:   netErr.Error(),
+		}
+	} else {
+		javaRow, javaDrift = javaCheck(cur, latestRelease, latestSnapshot)
 	}
 
-	rows := buildMatrixRows(cur, upstreamProto, upstreamID)
-	drift := computeDrift(rows, cur, upstreamProto, upstreamID)
+	rows := []matrixRow{javaRow, bedrockRow}
+	drift := append(append([]string(nil), javaDrift...), bedrockDrift...)
+	sort.Strings(drift)
+
 	report := matrixReport{
 		GeneratedAt: time.Now().UTC(),
 		Current:     cur.Label,
+		LatestJava:  latestRelease,
 		Rows:        rows,
 		Drift:       drift,
 	}
@@ -148,42 +172,66 @@ func main() {
 	}
 }
 
-// buildMatrixRows assembles the per-edition rows for the report.
-func buildMatrixRows(cur version.LWVersion, upstreamProto int32, upstreamID string) []matrixRow {
-	out := []matrixRow{
-		{
-			Edition:  version.Java.String(),
-			Label:    cur.Label,
-			Protocol: cur.JavaProtocol,
-			Builds:   append([]string(nil), cur.JavaBuilds...),
-			UpToDate: upstreamProto == 0 || cur.JavaProtocol >= upstreamProto,
-			LatestID: upstreamID,
-		},
-		{
-			Edition:  version.Bedrock.String(),
-			Label:    cur.Label,
-			Protocol: cur.BedrockProtocol,
-			Builds:   append([]string(nil), cur.BedrockBuilds...),
-			UpToDate: true, // No public Bedrock protocol manifest yet; assume up to date.
-		},
+// javaCheck compares the matrix against the newest published Java release.
+func javaCheck(cur version.LWVersion, latestRelease, latestSnapshot string) (matrixRow, []string) {
+	row := matrixRow{
+		Edition:  version.Java.String(),
+		Label:    cur.Label,
+		Protocol: cur.JavaProtocol,
+		Builds:   append([]string(nil), cur.JavaBuilds...),
+		Source:   "Mojang version_manifest_v2 latest.release",
+		Detail:   "latest release " + latestRelease,
 	}
-	return out
+
+	upstream, known := version.JavaProtocolFor(latestRelease)
+	if !known {
+		row.UpToDate = false
+		row.Detail = "latest release " + latestRelease + " is not in version.JavaProtocolFor's table"
+		return row, []string{fmt.Sprintf(
+			"Mojang published %s but version.JavaProtocolFor has no entry for it; add its protocol "+
+				"(known: %v) and bump the matrix if it is newer than %d",
+			latestRelease, version.KnownJavaReleases(), cur.JavaProtocol,
+		)}
+	}
+
+	row.Detail = fmt.Sprintf("latest release %s = protocol %d", latestRelease, upstream)
+	if cur.JavaProtocol < upstream {
+		row.UpToDate = false
+		msg := fmt.Sprintf(
+			"Java protocol %d (matrix %q) is behind upstream %s (protocol %d); a new LWVersion letter is needed",
+			cur.JavaProtocol, cur.Label, latestRelease, upstream,
+		)
+		if latestSnapshot != "" {
+			msg += fmt.Sprintf(" (a %s snapshot is also out, which is usually fine)", latestSnapshot)
+		}
+		return row, []string{msg}
+	}
+	row.UpToDate = true
+	return row, nil
 }
 
-// computeDrift returns one human-readable drift message per row that
-// is out of date, sorted for determinism (so CI diffs are stable).
-func computeDrift(rows []matrixRow, cur version.LWVersion, upstreamProto int32, upstreamID string) []string {
-	var drift []string
-	for _, r := range rows {
-		if r.Edition == version.Java.String() && upstreamProto > 0 && cur.JavaProtocol < upstreamProto {
-			drift = append(drift, fmt.Sprintf(
-				"Java protocol %d (matrix %q) is behind upstream %s (protocol %d); a new LWVersion letter may be needed",
-				cur.JavaProtocol, cur.Label, upstreamID, upstreamProto,
-			))
-		}
+// bedrockCheck compares the matrix against gophertunnel's compiled-in protocol
+// constants. A mismatch means the advertised Bedrock support is a lie: the
+// binary would speak protocol.CurrentProtocol regardless of what we claim.
+func bedrockCheck(cur version.LWVersion) (matrixRow, []string) {
+	row := matrixRow{
+		Edition:  version.Bedrock.String(),
+		Label:    cur.Label,
+		Protocol: cur.BedrockProtocol,
+		Builds:   append([]string(nil), cur.BedrockBuilds...),
+		Source:   "gophertunnel protocol.CurrentProtocol",
+		Detail:   fmt.Sprintf("linked gophertunnel speaks %s (protocol %d)", protocol.CurrentVersion, protocol.CurrentProtocol),
 	}
-	sort.Strings(drift)
-	return drift
+	if cur.BedrockProtocol != protocol.CurrentProtocol {
+		row.UpToDate = false
+		return row, []string{fmt.Sprintf(
+			"Bedrock matrix claims protocol %d (builds %v) but the linked gophertunnel speaks protocol %d (%s); "+
+				"update internal/version and pin the matching gophertunnel release",
+			cur.BedrockProtocol, cur.BedrockBuilds, protocol.CurrentProtocol, protocol.CurrentVersion,
+		)}
+	}
+	row.UpToDate = true
+	return row, nil
 }
 
 // printHuman emits the report in a script-friendly but readable form.
@@ -191,9 +239,10 @@ func printHuman(r *matrixReport, showMatrix bool) {
 	fmt.Printf("LivingWorld versioncheck @ %s\n", r.GeneratedAt.Format(time.RFC3339))
 	fmt.Printf("Current LWVersion: %s\n\n", r.Current)
 	if showMatrix {
-		fmt.Println("edition\tlabel\tprotocol\tbuilds\tup_to_date")
+		fmt.Println("edition\tlabel\tprotocol\tbuilds\tup_to_date\tdetail")
 		for _, row := range r.Rows {
-			fmt.Printf("%s\t%s\t%d\t%s\t%v\n", row.Edition, row.Label, row.Protocol, joinComma(row.Builds), row.UpToDate)
+			fmt.Printf("%s\t%s\t%d\t%s\t%v\t%s\n",
+				row.Edition, row.Label, row.Protocol, joinComma(row.Builds), row.UpToDate, row.Detail)
 		}
 		fmt.Println()
 	}

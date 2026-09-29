@@ -4,22 +4,17 @@ import (
 	"bytes"
 	"io"
 	"log"
-	"sort"
-	"strings"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	gmnet "github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
-	"github.com/Tnze/go-mc/registry"
-	gmcommand "github.com/Tnze/go-mc/server/command"
 	gmserver "github.com/Tnze/go-mc/server"
+	gmcommand "github.com/Tnze/go-mc/server/command"
 )
 
 type javaConfig struct {
-	registries    registry.Registries
-	registrySizes map[string]int
-	commands      *gmcommand.Graph
+	commands *gmcommand.Graph
 }
 
 type javaListPing struct {
@@ -44,20 +39,25 @@ func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
-	// Announce the vanilla "core" data pack BEFORE sending registries. This keeps
-	// the 26.1 client's resource provider initialised the same way it was when
-	// 26.1 already worked. NOTE: the client matches a known pack by exact
-	// id+version, so this announced version only matches one patch build; we
-	// therefore no longer depend on it for timeline (see the timeline block below,
-	// which now sends full data). The packet stays as a harmless no-op for the
-	// patch builds whose version differs.
-	// Verified from 26.1 client: ClientConfigurationPacketListenerImpl.runWithResources.
+	// Announce the vanilla "core" data pack before anything else. This is the
+	// known-packs handshake: a genuine 26.3 client matches the pack by exact
+	// id+version, replies with the same pack, and builds its data-less-entry
+	// resource manager from its own jar. Every registry element below is then
+	// sent data-less and the client decodes it with the real vanilla codecs
+	// straight from its own data — byte-for-byte identical to a vanilla
+	// server↔client join, and immune to NBT/codec encoding drift on our side.
+	//
+	// Verified from the 26.3 client classes: ClientConfigurationPacketListenerImpl
+	// .handleSelectKnownPacks → KnownPacksManager.trySelectingPacks (pack
+	// repository keyed by KnownPack "minecraft"/"core"/version), and
+	// NetworkRegistryLoadTask, which resolves entries without data through the
+	// resource manager created in runWithResources.
 	{
 		var buf bytes.Buffer
 		_, _ = pk.VarInt(1).WriteTo(&buf)           // known pack count
 		_, _ = pk.String("minecraft").WriteTo(&buf) // namespace
 		_, _ = pk.String("core").WriteTo(&buf)      // id
-		_, _ = pk.String("26.2").WriteTo(&buf)      // version
+		_, _ = pk.String("26.3").WriteTo(&buf)      // version
 		if err := conn.WritePacket(pk.Packet{
 			ID:   int32(packetid.ClientboundConfigSelectKnownPacks),
 			Data: buf.Bytes(),
@@ -66,131 +66,22 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		}
 	}
 
-	keys := make([]string, 0, len(c.registrySizes))
-	for id, count := range c.registrySizes {
-		if count > 0 {
-			keys = append(keys, id)
-		}
-	}
-	sort.Strings(keys)
-	for _, id := range keys {
-		reg := c.registries.Registry(id)
-		if err := conn.WritePacket(pk.Marshal(
-			packetid.ClientboundConfigRegistryData,
-			pk.Identifier(id),
-			reg,
-		)); err != nil {
-			return err
-		}
+	// Send every synchronized registry data-less, in vanilla order (see
+	// vanillasync.go). This covers all 32 registries a vanilla server syncs,
+	// including the ones the 26.3 client's item components hard-require
+	// (block_transformer for shovel/axe/hoe, banner_pattern, enchantment,
+	// decorated_pot_pattern, dialog, ...) — omitting any of them leaves the
+	// client with an empty registry and "Missing element" crashes at
+	// finish_configuration.
+	if err := writeVanillaRegistryData(conn); err != nil {
+		return err
 	}
 
-	// Send world_clock registry for 26.1 (1.21.4)
-	{
-		var buf bytes.Buffer
-		_, _ = pk.VarInt(1).WriteTo(&buf)                         // count
-		_, _ = pk.Identifier("minecraft:overworld").WriteTo(&buf) // entry id
-		_, _ = pk.Boolean(true).WriteTo(&buf)                     // has data
-		_, _ = buf.Write([]byte{0x0a, 0x00})                      // empty NBT compound
-
-		if err := conn.WritePacket(pk.Marshal(
-			packetid.ClientboundConfigRegistryData,
-			pk.Identifier("minecraft:world_clock"),
-			rawBytes(buf.Bytes()),
-		)); err != nil {
-			return err
-		}
-	}
-
-	// Send the minecraft:timeline registry for 26.1. The timeline elements carry
-	// the sun_angle / moon_angle / star_angle keyframe tracks that actually move
-	// the sun; without this registry the dimension_type's "timelines" reference is
-	// unbound and the client rejects the join. We send each element WITH its full
-	// NBT data (extracted from 26.1.2.jar) rather than relying on the client's
-	// built-in "core" pack: protocol 775 spans 26.1/26.1.1/26.1.2 and the client
-	// matches known packs by exact version, which the server cannot know — so the
-	// data-less approach only worked for whichever single version we announced and
-	// crashed the rest ("Unbound values in registry minecraft:timeline" on 26.1.2).
-	// See timeline.go. Order matches the dimension_type.timelines id list.
-	{
-		timelineIDs := []string{
-			"minecraft:day", "minecraft:moon",
-			"minecraft:early_game", "minecraft:villager_schedule",
-		}
-		var buf bytes.Buffer
-		_, _ = pk.VarInt(len(timelineIDs)).WriteTo(&buf) // entry count
-		for _, id := range timelineIDs {
-			data, err := timelineNBT(strings.TrimPrefix(id, "minecraft:"))
-			if err != nil {
-				return err
-			}
-			_, _ = pk.Identifier(id).WriteTo(&buf)
-			_, _ = pk.Boolean(true).WriteTo(&buf) // hasData=true
-			_, _ = buf.Write(data)                // network NBT (nameless compound)
-		}
-		if err := conn.WritePacket(pk.Marshal(
-			packetid.ClientboundConfigRegistryData,
-			pk.Identifier("minecraft:timeline"),
-			rawBytes(buf.Bytes()),
-		)); err != nil {
-			return err
-		}
-	}
-
-	var tagsBuf bytes.Buffer
-	var tagsRegCount pk.VarInt = 2
-	_, _ = tagsRegCount.WriteTo(&tagsBuf)
-
-	var damageTypeRegID pk.Identifier = "minecraft:damage_type"
-	_, _ = damageTypeRegID.WriteTo(&tagsBuf)
-
-	damageTypeTags := []string{
-		"minecraft:is_fire", "minecraft:bypasses_armor", "minecraft:bypasses_shield",
-		"minecraft:bypasses_invulnerability", "minecraft:bypasses_cooldown",
-		"minecraft:bypasses_effects", "minecraft:bypasses_enchantments",
-		"minecraft:bypasses_resistance", "minecraft:is_projectile", "minecraft:is_explosion",
-		"minecraft:is_fall", "minecraft:is_drowning", "minecraft:is_freezing",
-		"minecraft:is_lightning", "minecraft:no_anger", "minecraft:no_impact",
-		"minecraft:always_kills_armor_stands", "minecraft:can_break_armor_stands",
-		"minecraft:avoid_vibration", "minecraft:ignites_armor_stands",
-		"minecraft:burns_armor_stands", "minecraft:wither_summon_killer",
-		"minecraft:panic_causes", "minecraft:panic_environmental_causes",
-	}
-
-	var tagCount pk.VarInt = pk.VarInt(len(damageTypeTags))
-	_, _ = tagCount.WriteTo(&tagsBuf)
-
-	for _, tagName := range damageTypeTags {
-		var tagID pk.Identifier = pk.Identifier(tagName)
-		_, _ = tagID.WriteTo(&tagsBuf)
-		var entryCount pk.VarInt = 0
-		_, _ = entryCount.WriteTo(&tagsBuf)
-	}
-
-	var bannerPatternRegID pk.Identifier = "minecraft:banner_pattern"
-	_, _ = bannerPatternRegID.WriteTo(&tagsBuf)
-
-	bannerPatternTags := []string{
-		"minecraft:pattern_item/flower", "minecraft:pattern_item/creeper",
-		"minecraft:pattern_item/skull", "minecraft:pattern_item/mojang",
-		"minecraft:pattern_item/globe", "minecraft:pattern_item/piglin",
-		"minecraft:pattern_item/flow", "minecraft:pattern_item/guster",
-		"minecraft:pattern_item/field_masoned", "minecraft:pattern_item/bordure_indented",
-	}
-
-	var bpTagCount pk.VarInt = pk.VarInt(len(bannerPatternTags))
-	_, _ = bpTagCount.WriteTo(&tagsBuf)
-
-	for _, tagName := range bannerPatternTags {
-		var tagID pk.Identifier = pk.Identifier(tagName)
-		_, _ = tagID.WriteTo(&tagsBuf)
-		var entryCount pk.VarInt = 0
-		_, _ = entryCount.WriteTo(&tagsBuf)
-	}
-
-	if err := conn.WritePacket(pk.Packet{
-		ID:   int32(packetid.ClientboundConfigUpdateTags),
-		Data: tagsBuf.Bytes(),
-	}); err != nil {
+	// The complete vanilla tag set. Registry elements arrive data-less, so ALL
+	// HolderSet tag references inside the client-decoded JSON resolve against
+	// this payload alone: dimension_type infiniburn, enchantment enchantable /
+	// exclusive_set, and the timeline tag the overworld dimension_type uses.
+	if err := conn.WritePacket(vanillaUpdateTagsPacket()); err != nil {
 		log.Printf("[Java] AcceptConfig: error sending UpdateTags: %v", err)
 		return err
 	}
@@ -238,7 +129,14 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		case packetid.ServerboundConfigResourcePack:
 			// Resource pack response - ignored
 		case packetid.ServerboundConfigSelectKnownPacks:
-			// Pack selection - ignored
+			// The client's reply lists the packs it can resolve data-less entries
+			// from. If minecraft/core/26.3 is missing, every registry element we
+			// send data-less will fail to load on the client, so surface it loudly
+			// instead of leaving it as an opaque "Failed to parse value" crash.
+			if !replyHasVanillaCorePack(p) {
+				log.Printf("[Java] AcceptConfig: client did NOT select minecraft/core/26.3; " +
+					"data-less registry sync will fail on this client")
+			}
 		case packetid.ServerboundConfigAcceptCodeOfConduct:
 			// Code of conduct acceptance - ignored
 		default:
@@ -247,4 +145,31 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 			_ = p.Data // use p.Data to avoid compile error
 		}
 	}
+}
+
+// replyHasVanillaCorePack decodes a ServerboundSelectKnownPacks reply
+// (VarInt count, then per pack: String namespace, String id, String version)
+// and reports whether the client selected minecraft/core/26.3.
+func replyHasVanillaCorePack(p pk.Packet) bool {
+	r := bytes.NewReader(p.Data)
+	var count pk.VarInt
+	if _, err := count.ReadFrom(r); err != nil {
+		return false
+	}
+	for i := int32(0); i < int32(count); i++ {
+		var ns, id, version pk.String
+		if _, err := ns.ReadFrom(r); err != nil {
+			return false
+		}
+		if _, err := id.ReadFrom(r); err != nil {
+			return false
+		}
+		if _, err := version.ReadFrom(r); err != nil {
+			return false
+		}
+		if ns == "minecraft" && id == "core" && version == "26.3" {
+			return true
+		}
+	}
+	return false
 }

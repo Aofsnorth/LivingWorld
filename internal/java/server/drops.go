@@ -19,7 +19,7 @@ const (
 	// pickups feel "snappy". We mirror the vanilla inflation here.
 	javaPickupInflateXZ = 1.0
 	javaPickupInflateY  = 0.5
-	javaPickupDelayTks  = 10   // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
+	javaPickupDelayTks  = 10 // store ticks (0.5s at 20Hz) before a drop is collectable — vanilla block/mob-drop delay
 	javaPickupHz        = 20
 	javaDropDespawnTks  = 6000 // store ticks (5 min at 20Hz) before an uncollected drop despawns — vanilla item lifetime
 

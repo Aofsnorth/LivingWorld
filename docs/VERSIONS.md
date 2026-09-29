@@ -4,23 +4,21 @@
 
 ## Supported Versions
 
-LivingWorld is **`LivingWorld 26 (A)`** — one server version covering every Minecraft
+LivingWorld is **`LivingWorld 26 (B)`** — one server version covering every Minecraft
 patch that shares the same wire protocol on each edition.
 
 | Component | Versions | Protocol | Status |
 |-----------|----------|----------|--------|
-| **Java Edition** | 26.1, 26.1.1, **26.1.2** | **775** | ✅ Supported |
-| **Bedrock Edition** | 1.26.20 (≈26.20) | **975** | ✅ Supported |
-| **Bedrock Edition** | 1.26.21 / 1.26.23 | 975 | 🔄 Same protocol — should work |
+| **Java Edition** | 26.2 | **776** | ✅ Supported |
+| **Bedrock Edition** | 1.26.50 | **2193** | ✅ Supported |
 
-All three Java patches (26.1 / 26.1.1 / 26.1.2) share Java protocol **775**, so they join
-under one LivingWorld version. The server sends the full `minecraft:timeline` registry
-data (it can't rely on the client's built-in pack, because the known-pack version match
-is exact and the server can't know which 26.1.x patch is connecting) — see
-[PROTOCOL.md](PROTOCOL.md).
+Java 26.3 is the current Mojang release (protocol 777) and is **not yet
+supported** — see "Future Version Targets" below. Bedrock's wire protocol is
+owned entirely by the pinned `gophertunnel`, so `BedrockProtocol` in
+`internal/version` must stay in step with `protocol.CurrentVersion` there.
 
 > Earlier builds of this doc listed Java 1.20.2 / protocol 764. That was stale: the
-> bundled `third_party/go-mc` fork is hand-patched to `ProtocolVersion = 775`.
+> bundled `third_party/go-mc` fork is hand-patched to `ProtocolVersion = 776`.
 
 ## Library Dependencies
 
@@ -45,15 +43,16 @@ go get -u all
 
 ### Step 2: Verify Protocol Constants
 
-Java: Check `third_party/go-mc/net/protocol.go`:
+Java: Check `third_party/go-mc/server/server.go`:
 ```go
 const (
-    ProtocolVersion = 775  // MC Java 26.1 / 26.1.1 / 26.1.2
+    ProtocolVersion = 776  // MC Java 26.2
     // ...
 )
 ```
 
-Bedrock: `gophertunnel` handles this automatically.
+Bedrock: `gophertunnel` handles this automatically — read
+`minecraft/protocol/info.go` for `CurrentProtocol` / `CurrentVersion`.
 
 ### Step 3: Test Block Registries
 
@@ -71,20 +70,34 @@ import/export is supported; Bedrock (LevelDB) is not implemented yet.
 
 | LivingWorld | Date | Changes |
 |-------------|------|---------|
-| 26 (A) | 2026-05-31 | Java 26.1/26.1.1/**26.1.2** (proto 775) + Bedrock 1.26.20 (proto 975); 26.1.2 registry fix; world converter |
-| (future) | TBD | Nether/End dimensions; full inventory sync |
+| 26 (B) | 2026-09-27 | Bedrock → 1.26.50 (proto 2193) via gophertunnel v1.62.0; packet ID/permission/optional-field migrations |
+| (future) | TBD | Java 26.3 (proto 777); Nether/End dimensions; full inventory sync |
 
 ## Known Compatibility Issues
 
 ### Bedrock sub-versions
-- **Issue**: minor feature/protocol drift between 1.26.x patches
-- **Workaround**: 1.26.20–1.26.23 share protocol 975 and are generally compatible
-- **Fix**: bump `gophertunnel` when a patch changes the wire protocol
+- **Issue**: minor feature/protocol drift between Bedrock patches
+- **Status**: each Bedrock patch that changes the wire protocol needs a
+  `gophertunnel` bump. gophertunnel tracks them one per minor release
+  (v1.57.1 = 1.26.30/proto 1001, v1.62.0 = 1.26.50/proto 2193), and a
+  bump usually breaks our `protocol.Skin` / `packet.PlayerList` /
+  `packet.MovePlayer` call sites — check those three first.
+- **Fix**: bump `gophertunnel`, then fix the migrated call sites in
+  `internal/bedrock/{skin,world,server}` and `plugin/dfcompat`.
 
 ## Future Version Targets
 
 | Target | Priority | Notes |
 |--------|----------|-------|
-| Next Java protocol bump | High | New `LWVersion` letter when the wire protocol changes |
-| Multiprotocol plugin (1.21 → latest) | Medium | Native ViaVersion-style translation (see TODO §5) |
+| **Java 26.3 (protocol 777)** | **High** | Current Mojang release. Needs a full data regeneration, not just a number bump — see the note below |
+| Multiprotocol plugin (26.2 → latest) | Medium | Native ViaVersion-style translation (see TODO §5) |
 | Bedrock LevelDB world conversion | Medium | Complete the `worldconvert` Bedrock path |
+
+> **Why Java 26.3 is not a number bump.** The packet ID table in
+> `third_party/go-mc/data/packetid` is code-generated from
+> `<version>/packets.json` by `go run ./tools/ --version <v>`, and that
+> pipeline also regenerates blocks, items, entities, components, registries,
+> biomes, sounds, all ~137 language files and the worldgen `vanilladata`
+> tree. Packet IDs shift between releases, so declaring protocol 777 while
+> the tables are 26.2's would misparse real traffic. The bump has to be the
+> full regeneration for 26.3, re-verified against the overworld generator.

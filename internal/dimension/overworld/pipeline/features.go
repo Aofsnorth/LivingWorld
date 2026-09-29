@@ -108,8 +108,7 @@ func (g *Generator) treePlansFor(acx, acz int) []treePlan {
 
 	// The biome at the chunk centre decides the recipe — close enough to
 	// vanilla's per-column check and keeps the plan cheap.
-	centre := g.shapeColumn(acx*16+8, acz*16+8)
-	veg := vegFor(centre.biome.ID)
+	veg := vegFor(g.BiomeAt(acx*16+8, acz*16+8))
 	if len(veg.trees) == 0 || veg.treeCount == 0 {
 		return nil
 	}
@@ -128,15 +127,34 @@ func (g *Generator) treePlansFor(acx, acz int) []treePlan {
 	return plans
 }
 
+// treeReach bounds how far a tree's canopy can extend from its trunk. The
+// widest canopy this generator builds is radius ~5 (large spruce/jungle), so
+// 12 is a conservative bound for skipping trees that cannot write any block
+// into the target chunk.
+const treeReach = 12
+
+// treeReachesChunk reports whether a tree planted at (wx, wz) could write a
+// block into chunk (cx, cz).
+func treeReachesChunk(wx, wz, cx, cz int) bool {
+	x0, z0 := cx*16, cz*16
+	return wx >= x0-treeReach && wx < x0+16+treeReach &&
+		wz >= z0-treeReach && wz < z0+16+treeReach
+}
+
 // placeTreesFrom evaluates the tree plan of anchor chunk (acx, acz) and
 // writes the blocks that fall inside target chunk (cx, cz).
 func (g *Generator) placeTreesFrom(c *world.Chunk, cx, cz, acx, acz int) {
 	for _, p := range g.treePlansFor(acx, acz) {
+		// Trees whose canopy cannot reach this chunk write nothing here
+		// (buildTree filters every block to the target chunk), so skip the
+		// expensive ground derivation for them. Output is unchanged.
+		if !treeReachesChunk(p.wx, p.wz, cx, cz) {
+			continue
+		}
 		// Ground at the anchor: recomputed (pure function), then checked
 		// against the actual chunk if the anchor is local — caves may
 		// have eaten the surface.
-		ground := g.shapeColumn(p.wx, p.wz)
-		gy := ground.height
+		gy := g.terrainTop(p.wx, p.wz)
 		if gy < seaLevel || gy > 250 {
 			continue // underwater or absurd
 		}

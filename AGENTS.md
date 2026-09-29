@@ -45,3 +45,6 @@ Integration points in `server`:
 When adding a new long-running subsystem, prefer implementing
 `harness.Component` and registering it in `NewHarness` (or via a hook) rather
  than ad-hoc goroutines in `Server.Start`.
+
+
+DON'T PLACE TESTS FILES IN OTHER PLACE EXCEPT TESTS FOLDER!

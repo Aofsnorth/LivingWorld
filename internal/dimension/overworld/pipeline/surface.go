@@ -17,11 +17,25 @@ const (
 // lavaLevel: cave cells carved below this Y flood with lava (vanilla -54).
 const lavaLevel = -54
 
-// buildColumn writes the full vertical column (lx, lz) of the chunk:
-// bedrock floor, deepslate body, stone body, biome surface materials,
-// and sea/river water. Caves, ores, and features run afterwards.
-func (g *Generator) buildColumn(c *world.Chunk, lx, lz, wx, wz int, col column) {
+// buildColumn writes the full vertical column (lx, lz) of the chunk.
+// Solidity is per-block from the vanilla final_density tree (the same
+// grid buildChunkDensity gathers), so caves, cave pillars, and overhangs
+// appear exactly where vanilla's own noise puts them:
+//
+//   - a block is solid iff the interpolated final_density is positive;
+//   - the biome surface stack (bedrock floor, deepslate body, surface
+//     band) is applied to the solid blocks relative to the column top;
+//   - water fills only the sky-open gap between the terrain top and sea
+//     level — underground cave air never floods;
+//   - cave cells below lavaLevel flood with lava (vanilla's lava level).
+//
+// Ores and features run afterwards.
+func (g *Generator) buildColumn(c *world.Chunk, dens *chunkDensity, lx, lz, wx, wz int, col column) {
 	top := col.height
+
+	// Per-block solidity from the vanilla tree.
+	var solid [maxY + 1 - minY]bool
+	dens.scanColumn(lx, lz, solid[:])
 
 	// Dirt (filler) depth varies 2..4 with a small noise field, like
 	// vanilla's surface_depth noise.
@@ -30,10 +44,21 @@ func (g *Generator) buildColumn(c *world.Chunk, lx, lz, wx, wz int, col column) 
 	underwater := top < seaLevel-1
 
 	for y := minY; y <= top; y++ {
+		if y == minY {
+			// World floor: always sealed with bedrock.
+			c.SetBlock(lx, y, lz, world.BlockByID(g.ids.bedrock))
+			continue
+		}
+		if !solid[y-minY] {
+			// Cave cell from the vanilla tree. Below lavaLevel the
+			// aquifer floods it with lava; above it stays dry.
+			if y < lavaLevel {
+				c.SetBlock(lx, y, lz, world.BlockByID(g.ids.lava))
+			}
+			continue
+		}
 		var id int32
 		switch {
-		case y == minY:
-			id = g.ids.bedrock
 		case y < minY+5 && hash01(g.seed, wx, y, wz) < float64(minY+5-y)/5.0:
 			// Bedrock gradient over -63..-60, denser toward the floor.
 			id = g.ids.bedrock
@@ -52,7 +77,7 @@ func (g *Generator) buildColumn(c *world.Chunk, lx, lz, wx, wz int, col column) 
 		c.SetBlock(lx, y, lz, world.BlockByID(id))
 	}
 
-	// Sea / river water above the terrain.
+	// Sky-open water above the terrain top only (caves never flood).
 	if top < seaLevel-1 {
 		for y := top + 1; y <= seaLevel-1; y++ {
 			c.SetBlock(lx, y, lz, world.BlockByID(g.ids.water))

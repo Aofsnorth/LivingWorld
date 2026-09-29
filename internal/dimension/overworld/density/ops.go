@@ -106,9 +106,9 @@ func (o Max) Eval(c Context, x, y, z int) float64 {
 
 // Clamp clamps the input to [Min, Max].
 type Clamp struct {
-	A       Function
-	Min     float64
-	Max     float64
+	A   Function
+	Min float64
+	Max float64
 }
 
 func (o Clamp) Eval(c Context, x, y, z int) float64 {
@@ -137,33 +137,45 @@ func (o CacheAllInCell) Eval(c Context, x, y, z int) float64 {
 	return o.A.Eval(c, x, y, z)
 }
 
-// CacheOnce caches the wrapped function per (x, y, z).
-type CacheOnce struct{ A Function }
+// CacheOnce caches the wrapped function per (x, y, z). ID namespaces the
+// cache entries (assigned at parse time).
+type CacheOnce struct {
+	A  Function
+	ID uint32
+}
 
 func (o *CacheOnce) Eval(c Context, x, y, z int) float64 {
-	return c.cached(o, x, y, z, func() float64 { return o.A.Eval(c, x, y, z) })
+	return c.cached(o.ID, x, y, z, func() float64 { return o.A.Eval(c, x, y, z) })
 }
 
 // Cache2D caches the wrapped function per (x, z) with y forced to 0.
-type Cache2D struct{ A Function }
+type Cache2D struct {
+	A  Function
+	ID uint32
+}
 
 func (o *Cache2D) Eval(c Context, x, y, z int) float64 {
-	return c.cached(o, x, 0, z, func() float64 { return o.A.Eval(c, x, 0, z) })
+	return c.cached(o.ID, x, 0, z, func() float64 { return o.A.Eval(c, x, 0, z) })
 }
 
 // FlatCache caches the wrapped function per 2D cell (x >> 2, z >> 2) at y=0.
-type FlatCache struct{ A Function }
+type FlatCache struct {
+	A  Function
+	ID uint32
+}
 
 func (o *FlatCache) Eval(c Context, x, y, z int) float64 {
 	x0 := x >> 2 << 2
 	z0 := z >> 2 << 2
-	return c.cached(o, x0, 0, z0, func() float64 { return o.A.Eval(c, x0, 0, z0) })
+	return c.cached(o.ID, x0, 0, z0, func() float64 { return o.A.Eval(c, x0, 0, z0) })
 }
 
 // Interpolated samples the wrapped function at the corners of the cell
-// (size CellWidth x CellHeight) and trilinearly interpolates.
+// (size CellWidth x CellHeight) and trilinearly interpolates. A is expected
+// to be a CacheOnce wrapper (installed by the parser) so corner values are
+// memoized per position and shared across nested interpolations.
 type Interpolated struct {
-	A                  Function
+	A                     Function
 	CellWidth, CellHeight int
 }
 
@@ -185,14 +197,37 @@ func (o *Interpolated) Eval(c Context, x, y, z int) float64 {
 	ty := float64(y-firstY) / float64(h)
 	tz := float64(z-firstZ) / float64(w)
 
-	v000 := c.cached(o.A, firstX, firstY, firstZ, func() float64 { return o.A.Eval(c, firstX, firstY, firstZ) })
-	v001 := c.cached(o.A, firstX, firstY, firstZ+w, func() float64 { return o.A.Eval(c, firstX, firstY, firstZ+w) })
-	v010 := c.cached(o.A, firstX, firstY+h, firstZ, func() float64 { return o.A.Eval(c, firstX, firstY+h, firstZ) })
-	v011 := c.cached(o.A, firstX, firstY+h, firstZ+w, func() float64 { return o.A.Eval(c, firstX, firstY+h, firstZ+w) })
-	v100 := c.cached(o.A, firstX+w, firstY, firstZ, func() float64 { return o.A.Eval(c, firstX+w, firstY, firstZ) })
-	v101 := c.cached(o.A, firstX+w, firstY, firstZ+w, func() float64 { return o.A.Eval(c, firstX+w, firstY, firstZ+w) })
-	v110 := c.cached(o.A, firstX+w, firstY+h, firstZ, func() float64 { return o.A.Eval(c, firstX+w, firstY+h, firstZ) })
-	v111 := c.cached(o.A, firstX+w, firstY+h, firstZ+w, func() float64 { return o.A.Eval(c, firstX+w, firstY+h, firstZ+w) })
+	// Only corners with a non-zero interpolation weight are sampled. The
+	// chunk pipeline evaluates at 4x8x4 cell corners, where this collapses
+	// nested interpolations from 8 child evals to 1 — the single biggest
+	// cost lever in the tree (profiled at 88% of evaluation before).
+	v000 := o.A.Eval(c, firstX, firstY, firstZ)
+	if tx == 0 && ty == 0 && tz == 0 {
+		return v000
+	}
+	v100, v010, v001 := v000, v000, v000
+	v110, v101, v011, v111 := v000, v000, v000, v000
+	if tx > 0 {
+		v100 = o.A.Eval(c, firstX+w, firstY, firstZ)
+		if ty > 0 {
+			v110 = o.A.Eval(c, firstX+w, firstY+h, firstZ)
+		}
+		if tz > 0 {
+			v101 = o.A.Eval(c, firstX+w, firstY, firstZ+w)
+		}
+		if ty > 0 && tz > 0 {
+			v111 = o.A.Eval(c, firstX+w, firstY+h, firstZ+w)
+		}
+	}
+	if ty > 0 {
+		v010 = o.A.Eval(c, firstX, firstY+h, firstZ)
+		if tz > 0 {
+			v011 = o.A.Eval(c, firstX, firstY+h, firstZ+w)
+		}
+	}
+	if tz > 0 {
+		v001 = o.A.Eval(c, firstX, firstY, firstZ+w)
+	}
 
 	return lerp3(tx, ty, tz, v000, v100, v010, v110, v001, v101, v011, v111)
 }
@@ -223,8 +258,8 @@ func lerp(t, a, b float64) float64 { return a + t*(b-a) }
 // If input < thresholds[0] then functions[0], else count how many thresholds
 // are crossed and use functions[index].
 type IntervalSelect struct {
-	Input     Function
-	Functions []Function
+	Input      Function
+	Functions  []Function
 	Thresholds []float64
 }
 
@@ -258,11 +293,35 @@ type EndIslands struct{}
 
 func (EndIslands) Eval(Context, int, int, int) float64 { return 0 }
 
-// FindTopSurface is the preliminary surface level function. Overworld
-// final_density does not use it, so this is a placeholder.
-type FindTopSurface struct{}
+// FindTopSurface is 26.3's minecraft:find_top_surface
+// (FindTopSurfaceFunction): starting at the cell-aligned block below the upper
+// bound it walks down one cellHeight step at a time and returns the first
+// height whose density is positive, clamped to lowerBound. The surface system
+// reads it to decide where to place surface blocks.
+type FindTopSurface struct {
+	Density    Function
+	UpperBound Function
+	LowerBound int
+	CellHeight int
+}
 
-func (FindTopSurface) Eval(Context, int, int, int) float64 { return 0 }
+func (o FindTopSurface) Eval(c Context, x, y, z int) float64 {
+	upper := o.UpperBound.Eval(c, x, y, z)
+	ch := o.CellHeight
+	if ch <= 0 {
+		ch = 8
+	}
+	start := int(math.Floor(upper/float64(ch))) * ch
+	if start <= o.LowerBound {
+		return float64(o.LowerBound)
+	}
+	for yy := start; yy >= o.LowerBound; yy -= ch {
+		if o.Density.Eval(c, x, yy, z) > 0 {
+			return float64(yy)
+		}
+	}
+	return float64(o.LowerBound)
+}
 
 // Beardifier is the structure beardifier function. Overworld final_density
 // does not use it, so this is a placeholder.

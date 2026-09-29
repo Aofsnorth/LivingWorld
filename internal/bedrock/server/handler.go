@@ -32,7 +32,7 @@ const (
 // Vanilla Bedrock servers (and Realms) send 2 to ops and 1 to everyone else;
 // the previous hardcoded 1 silently downgraded ops to member and the client
 // refused to show the cheat controls.
-func playerPerms(isOp bool) int32 {
+func playerPerms(isOp bool) byte {
 	if isOp {
 		return 2
 	}
@@ -188,6 +188,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.spawnExistingMobs(bs)
 	s.sendWeatherTo(bs)
 	s.spawnExistingDropsFor(bs)
+
+	// Last step of the join sequence. Everything the client needs to build
+	// the first frame — spawn chunks, time of day, weather, actors — has now
+	// been queued, so release the input lock. See releaseClientInput for why
+	// gophertunnel does not do this for us.
+	releaseClientInput(mcConn)
 
 	for {
 		pk, err := mcConn.ReadPacket()

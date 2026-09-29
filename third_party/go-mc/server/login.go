@@ -58,6 +58,53 @@ type MojangLoginHandler struct {
 	// PrivateKey is the key used by encrypt the connection.
 	privateKey     atomic.Pointer[rsa.PrivateKey]
 	lockPrivateKey sync.Mutex
+
+	// sessionID is the server-side session identifier sent in the
+	// clientbound Login Finished packet (protocol 777 / 26.3+). Vanilla reads
+	// it from ServerConnectionListener.getSessionId(), i.e. it identifies the
+	// server listener rather than the individual player, so it is generated
+	// once and reused for every connection.
+	sessionID uuid.UUID
+}
+
+// loginFinishedFields builds the field list of the clientbound Login Finished
+// packet.
+//
+// The trailing field changed in 26.3 (protocol 777). Verified against the 26.3
+// server jar rather than inferred:
+//
+//	ClientboundLoginFinishedPacket.STREAM_CODEC = StreamCodec.composite(
+//	    ByteBufCodecs.GAME_PROFILE,  ...::gameProfile,
+//	    UUIDUtil.STREAM_CODEC,       ...::sessionId,
+//	    (profile, sessionId) -> new ClientboundLoginFinishedPacket(...))
+//
+// GAME_PROFILE itself is composite(UUID, PLAYER_NAME, GAME_PROFILE_PROPERTIES),
+// so the whole packet is: UUID, String name, PropertyMap, UUID sessionId.
+//
+// Protocol 776 (26.2) instead ended with a boolean strictErrorHandling flag,
+// which 26.3 removed. Emitting the old boolean made a 26.3 client read one
+// byte where it expected a 16-byte session UUID, and it disconnected with
+// "failed to decode packet clientbound login finished".
+func loginFinishedFields(id uuid.UUID, name string, properties []user.Property, sessionID uuid.UUID, protocol int32) []pk.FieldEncoder {
+	fields := []pk.FieldEncoder{
+		pk.UUID(id),
+		pk.String(name),
+		pk.Array(properties),
+	}
+	if protocol >= 777 {
+		fields = append(fields, pk.UUID(sessionID))
+	} else {
+		fields = append(fields, pk.Boolean(false))
+	}
+	return fields
+}
+
+// getSessionID lazily generates the server's session identifier.
+func (d *MojangLoginHandler) getSessionID() uuid.UUID {
+	if d.sessionID == uuid.Nil {
+		d.sessionID = uuid.New()
+	}
+	return d.sessionID
 }
 
 func (d *MojangLoginHandler) getPrivateKey() (key *rsa.PrivateKey, err error) {
@@ -151,15 +198,7 @@ func (d *MojangLoginHandler) AcceptLogin(conn *net.Conn, protocol int32) (name s
 		}
 	}
 	// send login success
-	// strictErrorHandling: 1.21.5+ / protocol 776+ field (false = client silently ignores packet errors)
-	fields := []pk.FieldEncoder{
-		pk.UUID(id),
-		pk.String(name),
-		pk.Array(properties),
-	}
-	if protocol >= 776 {
-		fields = append(fields, pk.Boolean(false))
-	}
+	fields := loginFinishedFields(id, name, properties, d.getSessionID(), protocol)
 	err = conn.WritePacket(pk.Marshal(packetid.ClientboundLoginLoginFinished, fields...))
 	if err != nil {
 		return

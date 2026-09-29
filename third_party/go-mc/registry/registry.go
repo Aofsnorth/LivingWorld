@@ -40,6 +40,26 @@ func (r *Registry[E]) GetByID(id int32) *E {
 	return nil
 }
 
+// Keys returns every registered key, in registration order (i.e. sorted by
+// id). It is primarily a debugging/introspection helper: callers that already
+// know the id they want should use GetByID, which is O(1).
+func (r *Registry[E]) Keys() []string {
+	out := make([]string, 0, len(r.values))
+	for id := range r.values {
+		out = append(out, r.idToKey(int32(id)))
+	}
+	return out
+}
+
+func (r *Registry[E]) idToKey(id int32) string {
+	for k, v := range r.keys {
+		if v == id {
+			return k
+		}
+	}
+	return ""
+}
+
 func (r *Registry[E]) Put(key string, data E) (id int32, val *E) {
 	id = int32(len(r.values))
 	r.keys[key] = id

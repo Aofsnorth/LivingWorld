@@ -127,14 +127,18 @@ func (v LWVersion) Has(c Capability) bool { return v.Capabilities&c != 0 }
 // versions. Phase 2's contract is "all consumers read from Supported()"
 // so a future bump is a one-file change.
 var (
-	regMu  sync.RWMutex
+	regMu    sync.RWMutex
 	registry = []LWVersion{
 		{
-			Label:           "26 (B)",
-			JavaProtocol:    776,
-			JavaBuilds:      []string{"26.2"},
-			BedrockProtocol: 1001,
-			BedrockBuilds:   []string{"26.32"},
+			Label:        "26 (B)",
+			JavaProtocol: 777,
+			JavaBuilds:   []string{"26.3"},
+			// Bedrock protocol 2193 is the latest Bedrock release. gophertunnel
+			// v1.62.0 ("Support for 1.26.50") is the pinned dependency that
+			// speaks it, and its CurrentVersion is what we advertise as
+			// BaseGameVersion in the login packet. Keep all three in step.
+			BedrockProtocol: 2193,
+			BedrockBuilds:   []string{"1.26.50"},
 			Capabilities:    CapCustomPlayerModels | CapNetherUpdateNotes,
 			ChangelogURL:    "https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B",
 		},
@@ -221,6 +225,46 @@ func SortedBuilds(e Edition) []string {
 	}
 	out := make([]string, len(src))
 	copy(out, src)
+	sort.Strings(out)
+	return out
+}
+
+// javaReleaseProtocols maps a Java Edition release id (the strings Mojang's
+// version_manifest.json uses, e.g. "26.3") to its wire protocol number.
+//
+// It exists because Mojang REMOVED the "protocolVersion" field from both
+// version_manifest.json and version_manifest_v2.json, which used to be the
+// only machine-readable source for it. Without a local table, cmd/versioncheck
+// had no way to learn a protocol number and silently reported "No drift
+// detected" forever — which is exactly how LivingWorld sat on 26.2/776 while
+// 26.3/777 shipped.
+//
+// The manifest still tells us the *latest release id*, so pairing that id with
+// this table is enough to detect a new release. When Mojang ships a version
+// that is not in the table, JavaProtocolFor reports ok=false and the caller
+// says so instead of guessing.
+var javaReleaseProtocols = map[string]int32{
+	"1.21.9":  773,
+	"1.21.11": 774,
+	"26.1":    775,
+	"26.2":    776,
+	"26.3":    777,
+}
+
+// JavaProtocolFor returns the wire protocol number of a Java Edition release.
+func JavaProtocolFor(releaseID string) (int32, bool) {
+	p, ok := javaReleaseProtocols[releaseID]
+	return p, ok
+}
+
+// KnownJavaReleases returns the release ids present in JavaProtocolFor's table,
+// sorted. cmd/versioncheck prints this so an operator can see at a glance
+// whether a new release still needs to be recorded.
+func KnownJavaReleases() []string {
+	out := make([]string, 0, len(javaReleaseProtocols))
+	for id := range javaReleaseProtocols {
+		out = append(out, id)
+	}
 	sort.Strings(out)
 	return out
 }

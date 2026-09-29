@@ -46,6 +46,48 @@ type aquiferHelper struct {
 	Apply func(density.Context, int, int, int, string, biome.Parameters) string
 }
 
+// VanillaDensity builds just the vanilla density stack — the noise samplers
+// plus the parsed overworld final_density tree — for the given seed. It is
+// the terrain-shape source the chunk pipeline queries; New wraps the same
+// stack in the full worldgen context.
+func VanillaDensity(seed int64) (density.Context, density.FinalDensity) {
+	noises := buildNoiseSet(seed)
+	noiseCtx := density.NewContext(seed, noises)
+
+	settingsRaw, ok := vanilladata.LoadNoiseSettings("overworld")
+	if !ok {
+		panic("overworld noise_settings not found")
+	}
+	tree, err := density.ParseFinalDensity(noiseCtx, settingsRaw)
+	if err != nil {
+		panic(err)
+	}
+	return noiseCtx, density.FinalDensity{Tree: tree}
+}
+
+// VanillaStack builds the noise context, the final_density tree, and the six
+// climate router functions for one world seed. The chunk pipeline uses the
+// climate functions to select biomes the way NoiseRouter.createClimateSampler
+// + MultiNoiseBiomeSource do in vanilla.
+func VanillaStack(seed int64) (density.Context, density.FinalDensity, density.ClimateFunctions) {
+	noises := buildNoiseSet(seed)
+	noiseCtx := density.NewContext(seed, noises)
+
+	settingsRaw, ok := vanilladata.LoadNoiseSettings("overworld")
+	if !ok {
+		panic("overworld noise_settings not found")
+	}
+	tree, err := density.ParseFinalDensity(noiseCtx, settingsRaw)
+	if err != nil {
+		panic(err)
+	}
+	climate, err := density.ParseClimate(noiseCtx, settingsRaw)
+	if err != nil {
+		panic(err)
+	}
+	return noiseCtx, density.FinalDensity{Tree: tree}, climate
+}
+
 // New builds a WorldgenContext for the given world seed. It is
 // expensive (one-shot at world bootstrap) but everything downstream
 // is read-only.
@@ -67,18 +109,7 @@ func New(seed int64) *Context {
 	}
 	sampler := climate.NewSampler(seeds, 1.0/4.0)
 
-	noises := buildNoiseSet(seed)
-	noiseCtx := density.NewContext(seed, noises)
-
-	settingsRaw, ok := vanilladata.LoadNoiseSettings("overworld")
-	if !ok {
-		panic("overworld noise_settings not found")
-	}
-	tree, err := density.ParseFinalDensity(noiseCtx, settingsRaw)
-	if err != nil {
-		panic(err)
-	}
-	final := density.FinalDensity{Tree: tree}
+	noiseCtx, final := VanillaDensity(seed)
 
 	aq := &aquiferHelper{Apply: nil}
 	_ = aq
@@ -100,10 +131,19 @@ func New(seed int64) *Context {
 	}
 }
 
+// buildNoiseSet converts vanilla's 26.3 noise parameter records into
+// samplers. The 26.3 schema is {base_amplitude, base_octave, octave_count}
+// (NormalNoise$Parameters): octave k runs at frequency 2^(base_octave+k)
+// with amplitude base_amplitude * 0.5^k (buildOctaves). An older revision of
+// this function read {firstOctave, amplitudes} — a schema no vanilla data
+// file uses — so every noise silently became a constant and the density
+// tree's cave/climate terms collapsed to flat values.
 func buildNoiseSet(seed int64) density.NoiseSet {
 	type params struct {
-		FirstOctave int       `json:"firstOctave"`
-		Amplitudes  []float64 `json:"amplitudes"`
+		BaseAmplitude     float64   `json:"base_amplitude"`
+		BaseOctave        int       `json:"base_octave"`
+		OctaveCount       int       `json:"octave_count"`
+		AmplitudeModifier []float64 `json:"amplitude_modifiers"`
 	}
 
 	pos := noise.NewXoroshiro(uint64(seed)).ForkPositional()
@@ -113,8 +153,15 @@ func buildNoiseSet(seed int64) density.NoiseSet {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			panic(err)
 		}
-		r := pos.FromHashOf(name)
-		noises[name] = noise.NewNormalNoiseFromParams(r, p.FirstOctave, p.Amplitudes)
+		// Codec defaults: base_amplitude 1.0, octave_count 1.
+		if p.BaseAmplitude == 0 {
+			p.BaseAmplitude = 1.0
+		}
+		if p.OctaveCount <= 0 {
+			p.OctaveCount = 1
+		}
+		r := pos.FromHashOf("minecraft:" + name)
+		noises[name] = noise.NewNormalNoise26(r, p.BaseOctave, p.BaseAmplitude, p.OctaveCount, p.AmplitudeModifier)
 	}
 	return noises
 }

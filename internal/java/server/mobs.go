@@ -21,31 +21,31 @@ func yawToAngle(deg float64) pk.Angle {
 // javaMobTypeIDs maps a namespaced mob type to its Java (protocol 775) entity
 // type id. Unknown types fall back to a pig.
 var javaMobTypeIDs = map[string]int32{
-	"minecraft:pig":                 int32(entity.Pig.ID),
-	"minecraft:cow":                 int32(entity.Cow.ID),
-	"minecraft:chicken":             int32(entity.Chicken.ID),
-	"minecraft:sheep":               int32(entity.Sheep.ID),
-	"minecraft:creeper":             int32(entity.Creeper.ID),
-	"minecraft:zombie":              int32(entity.Zombie.ID),
-	"minecraft:skeleton":            int32(entity.Skeleton.ID),
+	"minecraft:pig":      int32(entity.Pig.ID),
+	"minecraft:cow":      int32(entity.Cow.ID),
+	"minecraft:chicken":  int32(entity.Chicken.ID),
+	"minecraft:sheep":    int32(entity.Sheep.ID),
+	"minecraft:creeper":  int32(entity.Creeper.ID),
+	"minecraft:zombie":   int32(entity.Zombie.ID),
+	"minecraft:skeleton": int32(entity.Skeleton.ID),
 	// M1 variants
-	"minecraft:husk":                int32(entity.Husk.ID),
-	"minecraft:stray":               int32(entity.Stray.ID),
-	"minecraft:bogged":              int32(entity.Bogged.ID),
-	"minecraft:zombie_villager":     int32(entity.ZombieVillager.ID),
-	"minecraft:drowned":             int32(entity.Drowned.ID),
-	"minecraft:cave_spider":         int32(entity.CaveSpider.ID),
-	"minecraft:spider":              int32(entity.Spider.ID),
-	"minecraft:slime":               int32(entity.Slime.ID),
-	"minecraft:magma_cube":          int32(entity.MagmaCube.ID),
-	"minecraft:phantom":             int32(entity.Phantom.ID),
-	"minecraft:blaze":               int32(entity.Blaze.ID),
-	"minecraft:ghast":               int32(entity.Ghast.ID),
-	"minecraft:witch":               int32(entity.Witch.ID),
-	"minecraft:enderman":            int32(entity.Enderman.ID),
-	"minecraft:piglin":              int32(entity.Piglin.ID),
-	"minecraft:wither_skeleton":     int32(entity.WitherSkeleton.ID),
-	"minecraft:iron_golem":          int32(entity.IronGolem.ID),
+	"minecraft:husk":            int32(entity.Husk.ID),
+	"minecraft:stray":           int32(entity.Stray.ID),
+	"minecraft:bogged":          int32(entity.Bogged.ID),
+	"minecraft:zombie_villager": int32(entity.ZombieVillager.ID),
+	"minecraft:drowned":         int32(entity.Drowned.ID),
+	"minecraft:cave_spider":     int32(entity.CaveSpider.ID),
+	"minecraft:spider":          int32(entity.Spider.ID),
+	"minecraft:slime":           int32(entity.Slime.ID),
+	"minecraft:magma_cube":      int32(entity.MagmaCube.ID),
+	"minecraft:phantom":         int32(entity.Phantom.ID),
+	"minecraft:blaze":           int32(entity.Blaze.ID),
+	"minecraft:ghast":           int32(entity.Ghast.ID),
+	"minecraft:witch":           int32(entity.Witch.ID),
+	"minecraft:enderman":        int32(entity.Enderman.ID),
+	"minecraft:piglin":          int32(entity.Piglin.ID),
+	"minecraft:wither_skeleton": int32(entity.WitherSkeleton.ID),
+	"minecraft:iron_golem":      int32(entity.IronGolem.ID),
 }
 
 // javaProjectileTypeIDs maps a ProjectileKind (M1) to its Java (protocol 775)
@@ -322,10 +322,10 @@ func spawnProjectilePacket(p mobs.Projectile) pk.Packet {
 		pk.UUID([16]byte{}),
 		pk.VarInt(typeID),
 		pk.Double(p.X), pk.Double(p.Y), pk.Double(p.Z),
-		pk.Byte(0),  // head pitch
-		pk.Angle(0), // pitch
-		yaw,         // yaw (fireballs/potions face target; arrows 0)
-		yaw,         // head yaw
+		pk.Byte(0),   // head pitch
+		pk.Angle(0),  // pitch
+		yaw,          // yaw (fireballs/potions face target; arrows 0)
+		yaw,          // head yaw
 		pk.VarInt(0), // data
 	)
 }

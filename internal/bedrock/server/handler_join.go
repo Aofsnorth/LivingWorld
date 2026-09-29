@@ -7,6 +7,24 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
+// releaseClientInput tells the Bedrock client the local player is fully
+// initialised. Until it receives this packet the client keeps input locked
+// and refuses to spawn, which presents as a white sky and a player who
+// cannot move for the first few seconds of a join.
+//
+// gophertunnel does NOT send this on the server path. Its
+// tryFinaliseClientConn() gates on conn.gameDataReceived, a flag only set
+// by handleChunkRadiusUpdated — which belongs to the *dial* (client) flow.
+// A server connection that used StartGame() therefore never trips that
+// gate, so the application has to send SetLocalPlayerAsInitialised itself.
+// Send it only after the spawn-area chunks are on the wire, otherwise the
+// client initialises against an empty world and shows a void sky.
+func releaseClientInput(conn *minecraft.Conn) {
+	_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{
+		EntityRuntimeID: bedrockLocalRuntime,
+	})
+}
+
 // sendInitialInventories initializes the player's inventory windows so the
 // Bedrock client will actually render the inventory UI when opened. With the
 // server-authoritative inventory system the client keeps the screen closed
@@ -34,7 +52,7 @@ func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
 		HeadYaw:         yaw,
 		Mode:            packet.MoveModeTeleport,
 		OnGround:        true,
-		TeleportCause:   packet.TeleportCauseCommand,
+		TeleportData:    protocol.Option(protocol.TeleportData{TeleportCause: int32(packet.TeleportCauseCommand)}),
 	})
 }
 

@@ -56,6 +56,7 @@ var OverworldBiomes = []ID{
 	"minecraft:forest",
 	"minecraft:flower_forest",
 	"minecraft:birch_forest",
+	"minecraft:dappled_forest",
 	"minecraft:old_growth_birch_forest",
 	"minecraft:dark_forest",
 	"minecraft:pale_garden",
@@ -104,6 +105,7 @@ var OverworldBiomes = []ID{
 	"minecraft:stony_shore",
 	"minecraft:dripstone_caves",
 	"minecraft:lush_caves",
+	"minecraft:sulfur_caves",
 	"minecraft:deep_dark",
 }
 
