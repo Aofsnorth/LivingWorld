@@ -1,8 +1,0 @@
-{{.Header}}
-package registryid
-
-var {{.TypeName}} = []string{
-{{- range .Entries}}
-	{{printf "%q" .}},
-{{- end}}
-}
