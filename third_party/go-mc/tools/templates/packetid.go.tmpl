@@ -1,0 +1,17 @@
+{{.Header}}
+package packetid
+
+//go:generate stringer -type ClientboundPacketID
+//go:generate stringer -type ServerboundPacketID
+type (
+	ClientboundPacketID int32
+	ServerboundPacketID int32
+)
+{{range .Sections}}
+// {{.Comment}}
+const (
+{{- range .Entries}}
+	{{.}}
+{{- end}}
+)
+{{end -}}
