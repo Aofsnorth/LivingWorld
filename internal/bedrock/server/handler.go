@@ -59,10 +59,17 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	spawn := s.cfg.World.Spawn
 	spawnBlockY := int32(spawn.Y)
-	feetX, feetY, feetZ := float64(spawn.X)+0.5, spawn.Y, float64(spawn.Z)+0.5
+	// cfg.World.Spawn is already center-padded (X/Z +0.5) and surface-snapped
+	// by server.New (server/new.go:44-52), so use it verbatim. The previous
+	// double +0.5 shifted the feet column one block diagonally from the
+	// column whose surface was computed, which could embed the player in
+	// terrain on an uphill diagonal.
+	feetX, feetY, feetZ := spawn.X, spawn.Y, spawn.Z
 	savedBedrock, hasSavedBedrock := s.pm.LoadPlayerData(playerID)
 	if hasSavedBedrock {
-		feetX, feetY, feetZ = savedBedrock.X, savedBedrock.Y, savedBedrock.Z
+		// Validate before restoring: the save may predate world changes and sit
+		// inside solid terrain now (see safeRestoredFeet).
+		feetX, feetY, feetZ = safeRestoredFeet(s.wm.GetDefaultWorld(), savedBedrock.X, savedBedrock.Y, savedBedrock.Z)
 	}
 	spawnFeet := mgl32.Vec3{float32(feetX), float32(feetY), float32(feetZ)}
 	spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)

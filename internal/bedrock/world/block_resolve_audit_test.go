@@ -43,8 +43,8 @@ func TestAuditOverworldBlockResolution(t *testing.T) {
 			failed = append(failed, fmt.Sprintf("%s: not in Java palette", n))
 			continue
 		}
-		rid := LivingWorldBlockIDToBedrockRID(sid)
-		if rid == 0 {
+		rid, ok := LivingWorldBlockIDToBedrockRID(sid)
+		if !ok || rid == 0 {
 			failed = append(failed, fmt.Sprintf("%s (state=%d): did not resolve to Bedrock RID", n, sid))
 		}
 	}

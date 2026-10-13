@@ -1,8 +1,6 @@
 package server
 
 import (
-	lwworld "livingworld/internal/world"
-
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -15,9 +13,12 @@ func (s *Server) bootstrapWorld(conn *minecraft.Conn, radius int, bs *bedrockSes
 
 	centerX := int32(s.cfg.World.Spawn.X) >> 4
 	centerZ := int32(s.cfg.World.Spawn.Z) >> 4
+	// Use the real snapped spawn Y. The old hardcoded SuperflatSpawnY (4) is a
+	// superflat-era leftover and put the publisher below terrain for overworld
+	// spawns (only X/Z drive the radius, but Y is what the client anchors on).
 	spawn := protocol.BlockPos{
 		int32(s.cfg.World.Spawn.X),
-		int32(lwworld.SuperflatSpawnY),
+		int32(s.cfg.World.Spawn.Y),
 		int32(s.cfg.World.Spawn.Z),
 	}
 	_ = conn.WritePacket(&packet.ChunkRadiusUpdated{ChunkRadius: int32(radius)})

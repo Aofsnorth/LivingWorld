@@ -231,7 +231,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 						// "placed silently".
 						conn.WritePacket(&packet.UpdateBlock{
 							Position:          protocol.BlockPos{int32(targetPos[0]), int32(targetPos[1]), int32(targetPos[2])},
-							NewBlockRuntimeID: bedrockworld.LivingWorldBlockIDToBedrockRID(int32(stateID)),
+							NewBlockRuntimeID: mustBedrockRID(int32(stateID)),
 							Flags:             packet.BlockUpdateNetwork,
 							Layer:             0,
 						})

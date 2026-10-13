@@ -31,7 +31,8 @@ func main() {
 				if id == 0 {
 					continue
 				}
-				ch.SetBlock(uint8(x), int16(y), uint8(z), 0, bedrockworld.LivingWorldBlockIDToBedrockRID(id))
+				rid, _ := bedrockworld.LivingWorldBlockIDToBedrockRID(id)
+				ch.SetBlock(uint8(x), int16(y), uint8(z), 0, rid)
 			}
 		}
 	}
@@ -91,12 +92,12 @@ func main() {
 	fmt.Println("RID resolution check (lwID -> RID):")
 	for _, n := range names {
 		lwID := world.StateID(n)
-		rid := bedrockworld.LivingWorldBlockIDToBedrockRID(lwID)
+		rid, ok := bedrockworld.LivingWorldBlockIDToBedrockRID(lwID)
 		mark := ""
 		if lwID == 0 && n != "minecraft:air" {
 			mark = "  <-- LW STATE MISSING (resolves to air!)"
 		}
-		if rid == 0 {
+		if !ok || rid == 0 {
 			mark += "  <-- BEDROCK RID FAILED"
 		}
 		if mark != "" {

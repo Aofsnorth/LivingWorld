@@ -34,9 +34,10 @@ func adjacentBlockPos(pos protocol.BlockPos, face int32) protocol.BlockPos {
 
 func (s *Server) resyncBedrockBlock(conn *minecraft.Conn, pos protocol.BlockPos) {
 	blockID := s.wm.GetDefaultWorld().GetBlock(int(pos[0]), int(pos[1]), int(pos[2])).ID()
+	rid, _ := bedrockworld.LivingWorldBlockIDToBedrockRID(blockID)
 	_ = conn.WritePacket(&packet.UpdateBlock{
 		Position:          pos,
-		NewBlockRuntimeID: bedrockworld.LivingWorldBlockIDToBedrockRID(blockID),
+		NewBlockRuntimeID: rid,
 		Flags:             packet.BlockUpdateNetwork | packet.BlockUpdateNeighbours,
 		Layer:             0,
 	})
@@ -90,7 +91,7 @@ func (s *Server) publishCrack(bs *bedrockSession, pos protocol.BlockPos, stage i
 // Bedrock client at the given block position, for the block with world ID
 // brokenBlockID.
 func (s *Server) broadcastBlockBreakEffect(x, y, z int32, brokenBlockID int32) {
-	rid := bedrockworld.LivingWorldBlockIDToBedrockRID(brokenBlockID)
+	rid, _ := bedrockworld.LivingWorldBlockIDToBedrockRID(brokenBlockID)
 	center := mgl32.Vec3{float32(x) + 0.5, float32(y) + 0.5, float32(z) + 0.5}
 	s.forEachSession(func(bs *bedrockSession) {
 		bs.write(&packet.LevelEvent{

@@ -7,10 +7,12 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
-// vanilla_items.nbt mirrors the file shipped by df-mc/dragonfly@v0.10.13 at
-// server/world/vanilla_items.nbt. When the dragonfly dependency is bumped,
-// re-copy this asset from the matching module-cache path so the registry
-// stays in sync with the protocol that gophertunnel/dragonfly target.
+// vanilla_items.nbt mirrors the file shipped by df-mc/dragonfly@v0.11.5 at
+// server/world/vanilla_items.nbt (sha256 fee2d053...8389633; see
+// tests/bedrock/vanilla_items_sync_test.go which pins this hash against the
+// module-cache copy). When the dragonfly dependency is bumped, re-copy this
+// asset from the matching module-cache path so the registry stays in sync with
+// the protocol that gophertunnel/dragonfly target.
 
 //go:embed data/vanilla_items.nbt
 var vanillaItemsData []byte

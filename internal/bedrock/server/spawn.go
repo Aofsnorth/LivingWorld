@@ -1,20 +1,27 @@
 package server
 
-import "livingworld/internal/world"
+import (
+	"math"
 
-// surfaceY returns the Y a player should stand on at column (x,z): one block
-// above the highest non-air block. It calls LoadChunk so the column is
-// generated before scanning — using GetBlock alone reads an unloaded (nil)
-// chunk that reports all air, which made the player spawn embedded in terrain.
-func surfaceY(wm *world.Manager, x, z int) int {
-	w := wm.GetDefaultWorld()
-	w.LoadChunk(x>>4, z>>4)
-	// Scan from the top placeable Y (319) — MaxWorldHeight is a HEIGHT (384), not a
-	// max-Y, so the old MaxWorldHeight-1 (383) scanned 64 rows above the column.
-	for y := world.MinWorldHeight + world.SectionsPerChunk*16 - 1; y >= world.MinWorldHeight; y-- {
-		if w.GetBlock(x, y, z).ID() != 0 {
-			return y + 1
+	lwworld "livingworld/internal/world"
+)
+
+// safeRestoredFeet validates a saved feet position before restoring it. A save
+// may predate world changes (worldgen update, terrain edits, version bump), so
+// the stored Y can now sit inside solid terrain. When the saved body has solid
+// ground below and two air blocks for feet/head, it is used verbatim;
+// otherwise the position snaps to the column's current surface.
+func safeRestoredFeet(w *lwworld.World, x, y, z float64) (float64, float64, float64) {
+	bx, bz := int(math.Floor(x)), int(math.Floor(z))
+	by := int(math.Floor(y))
+	if by >= lwworld.MinWorldHeight && by+1 < lwworld.MinWorldHeight+lwworld.SectionsPerChunk*16 {
+		below := w.GetBlock(bx, by-1, bz).ID()
+		feet := w.GetBlock(bx, by, bz).ID()
+		head := w.GetBlock(bx, by+1, bz).ID()
+		if below != lwworld.AirID && feet == lwworld.AirID && head == lwworld.AirID {
+			return x, y, z
 		}
 	}
-	return world.MinWorldHeight
+	// Snap to the current surface of the column (center-padded like server.New).
+	return float64(bx) + 0.5, float64(w.HighestSolidY(bx, bz)), float64(bz) + 0.5
 }

@@ -41,7 +41,11 @@ func (c *ChunkConverter) SendChunk(
 					if id == 0 {
 						continue
 					}
-					ch.SetBlock(uint8(x), int16(y), uint8(z), 0, LivingWorldBlockIDToBedrockRID(id))
+					rid, found := LivingWorldBlockIDToBedrockRID(id)
+					if !found {
+						continue
+					}
+					ch.SetBlock(uint8(x), int16(y), uint8(z), 0, rid)
 				}
 			}
 		}
@@ -141,12 +145,26 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		}
 
 		chunkPos := protocol.ChunkPos{absX, absZ}
+		// Fast path: chunk already cached → encode under the chunk body lock.
 		chunkCache.Mu.RLock()
-		ch, ok := chunkCache.Cache[chunkPos]
+		_, cached := chunkCache.Cache[chunkPos]
 		chunkCache.Mu.RUnlock()
-		if !ok {
+		if cached {
+			var entry protocol.SubChunkEntry
+			ok2 := false
+			chunkCache.WithChunkBody(chunkPos, func(ch *dfchunk.Chunk) {
+				entry, ok2 = c.buildSubChunkEntry(ch, offset, int16(arrayYInd))
+			})
+			if ok2 {
+				entries = append(entries, entry)
+				continue
+			}
+			// Fall through to the build path (entry not produced — chunk removed).
+		}
+
+		if !cached {
 			wchunk := w.LoadChunk(int(absX), int(absZ))
-			ch = dfchunk.New(dfworld.DefaultBlockRegistry, rng)
+			newCh := dfchunk.New(dfworld.DefaultBlockRegistry, rng)
 			for x := 0; x < 16; x++ {
 				for z := 0; z < 16; z++ {
 					// Canonical Y: scan the full -64..319 column (see SendChunk).
@@ -155,43 +173,34 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 						if id == 0 {
 							continue
 						}
-						ch.SetBlock(uint8(x), int16(y), uint8(z), 0, LivingWorldBlockIDToBedrockRID(id))
+						rid, found := LivingWorldBlockIDToBedrockRID(id)
+						if !found {
+							continue
+						}
+						newCh.SetBlock(uint8(x), int16(y), uint8(z), 0, rid)
 					}
 				}
 			}
 			for y := int16(rng.Min()); y <= int16(rng.Max()); y += 4 {
 				for x := uint8(0); x < 16; x += 4 {
 					for z := uint8(0); z < 16; z += 4 {
-						ch.SetBiome(x, y, z, plainsBiomeID)
+						newCh.SetBiome(x, y, z, plainsBiomeID)
 					}
 				}
 			}
 			chunkCache.Mu.Lock()
-			chunkCache.Cache[chunkPos] = ch
+			chunkCache.Cache[chunkPos] = newCh
 			chunkCache.Mu.Unlock()
 		}
 
-		chunkCache.Mu.RLock()
-		sub := ch.Sub()[arrayYInd]
-		if sub.Empty() {
-			chunkCache.Mu.RUnlock()
-			entries = append(entries, protocol.SubChunkEntry{
-				Offset:        offset,
-				Result:        protocol.SubChunkResultSuccessAllAir,
-				HeightMapType: protocol.HeightMapDataNone,
-			})
-			continue
-		}
-
-		rawData := dfchunk.EncodeSubChunk(ch, dfchunk.NetworkEncoding, int(arrayYInd))
-		chunkCache.Mu.RUnlock()
-		entries = append(entries, protocol.SubChunkEntry{
-			Offset:              offset,
-			Result:              protocol.SubChunkResultSuccess,
-			RawPayload:          protocol.Option(rawData),
-			HeightMapType:       protocol.HeightMapDataNone,
-			RenderHeightMapType: protocol.HeightMapDataNone,
+		var entry protocol.SubChunkEntry
+		ok2 := false
+		chunkCache.WithChunkBody(chunkPos, func(ch *dfchunk.Chunk) {
+			entry, ok2 = c.buildSubChunkEntry(ch, offset, int16(arrayYInd))
 		})
+		if ok2 {
+			entries = append(entries, entry)
+		}
 	}
 
 	_ = conn.WritePacket(&packet.SubChunk{
@@ -200,4 +209,80 @@ func (c *ChunkConverter) HandleSubChunkRequest(
 		Position:        center,
 		SubChunkEntries: entries,
 	})
+}
+
+// buildSubChunkEntry encodes one sub-chunk entry (blocks + heightmap) from a
+// cached dfchunk. Caller must hold the chunk body lock (WithChunkBody).
+func (c *ChunkConverter) buildSubChunkEntry(
+	ch *dfchunk.Chunk, offset protocol.SubChunkOffset, arrayYInd int16,
+) (protocol.SubChunkEntry, bool) {
+	if arrayYInd < 0 || arrayYInd >= int16(len(ch.Sub())) {
+		return protocol.SubChunkEntry{Offset: offset, Result: protocol.SubChunkResultIndexOutOfBounds}, true
+	}
+	sub := ch.Sub()[arrayYInd]
+	if sub.Empty() {
+		// Match dragonfly: an all-air entry still carries the heightmap
+		// relation of this sub-chunk to the terrain surface, so the client's
+		// renderer doesn't have to guess.
+		hmType, hmData, _ := subChunkHeightMap(ch, arrayYInd)
+		return protocol.SubChunkEntry{
+			Offset:              offset,
+			Result:              protocol.SubChunkResultSuccessAllAir,
+			HeightMapType:       hmType,
+			HeightMapData:       hmData,
+			RenderHeightMapType: hmType,
+			RenderHeightMapData: hmData,
+		}, true
+	}
+	rawData := dfchunk.EncodeSubChunk(ch, dfchunk.NetworkEncoding, int(arrayYInd))
+	hmType, hmData, _ := subChunkHeightMap(ch, arrayYInd)
+	return protocol.SubChunkEntry{
+		Offset:              offset,
+		Result:              protocol.SubChunkResultSuccess,
+		RawPayload:          protocol.Option(rawData),
+		HeightMapType:       hmType,
+		HeightMapData:       hmData,
+		RenderHeightMapType: hmType,
+		RenderHeightMapData: hmData,
+	}, true
+}
+
+// subChunkHeightMap mirrors dragonfly's session.subChunkEntry heightmap logic:
+// for the sub-chunk at index ind it classifies every column of the chunk's
+// heightmap relative to that sub-chunk (above / below / inside it) and only
+// returns data when the surface actually touches or bounds this sub-chunk.
+// The classifier matches dragonfly: columns whose surface sub-chunk is above
+// get 16 ("all below terrain"), below get -1 ("all air"), and inside get the
+// surface Y relative to this sub-chunk's base. Sub-chunk indices are computed
+// relative to the world's minimum Y (dragonfly col.SubIndex(y) = (y-r[0])>>4).
+func subChunkHeightMap(ch *dfchunk.Chunk, ind int16) (byte, protocol.Optional[protocol.HeightMap], bool) {
+	hm := ch.HeightMap()
+	higher, lower := true, true
+	subMap := protocol.HeightMap{}
+	minInd := int16(dfworld.Overworld.Range().Min() >> 4)
+	for z := uint8(0); z < 16; z++ {
+		for x := uint8(0); x < 16; x++ {
+			y := hm.At(x, z)
+			otherInd := (y >> 4) - minInd
+			switch {
+			case otherInd > ind:
+				subMap[z][x], lower = 16, false
+			case otherInd < ind:
+				subMap[z][x], higher = -1, false
+			default:
+				subMap[z][x], lower, higher = int8(y&15), false, false
+			}
+		}
+	}
+	var subMapData protocol.Optional[protocol.HeightMap]
+	subMapType := byte(protocol.HeightMapDataHasData)
+	switch {
+	case higher:
+		subMapType = protocol.HeightMapDataTooHigh
+	case lower:
+		subMapType = protocol.HeightMapDataTooLow
+	default:
+		subMapData = protocol.Option(subMap)
+	}
+	return subMapType, subMapData, subMapType == protocol.HeightMapDataHasData
 }
