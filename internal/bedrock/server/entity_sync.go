@@ -107,7 +107,7 @@ func (s *Server) removePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	viewer.write(&packet.PlayerList{Entries: []protocol.PlayerListEntry{{ActionType: protocol.PlayerListActionRemove, UUID: p.UUID}}})
+	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionRemove, Entries: []protocol.PlayerListEntry{{UUID: p.UUID}}})
 	viewer.write(&packet.RemoveActor{EntityUniqueID: int64(p.EntityRuntimeID)})
 }
 

@@ -19,8 +19,8 @@ func TestJavaCheck(t *testing.T) {
 	}{
 		{
 			name:      "current release",
-			registry:  version.LWVersion{Label: "26 (B)", JavaProtocol: 777},
-			latest:    "26.3",
+			registry:  version.LWVersion{Label: "26 (B)", JavaProtocol: 776},
+			latest:    "26.2",
 			wantDrift: false,
 		},
 		{
@@ -32,13 +32,13 @@ func TestJavaCheck(t *testing.T) {
 		},
 		{
 			name:      "matrix ahead of published",
-			registry:  version.LWVersion{Label: "26 (B)", JavaProtocol: 777},
-			latest:    "26.2",
+			registry:  version.LWVersion{Label: "26 (B)", JavaProtocol: 776},
+			latest:    "26.1",
 			wantDrift: false,
 		},
 		{
 			name:       "unknown release is drift, not silence",
-			registry:   version.LWVersion{Label: "26 (B)", JavaProtocol: 777},
+			registry:   version.LWVersion{Label: "26 (B)", JavaProtocol: 776},
 			latest:     "26.9",
 			wantDrift:  true,
 			wantDetail: "no entry for it",

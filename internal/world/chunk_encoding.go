@@ -13,7 +13,12 @@ import (
 // worlds stored their floor in section 0 (world-Y -64..-49) instead of section 4
 // (world-Y 0..15), so loading them as v2 would drop the surface; the version
 // mismatch makes DecodeChunk reject them and World.LoadChunk regenerates instead.
-const chunkFormatVersion byte = 2
+//
+// v3: terrain source switched to the vanilla-gen adapter (overworld,
+// nether and end). v2 chunks hold terrain from the previous hand-rolled
+// pipeline; rejecting them forces regeneration with the new generator
+// instead of serving stale, differently-shaped terrain next to new chunks.
+const chunkFormatVersion byte = 3
 
 // Encode serializes a chunk's block data into a compact binary blob.
 //

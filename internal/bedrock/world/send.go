@@ -85,12 +85,12 @@ func (c *ChunkConverter) SendChunk(
 	payload := append(biomes, 0) // trailing border block count = 0
 
 	err := conn.WritePacket(&packet.LevelChunk{
-		Position:      pos,
-		Dimension:     0,
-		SubChunkCount: 0,
-		SubChunkLimit: protocol.Option(int32(highest)),
-		CacheEnabled:  false,
-		RawPayload:    payload,
+		Position:        pos,
+		Dimension:       0,
+		SubChunkCount:   protocol.SubChunkRequestModeLimited,
+		HighestSubChunk: highest,
+		CacheEnabled:    false,
+		RawPayload:      payload,
 	})
 	if err != nil {
 		log.Printf("[Bedrock] Failed to send chunk (%d,%d): %v", cx, cz, err)
@@ -239,7 +239,7 @@ func (c *ChunkConverter) buildSubChunkEntry(
 	return protocol.SubChunkEntry{
 		Offset:              offset,
 		Result:              protocol.SubChunkResultSuccess,
-		RawPayload:          protocol.Option(rawData),
+		RawPayload:          rawData,
 		HeightMapType:       hmType,
 		HeightMapData:       hmData,
 		RenderHeightMapType: hmType,
@@ -255,10 +255,10 @@ func (c *ChunkConverter) buildSubChunkEntry(
 // get 16 ("all below terrain"), below get -1 ("all air"), and inside get the
 // surface Y relative to this sub-chunk's base. Sub-chunk indices are computed
 // relative to the world's minimum Y (dragonfly col.SubIndex(y) = (y-r[0])>>4).
-func subChunkHeightMap(ch *dfchunk.Chunk, ind int16) (byte, protocol.Optional[protocol.HeightMap], bool) {
+func subChunkHeightMap(ch *dfchunk.Chunk, ind int16) (byte, []int8, bool) {
 	hm := ch.HeightMap()
 	higher, lower := true, true
-	subMap := protocol.HeightMap{}
+	subMap := make([]int8, 256)
 	minInd := int16(dfworld.Overworld.Range().Min() >> 4)
 	for z := uint8(0); z < 16; z++ {
 		for x := uint8(0); x < 16; x++ {
@@ -266,23 +266,22 @@ func subChunkHeightMap(ch *dfchunk.Chunk, ind int16) (byte, protocol.Optional[pr
 			otherInd := (y >> 4) - minInd
 			switch {
 			case otherInd > ind:
-				subMap[z][x], lower = 16, false
+				subMap[z*16+x], lower = 16, false
 			case otherInd < ind:
-				subMap[z][x], higher = -1, false
+				subMap[z*16+x], higher = -1, false
 			default:
-				subMap[z][x], lower, higher = int8(y&15), false, false
+				subMap[z*16+x], lower, higher = int8(y&15), false, false
 			}
 		}
 	}
-	var subMapData protocol.Optional[protocol.HeightMap]
 	subMapType := byte(protocol.HeightMapDataHasData)
 	switch {
 	case higher:
 		subMapType = protocol.HeightMapDataTooHigh
+		subMap = nil
 	case lower:
 		subMapType = protocol.HeightMapDataTooLow
-	default:
-		subMapData = protocol.Option(subMap)
+		subMap = nil
 	}
-	return subMapType, subMapData, subMapType == protocol.HeightMapDataHasData
+	return subMapType, subMap, subMapType == protocol.HeightMapDataHasData
 }

@@ -14,7 +14,15 @@ import (
 	"livingworld/internal/dimension/end"
 	"livingworld/internal/dimension/nether"
 	"livingworld/internal/dimension/overworld/pipeline"
+	"livingworld/internal/dimension/overworld/vanillagen"
 	"livingworld/internal/world"
+
+	// Register vanilla-gen's extra block implementations with dragonfly's
+	// registry. Generator constructors do this implicitly for their own
+	// chunk, but legacy pipeline tests in this package share the process
+	// with the adapter tests and the registry must be finalized with the
+	// complete block set before any test resolves runtime IDs.
+	_ "github.com/bedrock-mc/vanilla-gen/block"
 )
 
 // ID is the namespaced dimension id (e.g. "minecraft:overworld"). The
@@ -63,7 +71,20 @@ func (overworldDimension) ID() ID        { return IDOverworld }
 func (overworldDimension) MinY() int     { return -64 }
 func (overworldDimension) Height() int   { return 384 }
 func (overworldDimension) SeaLevel() int { return 63 }
+
+// Generator returns the overworld chunk generator. Terrain comes from
+// the vanilla-gen adapter (vanilla-faithful Java-parity generation via
+// dragonfly chunks, translated into canonical state IDs); the older
+// hand-rolled pipeline remains available for comparison but is no longer
+// the shipped terrain source.
 func (overworldDimension) Generator(seed int64) world.ChunkGenerator {
+	return vanillagen.New(seed)
+}
+
+// LegacyGenerator returns the previous hand-rolled overworld pipeline,
+// kept intact for oracle/comparison tests. New terrain is generated with
+// Generator above.
+func (overworldDimension) LegacyGenerator(seed int64) world.ChunkGenerator {
 	return pipeline.NewGenerator(seed)
 }
 
@@ -76,6 +97,11 @@ func (netherWrapper) MinY() int     { return 0 }
 func (netherWrapper) Height() int   { return 128 }
 func (netherWrapper) SeaLevel() int { return 31 }
 func (netherWrapper) Generator(seed int64) world.ChunkGenerator {
+	return vanillagen.NewNether(seed)
+}
+
+// LegacyGenerator returns the previous nether stub generator.
+func (netherWrapper) LegacyGenerator(seed int64) world.ChunkGenerator {
 	return nether.New(seed)
 }
 
@@ -88,5 +114,10 @@ func (endWrapper) MinY() int     { return 0 }
 func (endWrapper) Height() int   { return 256 }
 func (endWrapper) SeaLevel() int { return 0 }
 func (endWrapper) Generator(seed int64) world.ChunkGenerator {
+	return vanillagen.NewEnd(seed)
+}
+
+// LegacyGenerator returns the previous end stub generator.
+func (endWrapper) LegacyGenerator(seed int64) world.ChunkGenerator {
 	return end.New(seed)
 }

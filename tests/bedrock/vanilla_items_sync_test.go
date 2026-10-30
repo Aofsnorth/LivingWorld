@@ -16,13 +16,13 @@ import (
 // server/world/vanilla_items.nbt into internal/bedrock/data/ and update this
 // hash (and the comment in internal/bedrock/inventory/items.go).
 func TestVanillaItemsAssetMatchesDragonfly(t *testing.T) {
-	const want = dragonflyVanillaItemsSHA256 // from dragonfly v0.11.5
+	const want = dragonflyVanillaItemsSHA256 // from dragonfly v0.10.14
 	got, err := embeddedVanillaItemsSHA()
 	if err != nil {
 		t.Fatalf("read embedded asset: %v", err)
 	}
 	if got != want {
-		t.Fatalf("internal/bedrock/data/vanilla_items.nbt is out of sync with dragonfly@v0.11.5\n got sha256 %s\nwant sha256 %s", got, want)
+		t.Fatalf("internal/bedrock/data/vanilla_items.nbt is out of sync with dragonfly@v0.10.14\n got sha256 %s\nwant sha256 %s", got, want)
 	}
 }
 

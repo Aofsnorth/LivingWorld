@@ -2,6 +2,7 @@ package world
 
 import (
 	"github.com/Tnze/go-mc/level/block"
+	"github.com/Tnze/go-mc/nbt"
 )
 
 // Canonical block identity in LivingWorld.
@@ -81,6 +82,45 @@ func StateID(name string) int32 {
 		}
 	}
 	return AirID
+}
+
+// StateIDWithProperties resolves the canonical world ID for a namespaced
+// block name with a complete Java property set (property name -> string
+// value, e.g. {"axis": "y"}), falling back to the block's default state
+// whenever the property set is empty, fails to decode, or does not denote
+// a valid state. It exists for Bedrock->Java translation (blockconv):
+// a PARTIAL property set must never be resolved directly, because go-mc
+// decodes properties onto the zero-value block struct, whose values
+// (axis=x, distance=0, layers=0, ...) are frequently invalid states that
+// silently miss ToStateID. Callers pass complete sets only.
+func StateIDWithProperties(name string, props map[string]string) int32 {
+	if len(props) == 0 {
+		return StateID(name)
+	}
+	raw, err := propertiesToRawMessage(props)
+	if err != nil {
+		return StateID(name)
+	}
+	b, err := (&block.State{Name: name, Properties: raw}).Block()
+	if err != nil {
+		return StateID(name)
+	}
+	if sid, found := block.ToStateID[b]; found {
+		return int32(sid)
+	}
+	return StateID(name)
+}
+
+// propertiesToRawMessage encodes a Java property set as the NBT compound
+// payload go-mc's State.Block expects (mirrors java/registry's marshalNBT:
+// nbt.Marshal prefixes the compound type+name header, which RawMessage
+// carries separately).
+func propertiesToRawMessage(props map[string]string) (nbt.RawMessage, error) {
+	data, err := nbt.Marshal(props)
+	if err != nil {
+		return nbt.RawMessage{}, err
+	}
+	return nbt.RawMessage{Type: nbt.TagCompound, Data: data[3:]}, nil
 }
 
 // StateName returns the namespaced name for a canonical world block ID

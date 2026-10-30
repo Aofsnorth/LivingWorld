@@ -11,7 +11,7 @@
 | Label   | Edition  | Protocol | Accepted client builds              | Capabilities                                       | Changelog |
 |---------|----------|----------|-------------------------------------|----------------------------------------------------|-----------|
 | 26 (B)  | Java     | 776      | 26.2                                | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B) |
-| 26 (B)  | Bedrock  | 2193     | 1.26.50                             | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B) |
+| 26 (B)  | Bedrock  | 1001     | 1.26.30, 26.32                      | `CapCustomPlayerModels`, `CapNetherUpdateNotes`   | [link](https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B) |
 
 The "label" is the user-facing version group; LivingWorld releases a new
 label when the wire protocol changes for either edition. Patches within

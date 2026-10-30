@@ -11,12 +11,12 @@ import (
 	bedrockworld "livingworld/internal/bedrock/world"
 )
 
-// dragonfly v0.11.5 registry facts, verified empirically and pinned here so a
+// dragonfly v0.10.14 registry facts, verified empirically and pinned here so a
 // dependency bump that changes them fails loudly instead of silently
 // corrupting terrain. Note rid 0 = minecraft:cyan_terracotta: any test that
 // treats 0 as air/failure is wrong by construction.
 const (
-	dragonflyVanillaItemsSHA256 = "fee2d053125407a228731226e9025598d4d9facf19da1f0ad6aa7349d8389633"
+	dragonflyVanillaItemsSHA256 = "0ad3c87f3cc76ad97d4742a24d77ceaf1f8652ed35db2b50937c2f95ff924dec"
 )
 
 // TestRIDZeroIsCyanTerracotta pins the FNV-sorted registry property that makes

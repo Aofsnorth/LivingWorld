@@ -3,10 +3,6 @@ package skin
 import (
 	_ "embed"
 	"encoding/base64"
-	"image/color"
-	"strconv"
-	"strings"
-
 	"livingworld/internal/player"
 
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
@@ -58,6 +54,15 @@ func SkinFromClientData(data login.ClientData) protocol.Skin {
 		engineVersion = []byte("0.0.0")
 	}
 
+	armSize := data.ArmSize
+	if armSize == "" {
+		armSize = "wide"
+	}
+	colour := data.SkinColour
+	if colour == "" {
+		colour = "#0"
+	}
+
 	return protocol.Skin{
 		SkinID:                    data.SkinID,
 		PlayFabID:                 data.PlayFabID,
@@ -77,41 +82,11 @@ func SkinFromClientData(data login.ClientData) protocol.Skin {
 		PrimaryUser:               true,
 		CapeID:                    data.CapeID,
 		FullID:                    data.SkinID,
-		SkinColour:                parseSkinColour(data.SkinColour),
-		ArmSize:                   armSize(data.ArmSize),
+		SkinColour:                colour,
+		ArmSize:                   armSize,
 		Trusted:                   true,
 		OverrideAppearance:        true,
 	}
-}
-
-// parseSkinColour converts a Bedrock hex skin colour into the color.RGBA the
-// outgoing protocol.Skin expects. The client still reports it as a "#RRGGBB"
-// (or "#AARRGGBB") string, but the wire field is big-endian ARGB. Values we
-// cannot parse fall back to the fully transparent colour, which is what the
-// "#0" placeholder older gophertunnel releases accepted.
-func parseSkinColour(s string) color.RGBA {
-	h := strings.TrimPrefix(strings.TrimSpace(s), "#")
-	if len(h) == 6 {
-		h = "FF" + h // opaque RGB
-	}
-	if len(h) != 8 {
-		return color.RGBA{}
-	}
-	v, err := strconv.ParseUint(h, 16, 32)
-	if err != nil {
-		return color.RGBA{}
-	}
-	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: uint8(v >> 24)}
-}
-
-// armSize maps the client's "slim"/"wide" arm description onto the uint8
-// field the outgoing protocol.Skin now carries. Anything unrecognised is
-// treated as "wide", matching the classic Steve/Alex default.
-func armSize(s string) uint8 {
-	if strings.EqualFold(strings.TrimSpace(s), "slim") {
-		return protocol.ArmSizeSlim
-	}
-	return protocol.ArmSizeWide
 }
 
 func opaqueSkin(w, h int, r, g, b byte) []byte {
@@ -158,7 +133,8 @@ func defaultJavaSkin(suffix string) protocol.Skin {
 		PrimaryUser:               false,
 		CapeID:                    "",
 		FullID:                    skinID,
-		ArmSize:                   protocol.ArmSizeWide,
+		SkinColour:                "#0",
+		ArmSize:                   "wide",
 		Trusted:                   true,
 		OverrideAppearance:        true,
 	}
@@ -179,9 +155,9 @@ func JavaFallbackSkinForViewer(p player.PlayerSnapshot) protocol.Skin {
 			h = 64
 		}
 
-		arms := uint8(protocol.ArmSizeWide)
+		armSize := "wide"
 		if p.Skin.IsSlim() {
-			arms = protocol.ArmSizeSlim
+			armSize = "slim"
 		}
 
 		skinID := "java_" + p.UUID.String()
@@ -204,7 +180,8 @@ func JavaFallbackSkinForViewer(p player.PlayerSnapshot) protocol.Skin {
 			PrimaryUser:               false,
 			CapeID:                    "",
 			FullID:                    skinID,
-			ArmSize:                   arms,
+			SkinColour:                "#0",
+			ArmSize:                   armSize,
 			Trusted:                   true,
 			OverrideAppearance:        true,
 		}

@@ -4,21 +4,20 @@ go 1.27.2
 
 require (
 	github.com/Tnze/go-mc v1.20.3-0.20241224032005-539b4a3a7f03
+	github.com/bedrock-mc/vanilla-gen v0.0.0-20261007153212-e56215898732
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/df-mc/dragonfly v0.11.5
+	github.com/df-mc/dragonfly v0.11.2-0.20260807000407-2988c7f4f621
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/go-gl/mathgl v1.2.0
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pelletier/go-toml v1.9.5
 	github.com/sandertv/go-raknet v1.15.2-0.20260705184311-0d1fd09e2cf6
-	github.com/sandertv/gophertunnel v1.62.0
+	github.com/sandertv/gophertunnel v1.58.0
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/Tnze/go-mc => ./third_party/go-mc
 
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
@@ -32,17 +31,15 @@ require (
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
 	github.com/df-mc/go-nethernet v1.0.20 // indirect
-	github.com/df-mc/go-playfab/v2 v2.0.2 // indirect
-	github.com/df-mc/go-xsapi/v2 v2.0.3 // indirect
+	github.com/df-mc/go-playfab v1.0.0 // indirect
+	github.com/df-mc/go-xsapi v1.0.1 // indirect
 	github.com/df-mc/goleveldb v1.1.9 // indirect
 	github.com/df-mc/jsonc v1.0.5 // indirect
 	github.com/df-mc/worldupgrader v1.0.22 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
-	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/golang/snappy v0.0.4 // indirect
@@ -54,6 +51,7 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
 	github.com/pion/ice/v4 v4.2.7 // indirect
@@ -83,3 +81,11 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
+
+replace github.com/Tnze/go-mc => ./third_party/go-mc
+
+replace github.com/sandertv/gophertunnel => github.com/sandertv/gophertunnel v1.57.1
+
+replace github.com/df-mc/dragonfly => github.com/df-mc/dragonfly v0.10.14
+
+replace github.com/sandertv/go-raknet => github.com/sandertv/go-raknet v1.15.1-0.20260112202637-beca0b10c217

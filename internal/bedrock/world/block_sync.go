@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 
+	"livingworld/internal/blockconv"
 	lwworld "livingworld/internal/world"
 
 	dfworld "github.com/df-mc/dragonfly/server/world"
@@ -53,21 +54,14 @@ var bedrockPropOverrides = map[string]map[string]any{
 	"minecraft:mangrove_leaves": {"persistent_bit": false, "update_bit": false},
 }
 
-// bedrockNameRemaps translates Java block names whose Bedrock identifier
-// differs. Without these the RID lookup fails and the block cannot be sent.
-//
-// Verified against dragonfly v0.11.5 (protocol 2193): "hardened_clay",
-// "deadbush" and "reeds" exist in its registry while "terracotta",
-// "dead_bush" and "sugar_cane" do not. Bedrock "minecraft:snow" is the full
-// snow BLOCK (rid 8506) and "minecraft:snow_layer" is the thin layer
-// (rid 1179), so the two Java names map 1:1 onto those two Bedrock names.
-var bedrockNameRemaps = map[string]string{
-	"minecraft:snow":       "minecraft:snow_layer", // Java "snow" is the thin layer
-	"minecraft:snow_block": "minecraft:snow",       // Java full block is Bedrock "snow"
-	"minecraft:terracotta": "minecraft:hardened_clay",
-	"minecraft:dead_bush":  "minecraft:deadbush",
-	"minecraft:sugar_cane": "minecraft:reeds",
-}
+// Cross-edition name aliases live in blockconv (single source of truth,
+// both directions derived from one table): blockconv.JavaNameToBedrockName
+// here, blockconv.BedrockNameToJavaName for the reverse. Verified against
+// dragonfly v0.11.5 (protocol 2193): "hardened_clay", "deadbush" and
+// "reeds" exist in its registry while "terracotta", "dead_bush" and
+// "sugar_cane" do not. Bedrock "minecraft:snow" is the full snow BLOCK
+// (rid 8506) and "minecraft:snow_layer" is the thin layer (rid 1179), so
+// the two Java names map 1:1 onto those two Bedrock names.
 
 // LivingWorldBlockIDToBedrockRID maps a canonical world block ID (= Java global
 // state ID) to a Bedrock runtime ID via the block's namespaced name. The
@@ -83,7 +77,7 @@ func LivingWorldBlockIDToBedrockRID(id int32) (uint32, bool) {
 	}
 
 	name := lwworld.StateName(id)
-	if remapped, ok := bedrockNameRemaps[name]; ok {
+	if remapped, ok := blockconv.JavaNameToBedrockName[name]; ok {
 		name = remapped
 	}
 	rid = blockRID(name, bedrockPropOverrides[name])
@@ -110,25 +104,20 @@ func InvalidateRIDCache() {
 	ridCacheMu.Unlock()
 }
 
-// javaNameRemaps is the inverse of bedrockNameRemaps, for blocks coming
-// FROM the Bedrock client (block place / break echoes).
-var javaNameRemaps = map[string]string{
-	"minecraft:snow_layer":    "minecraft:snow",
-	"minecraft:snow":          "minecraft:snow_block",
-	"minecraft:hardened_clay": "minecraft:terracotta",
-	"minecraft:deadbush":      "minecraft:dead_bush",
-	"minecraft:reeds":         "minecraft:sugar_cane",
-}
-
-// BedrockRIDToLivingWorldBlockID maps a Bedrock runtime ID back to a canonical
-// world block ID by resolving its namespaced name in the global palette.
+// BedrockRIDToLivingWorldBlockID maps a Bedrock runtime ID back to a
+// canonical world block ID. Block-state properties are translated
+// (blockconv.Translate) so stateful blocks — log axes, stair facings,
+// snow-layer thickness, fluid levels — keep their state instead of
+// collapsing to the Java default; untranslatable states fall back to
+// the default state of the translated name.
 func BedrockRIDToLivingWorldBlockID(rid uint32) int32 {
-	name, _, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(rid)
+	name, props, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(rid)
 	if !ok {
 		return lwworld.AirID
 	}
-	if remapped, ok := javaNameRemaps[name]; ok {
-		name = remapped
+	javaName, javaProps, translated := blockconv.Translate(name, props)
+	if !translated {
+		return lwworld.StateID(javaName)
 	}
-	return lwworld.StateID(name)
+	return lwworld.StateIDWithProperties(javaName, javaProps)
 }

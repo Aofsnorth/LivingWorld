@@ -63,7 +63,7 @@ func ItemNetworkID(name string) (int32, bool) {
 // ClientboundGameSetEntityData carrying the item stack so the client renders the
 // correct item. entityID is the drop's id (mapped to a Java entity id by the
 // caller); itemID is the Java item id; count is the stack size.
-func (h *Handler777) SpawnItemEntity(s Session, entityID int32, itemName string, count int, x, y, z float64) error {
+func (h *Handler776) SpawnItemEntity(s Session, entityID int32, itemName string, count int, x, y, z float64) error {
 	itemID, ok := ItemNetworkID(itemName)
 	if !ok {
 		return nil // unknown item: skip rather than send a bad stack
@@ -100,7 +100,7 @@ func (h *Handler777) SpawnItemEntity(s Session, entityID int32, itemName string,
 }
 
 // RemoveItemEntity despawns a dropped item entity on the client.
-func (h *Handler777) RemoveItemEntity(s Session, entityID int32) error {
+func (h *Handler776) RemoveItemEntity(s Session, entityID int32) error {
 	return s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameRemoveEntities,
 		pk.Ary[pk.VarInt]{Ary: []pk.VarInt{pk.VarInt(entityID)}},
@@ -110,7 +110,7 @@ func (h *Handler777) RemoveItemEntity(s Session, entityID int32) error {
 // TakeItemEntity plays the pickup animation (item flies into the collector).
 // This is animation-only; the caller must also despawn the entity and update the
 // collector's inventory.
-func (h *Handler777) TakeItemEntity(s Session, itemEntityID, collectorEntityID int32, count int) error {
+func (h *Handler776) TakeItemEntity(s Session, itemEntityID, collectorEntityID int32, count int) error {
 	return s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameTakeItemEntity,
 		pk.VarInt(itemEntityID),

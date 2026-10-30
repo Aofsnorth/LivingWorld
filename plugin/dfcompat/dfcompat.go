@@ -3,11 +3,11 @@
 // dragonfly block/item identities through the shared canonical registry.
 //
 // KNOWN GAP: dragonfly handlers receive the *player.Player subject via
-// ctx.Player(); until the canonical player<->dragonfly adapter lands that
-// subject is nil, so handlers that dereference the player do not work yet. Data
-// carried in non-player arguments (chat text, positions, command args) and
-// ctx.Cancel() bridge fully. Panics from handlers that touch the nil subject are
-// contained by the plugin manager's panic isolation.
+// ctx.Val(); until the canonical player<->dragonfly adapter lands that subject
+// is nil, so handlers that dereference the player do not work yet. Data carried
+// in non-player arguments (chat text, positions, command args) and ctx.Cancel()
+// bridge fully. Panics from handlers that touch the nil subject are contained by
+// the plugin manager's panic isolation.
 package dfcompat
 
 import (
@@ -15,19 +15,12 @@ import (
 
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/cmd"
+	"github.com/df-mc/dragonfly/server/event"
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/player"
-	"github.com/df-mc/dragonfly/server/world"
 
 	"livingworld/plugin"
 )
-
-// newContext builds the event context dragonfly handlers expect. The embedded
-// world.Context is what carries Cancel(), so it must be non-nil even though the
-// player subject is not available yet (see the package KNOWN GAP note).
-func newContext() *player.Context {
-	return &player.Context{Context: &world.Context{}}
-}
 
 // Bridge invokes a dragonfly player.Handler in response to LivingWorld events.
 type Bridge struct {
@@ -53,7 +46,7 @@ func (b *Bridge) Register(pm *plugin.PluginManager) {
 func (b *Bridge) World() plugin.World { return b.world }
 
 func (b *Bridge) onChat(e *plugin.PlayerChatEvent) {
-	ctx := newContext()
+	ctx := event.C[*player.Player](nil)
 	msg := e.Message
 	b.h.HandleChat(ctx, &msg)
 	if ctx.Cancelled() {
@@ -64,7 +57,7 @@ func (b *Bridge) onChat(e *plugin.PlayerChatEvent) {
 }
 
 func (b *Bridge) onBlockBreak(e *plugin.BlockBreakEvent) {
-	ctx := newContext()
+	ctx := event.C[*player.Player](nil)
 	var drops []item.Stack
 	xp := 0
 	b.h.HandleBlockBreak(ctx, cube.Pos{e.X, e.Y, e.Z}, &drops, &xp)
@@ -74,7 +67,7 @@ func (b *Bridge) onBlockBreak(e *plugin.BlockBreakEvent) {
 }
 
 func (b *Bridge) onBlockPlace(e *plugin.BlockPlaceEvent) {
-	ctx := newContext()
+	ctx := event.C[*player.Player](nil)
 	b.h.HandleBlockPlace(ctx, cube.Pos{e.X, e.Y, e.Z}, nil) // world.Block subject is a known gap
 	if ctx.Cancelled() {
 		e.Cancel()
@@ -82,7 +75,7 @@ func (b *Bridge) onBlockPlace(e *plugin.BlockPlaceEvent) {
 }
 
 func (b *Bridge) onCommand(e *plugin.PlayerCommandEvent) {
-	ctx := newContext()
+	ctx := event.C[*player.Player](nil)
 	args := strings.Fields(e.Command)
 	if len(args) > 0 {
 		args = args[1:] // dragonfly passes the args after the command name

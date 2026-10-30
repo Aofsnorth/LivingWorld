@@ -7,21 +7,21 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-type Handler777 struct{}
+type Handler776 struct{}
 
 func init() {
-	RegisterVersion(&Handler777{})
+	RegisterVersion(&Handler776{})
 }
 
-func (h *Handler777) ProtocolVersion() int {
-	return 777
+func (h *Handler776) ProtocolVersion() int {
+	return 776
 }
 
-func (h *Handler777) ProtocolName() string {
-	return "26.3"
+func (h *Handler776) ProtocolName() string {
+	return "26.2"
 }
 
-func (h *Handler777) SendInitialPlayPackets(s Session) error {
+func (h *Handler776) SendInitialPlayPackets(s Session) error {
 	conn := s.Conn()
 
 	log.Printf("[Java] Sending Login packet (ID=%d) to %s", packetid.ClientboundGameLogin, s.Username())

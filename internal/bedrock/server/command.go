@@ -96,7 +96,7 @@ func (s *bedrockSession) Teleport(x, y, z float64) error {
 		Position:        mgl32.Vec3{float32(x), float32(y) + bedrockLocalEyeHeight, float32(z)},
 		Mode:            packet.MoveModeTeleport,
 		OnGround:        false,
-		TeleportData:    protocol.Option(protocol.TeleportData{TeleportCause: int32(packet.TeleportCauseCommand)}),
+		TeleportCause:   packet.TeleportCauseCommand,
 	})
 	s.pmRef().UpdatePosition(s.id, x, y, z, 0, 0, false)
 	return nil

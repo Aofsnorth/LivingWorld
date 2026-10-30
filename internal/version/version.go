@@ -130,15 +130,11 @@ var (
 	regMu    sync.RWMutex
 	registry = []LWVersion{
 		{
-			Label:        "26 (B)",
-			JavaProtocol: 777,
-			JavaBuilds:   []string{"26.3"},
-			// Bedrock protocol 2193 is the latest Bedrock release. gophertunnel
-			// v1.62.0 ("Support for 1.26.50") is the pinned dependency that
-			// speaks it, and its CurrentVersion is what we advertise as
-			// BaseGameVersion in the login packet. Keep all three in step.
-			BedrockProtocol: 2193,
-			BedrockBuilds:   []string{"1.26.50"},
+			Label:           "26 (B)",
+			JavaProtocol:    776,
+			JavaBuilds:      []string{"26.2"},
+			BedrockProtocol: 1001,
+			BedrockBuilds:   []string{"1.26.30", "26.32"},
 			Capabilities:    CapCustomPlayerModels | CapNetherUpdateNotes,
 			ChangelogURL:    "https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B",
 		},

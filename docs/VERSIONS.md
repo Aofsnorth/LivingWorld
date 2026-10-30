@@ -10,7 +10,7 @@ patch that shares the same wire protocol on each edition.
 | Component | Versions | Protocol | Status |
 |-----------|----------|----------|--------|
 | **Java Edition** | 26.2 | **776** | ✅ Supported |
-| **Bedrock Edition** | 1.26.50 | **2193** | ✅ Supported |
+| **Bedrock Edition** | 1.26.30 / 26.32 | **1001** | ✅ Supported |
 
 Java 26.3 is the current Mojang release (protocol 777) and is **not yet
 supported** — see "Future Version Targets" below. Bedrock's wire protocol is

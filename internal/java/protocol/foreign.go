@@ -12,7 +12,7 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-func (h *Handler777) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.UUID == s.UUID() || p.EntityRuntimeID == 0 {
 		return nil
 	}
@@ -50,7 +50,7 @@ func (h *Handler777) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) erro
 
 const javaPlayerInfoAddPlayerBit = 0x01 | 0x04 | 0x08
 
-func (h *Handler777) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error {
 	var buf bytes.Buffer
 	_, _ = pk.Byte(javaPlayerInfoAddPlayerBit).WriteTo(&buf)
 	_, _ = pk.VarInt(1).WriteTo(&buf)
@@ -120,14 +120,14 @@ func upsertUnsignedTextures(props []player.ProfileProperty, name, val string) []
 	return append(out, player.ProfileProperty{Name: name, Value: val})
 }
 
-func (h *Handler777) SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error {
 	var buf bytes.Buffer
 	_, _ = pk.VarInt(1).WriteTo(&buf)
 	_, _ = pk.UUID(p.UUID).WriteTo(&buf)
 	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoRemove), Data: buf.Bytes()})
 }
 
-func (h *Handler777) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}
@@ -138,7 +138,7 @@ func (h *Handler777) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) err
 	return h.SendPlayerInfoRemove(s, p)
 }
 
-func (h *Handler777) SwingForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) SwingForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}
@@ -148,14 +148,14 @@ func (h *Handler777) SwingForeignAvatar(s Session, p player.PlayerSnapshot) erro
 	))
 }
 
-func (h *Handler777) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error {
 	return s.SendPacket(pk.Packet{
 		ID:   int32(packetid.ClientboundGameSetEntityData),
 		Data: encodePlayerMetadata(p),
 	})
 }
 
-func (h *Handler777) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error {
+func (h *Handler776) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error {
 	if p.UUID == s.UUID() {
 		return nil // the client renders its own held item from its inventory
 	}

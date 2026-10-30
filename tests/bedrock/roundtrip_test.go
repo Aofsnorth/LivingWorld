@@ -117,7 +117,7 @@ func TestSubChunkHeightMapClassification(t *testing.T) {
 	if hmType != dfchunkSubChunkHasData || !hasData {
 		t.Fatalf("surface sub-chunk %d: got type %d, want HeightMapDataHasData", surfaceInd, hmType)
 	}
-	if _, set := hmData.Value(); !set {
+	if len(hmData) != 256 {
 		t.Fatal("surface sub-chunk heightmap data missing")
 	}
 

@@ -57,7 +57,7 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 		_, _ = pk.VarInt(1).WriteTo(&buf)           // known pack count
 		_, _ = pk.String("minecraft").WriteTo(&buf) // namespace
 		_, _ = pk.String("core").WriteTo(&buf)      // id
-		_, _ = pk.String("26.3").WriteTo(&buf)      // version
+		_, _ = pk.String("26.2").WriteTo(&buf)      // version
 		if err := conn.WritePacket(pk.Packet{
 			ID:   int32(packetid.ClientboundConfigSelectKnownPacks),
 			Data: buf.Bytes(),
@@ -130,11 +130,11 @@ func (c *javaConfig) AcceptConfig(conn *gmnet.Conn) error {
 			// Resource pack response - ignored
 		case packetid.ServerboundConfigSelectKnownPacks:
 			// The client's reply lists the packs it can resolve data-less entries
-			// from. If minecraft/core/26.3 is missing, every registry element we
+			// from. If minecraft/core/26.2 is missing, every registry element we
 			// send data-less will fail to load on the client, so surface it loudly
 			// instead of leaving it as an opaque "Failed to parse value" crash.
 			if !replyHasVanillaCorePack(p) {
-				log.Printf("[Java] AcceptConfig: client did NOT select minecraft/core/26.3; " +
+				log.Printf("[Java] AcceptConfig: client did NOT select minecraft/core/26.2; " +
 					"data-less registry sync will fail on this client")
 			}
 		case packetid.ServerboundConfigAcceptCodeOfConduct:
@@ -167,7 +167,7 @@ func replyHasVanillaCorePack(p pk.Packet) bool {
 		if _, err := version.ReadFrom(r); err != nil {
 			return false
 		}
-		if ns == "minecraft" && id == "core" && version == "26.3" {
+		if ns == "minecraft" && id == "core" && version == "26.2" {
 			return true
 		}
 	}

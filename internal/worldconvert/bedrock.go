@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"livingworld/internal/blockconv"
 	"livingworld/internal/world"
 
 	dfworld "github.com/df-mc/dragonfly/server/world"
@@ -32,9 +33,9 @@ var ErrBedrockUnsupported = errors.New(
 // writes its overworld blocks into a LivingWorld world directory (dstDir).
 //
 // Importing pivots on the block's namespaced name (Bedrock and Java share most
-// vanilla block names), mapping it to the block's default Java state via
-// world.StateID — exactly like the Java Anvil importer. Block-state properties
-// (axis, facing, ...), biomes, block entities, entities and lighting are not
+// vanilla block names) and translates block-state properties (axis, facing,
+// thickness, ...) via blockconv; untranslatable states land on the block's
+// default Java state. Biomes, block entities, entities and lighting are not
 // transferred; unmapped names are skipped (left as air). The source is never
 // modified (a .mcworld is extracted to a temp dir that is removed afterwards).
 func ImportBedrockWorld(srcPath, dstDir string) (Stats, error) {
@@ -99,11 +100,15 @@ func bedrockChunkToLiving(c *chunk.Chunk, living *world.Chunk) int {
 		}
 		for x := 0; x < 16; x++ {
 			for z := 0; z < 16; z++ {
-				name, _, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(c.Block(uint8(x), int16(y), uint8(z), 0))
+				name, props, ok := dfworld.DefaultBlockRegistry.RuntimeIDToState(c.Block(uint8(x), int16(y), uint8(z), 0))
 				if !ok {
 					continue
 				}
-				id := world.StateID(name)
+				javaName, javaProps, translated := blockconv.Translate(name, props)
+				id := world.StateID(javaName)
+				if translated {
+					id = world.StateIDWithProperties(javaName, javaProps)
+				}
 				if id == world.AirID {
 					continue // air or a Bedrock-only name we can't map
 				}

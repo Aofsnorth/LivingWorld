@@ -32,7 +32,7 @@ const (
 // Vanilla Bedrock servers (and Realms) send 2 to ops and 1 to everyone else;
 // the previous hardcoded 1 silently downgraded ops to member and the client
 // refused to show the cheat controls.
-func playerPerms(isOp bool) byte {
+func playerPerms(isOp bool) int32 {
 	if isOp {
 		return 2
 	}
