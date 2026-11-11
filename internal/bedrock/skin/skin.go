@@ -3,14 +3,22 @@ package skin
 import (
 	_ "embed"
 	"encoding/base64"
+	"image/color"
+	"strconv"
+	"strings"
+
+	"livingworld/internal/java/skin"
 	"livingworld/internal/player"
 
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 )
 
 //go:embed data/skin_resource_patch.json
 var defaultSkinResourcePatch []byte
+
+var slimSkinResourcePatch = []byte("{\n  \"geometry\" : {\n    \"default\" : \"geometry.humanoid.customSlim\"\n  }\n}\n")
 
 //go:embed data/skin_geometry.json
 var defaultSkinGeometry []byte
@@ -51,20 +59,26 @@ func SkinFromClientData(data login.ClientData) protocol.Skin {
 		geometry = defaultSkinGeometry
 	}
 	if engineVersion == nil {
-		engineVersion = []byte("0.0.0")
+		engineVersion = []byte(protocol.CurrentVersion)
 	}
-
-	armSize := data.ArmSize
-	if armSize == "" {
-		armSize = "wide"
+	if len(skinData) == 64*32*4 {
+		skinData = skin.UpgradeLegacySkin(skinData, 64)
+		data.SkinImageWidth, data.SkinImageHeight = 64, 64
+	} else if len(skinData) == 128*64*4 {
+		skinData = skin.UpgradeLegacySkin(skinData, 128)
+		data.SkinImageWidth, data.SkinImageHeight = 128, 128
 	}
-	colour := data.SkinColour
-	if colour == "" {
-		colour = "#0"
+	capeID := data.CapeID
+	if capeID == "" {
+		capeID = uuid.New().String()
+	}
+	skinID := data.SkinID
+	if skinID == "" {
+		skinID = uuid.New().String()
 	}
 
 	return protocol.Skin{
-		SkinID:                    data.SkinID,
+		SkinID:                    skinID,
 		PlayFabID:                 data.PlayFabID,
 		SkinResourcePatch:         resourcePatch,
 		SkinImageWidth:            uint32(data.SkinImageWidth),
@@ -80,13 +94,43 @@ func SkinFromClientData(data login.ClientData) protocol.Skin {
 		PersonaSkin:               data.PersonaSkin,
 		PersonaCapeOnClassicSkin:  data.CapeOnClassicSkin,
 		PrimaryUser:               true,
-		CapeID:                    data.CapeID,
-		FullID:                    data.SkinID,
-		SkinColour:                colour,
-		ArmSize:                   armSize,
+		CapeID:                    capeID,
+		FullID:                    skinID,
+		SkinColour:                parseSkinColour(data.SkinColour),
+		ArmSize:                   armSize(data.ArmSize),
 		Trusted:                   true,
 		OverrideAppearance:        true,
 	}
+}
+
+// parseSkinColour converts a Bedrock hex skin colour into the color.RGBA the
+// outgoing protocol.Skin expects. The client still reports it as a "#RRGGBB"
+// (or "#AARRGGBB") string, but the wire field is big-endian ARGB. Values we
+// cannot parse fall back to the fully transparent colour, which is what the
+// "#0" placeholder older gophertunnel releases accepted.
+func parseSkinColour(s string) color.RGBA {
+	h := strings.TrimPrefix(strings.TrimSpace(s), "#")
+	if len(h) == 6 {
+		h = "FF" + h // opaque RGB
+	}
+	if len(h) != 8 {
+		return color.RGBA{}
+	}
+	v, err := strconv.ParseUint(h, 16, 32)
+	if err != nil {
+		return color.RGBA{}
+	}
+	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: uint8(v >> 24)}
+}
+
+// armSize maps the client's "slim"/"wide" arm description onto the uint8
+// field the outgoing protocol.Skin now carries. Anything unrecognised is
+// treated as "wide", matching the classic Steve/Alex default.
+func armSize(s string) uint8 {
+	if strings.EqualFold(strings.TrimSpace(s), "slim") {
+		return protocol.ArmSizeSlim
+	}
+	return protocol.ArmSizeWide
 }
 
 func opaqueSkin(w, h int, r, g, b byte) []byte {
@@ -126,15 +170,14 @@ func defaultJavaSkin(suffix string) protocol.Skin {
 		CapeData:                  []byte{},
 		SkinGeometry:              defaultSkinGeometry,
 		AnimationData:             []byte{},
-		GeometryDataEngineVersion: []byte("1.12.0"),
+		GeometryDataEngineVersion: []byte(protocol.CurrentVersion),
 		PremiumSkin:               false,
 		PersonaSkin:               false,
 		PersonaCapeOnClassicSkin:  false,
-		PrimaryUser:               false,
-		CapeID:                    "",
+		PrimaryUser:               true,
+		CapeID:                    uuid.New().String(),
 		FullID:                    skinID,
-		SkinColour:                "#0",
-		ArmSize:                   "wide",
+		ArmSize:                   protocol.ArmSizeWide,
 		Trusted:                   true,
 		OverrideAppearance:        true,
 	}
@@ -142,46 +185,54 @@ func defaultJavaSkin(suffix string) protocol.Skin {
 
 func JavaFallbackSkinForViewer(p player.PlayerSnapshot) protocol.Skin {
 	if p.Skin != nil && len(p.Skin.Data) > 0 {
+		skinData := p.Skin.Data
 		w := 64
 		h := 64
-		// Standard Java skins are 64x64 or 64x32.
-		if len(p.Skin.Data) == 64*32*4 {
-			h = 32
-		} else if len(p.Skin.Data) == 128*128*4 {
-			w = 128
-			h = 128
-		} else if len(p.Skin.Data) == 128*64*4 {
-			w = 128
-			h = 64
+		switch len(skinData) {
+		case 64 * 64 * 4:
+			w, h = 64, 64
+		case 64 * 32 * 4:
+			// Upgrade legacy 64x32 skins to 64x64 so they match defaultSkinGeometry's
+			// 64x64 UV layout; otherwise Bedrock 26.x disconnects with Error "Block".
+			skinData = skin.UpgradeLegacySkin(skinData, 64)
+			w, h = 64, 64
+		case 128 * 128 * 4:
+			w, h = 128, 128
+		case 128 * 64 * 4:
+			skinData = skin.UpgradeLegacySkin(skinData, 128)
+			w, h = 128, 128
+		default:
+			return defaultJavaSkin(p.UUID.String())
 		}
 
-		armSize := "wide"
+		arms := uint8(protocol.ArmSizeWide)
+		resourcePatch := defaultSkinResourcePatch
 		if p.Skin.IsSlim() {
-			armSize = "slim"
+			arms = protocol.ArmSizeSlim
+			resourcePatch = slimSkinResourcePatch
 		}
 
 		skinID := "java_" + p.UUID.String()
 		return protocol.Skin{
 			SkinID:                    skinID,
 			PlayFabID:                 "",
-			SkinResourcePatch:         defaultSkinResourcePatch,
+			SkinResourcePatch:         resourcePatch,
 			SkinImageWidth:            uint32(w),
 			SkinImageHeight:           uint32(h),
-			SkinData:                  p.Skin.Data,
+			SkinData:                  skinData,
 			CapeImageWidth:            0,
 			CapeImageHeight:           0,
 			CapeData:                  []byte{},
 			SkinGeometry:              defaultSkinGeometry,
 			AnimationData:             []byte{},
-			GeometryDataEngineVersion: []byte("1.12.0"),
+			GeometryDataEngineVersion: []byte(protocol.CurrentVersion),
 			PremiumSkin:               false,
 			PersonaSkin:               false,
 			PersonaCapeOnClassicSkin:  false,
-			PrimaryUser:               false,
-			CapeID:                    "",
+			PrimaryUser:               true,
+			CapeID:                    uuid.New().String(),
 			FullID:                    skinID,
-			SkinColour:                "#0",
-			ArmSize:                   armSize,
+			ArmSize:                   arms,
 			Trusted:                   true,
 			OverrideAppearance:        true,
 		}
@@ -189,7 +240,7 @@ func JavaFallbackSkinForViewer(p player.PlayerSnapshot) protocol.Skin {
 	// Do not borrow the viewer's skin/geometry. That made Java players look like
 	// the Bedrock viewer or render as invalid cubes. Use a self-contained classic
 	// fallback skin until Java texture translation is implemented.
-	return defaultJavaSkin("")
+	return defaultJavaSkin(p.UUID.String())
 }
 
 func classicSkinResourcePatch() []byte {

@@ -132,12 +132,12 @@ func aiStep(m *mobs.Mob, ctx *context.AIContext) {
 	}
 
 	// 3. Systems.
+	KnockbackSystem(m, ctx)
 	ApplyGravity(m, def, ctx)
 	SunburnSystem(m, def, ctx)
 	WaterDamageSystem(m, def, ctx)
 	players := ctx.Players()
 	DespawnSystem(m, def, players)
-	KnockbackSystem(m)
 
 	// 4. Sensors.
 	RunSensors(m, ctx, players)
@@ -159,6 +159,33 @@ func ApplyGravity(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext) {
 		return
 	}
 	feetX, feetY, feetZ := int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))
+	if ctx.WaterAt != nil && (ctx.WaterAt(feetX, feetY, feetZ) || ctx.WaterAt(feetX, int(math.Floor(m.Y+0.4)), feetZ)) {
+		// Vanilla fluid physics: water drag + slight downward gravity.
+		// Upward swim buoyancy for non-aquatic mobs is driven by FloatGoal so mobs
+		// stay submerged around y = waterBlockY + 0.45 instead of hovering at y+1.0.
+		m.Vy *= 0.8
+		if def.Movement == "swim" {
+			m.Vy -= 0.005
+		} else {
+			m.Vy -= 0.015
+		}
+		if m.Vy < -0.08 {
+			m.Vy = -0.08
+		}
+		nextY := m.Y + m.Vy
+		if m.Vy <= 0 {
+			checkY := int(math.Floor(nextY))
+			if ctx.SolidAt(feetX, checkY, feetZ) && !ctx.WaterAt(feetX, checkY, feetZ) {
+				m.Y = float64(checkY + 1)
+				m.Vy = 0
+				m.OnGround = true
+				return
+			}
+		}
+		m.Y = nextY
+		m.OnGround = false
+		return
+	}
 	prevY := m.Y
 	m.Y += m.Vy
 	if def.Movement == "hover" {
@@ -172,9 +199,26 @@ func ApplyGravity(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext) {
 		m.Y = prevY
 	}
 	if m.Vy <= 0 {
-		nx, ny, nz := feetX, int(math.Floor(m.Y))-1, feetZ
-		if ctx.SolidAt(nx, ny, nz) {
-			m.Y = float64(ny + 1)
+		// Sweep downward from prevY's cell to the new m.Y cell so descending
+		// across a block boundary (e.g. prevY=65.02 -> m.Y=64.88 onto a solid
+		// block at y=64) lands cleanly on top (y=65.0) instead of checking
+		// int(Floor(64.88))-1 = 63 and snapping 1 full block down into y=64.0.
+		startY := int(math.Floor(prevY))
+		endY := int(math.Floor(m.Y))
+		if endY > startY {
+			startY = endY
+		}
+		for checkY := startY; checkY >= endY; checkY-- {
+			if ctx.SolidAt(feetX, checkY, feetZ) {
+				m.Y = float64(checkY + 1)
+				m.Vy = 0
+				m.OnGround = true
+				return
+			}
+		}
+		belowY := endY - 1
+		if m.Y <= float64(endY)+1e-4 && ctx.SolidAt(feetX, belowY, feetZ) {
+			m.Y = float64(belowY + 1)
 			m.Vy = 0
 			m.OnGround = true
 			return
@@ -265,15 +309,42 @@ func RunSensors(m *mobs.Mob, ctx *context.AIContext, players []context.PlayerTar
 	}
 }
 
-// KnockbackSystem consumes any pending one-shot knockback impulse.
-func KnockbackSystem(m *mobs.Mob) {
-	if m.KnockbackVX == 0 && m.KnockbackVZ == 0 && m.KnockbackVY == 0 {
-		return
+// KnockbackSystem applies vanilla-like multi-tick velocity decay and vertical lift.
+func KnockbackSystem(m *mobs.Mob, ctx *context.AIContext) {
+	if m.KnockbackVY != 0 {
+		if m.OnGround {
+			m.Vy = math.Min(0.4, m.Vy*0.5+m.KnockbackVY)
+			m.OnGround = false
+		} else {
+			m.Vy = math.Min(0.4, m.Vy+m.KnockbackVY*0.5)
+		}
+		m.KnockbackVY = 0
 	}
-	m.X += m.KnockbackVX
-	m.Z += m.KnockbackVZ
-	m.Vy += m.KnockbackVY
-	m.KnockbackVX, m.KnockbackVY, m.KnockbackVZ = 0, 0, 0
+	if math.Abs(m.KnockbackVX) > 0.005 || math.Abs(m.KnockbackVZ) > 0.005 {
+		stepX := m.KnockbackVX * 0.45
+		stepZ := m.KnockbackVZ * 0.45
+		nx := m.X + stepX
+		nz := m.Z + stepZ
+		fy := int(math.Floor(m.Y))
+		if ctx == nil || ctx.SolidAt == nil || (!ctx.SolidAt(int(math.Floor(nx)), fy, int(math.Floor(m.Z))) && !ctx.SolidAt(int(math.Floor(nx)), fy+1, int(math.Floor(m.Z)))) {
+			m.X = nx
+		} else {
+			m.KnockbackVX = 0
+		}
+		if ctx == nil || ctx.SolidAt == nil || (!ctx.SolidAt(int(math.Floor(m.X)), fy, int(math.Floor(nz))) && !ctx.SolidAt(int(math.Floor(m.X)), fy+1, int(math.Floor(nz)))) {
+			m.Z = nz
+		} else {
+			m.KnockbackVZ = 0
+		}
+		m.KnockbackVX *= 0.55
+		m.KnockbackVZ *= 0.55
+		if math.Abs(m.KnockbackVX) <= 0.005 {
+			m.KnockbackVX = 0
+		}
+		if math.Abs(m.KnockbackVZ) <= 0.005 {
+			m.KnockbackVZ = 0
+		}
+	}
 }
 
 // SunCheck returns true if the mob's head is in direct sky light.

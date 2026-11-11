@@ -258,6 +258,7 @@ func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 	// leaves the top section unlit, which the client renders as a black sky.
 	maskBits := len(c.Sections) + 2
 	light := lightData{
+		MaskBits:       maskBits,
 		SkyLightMask:   make(pk.BitSet, (maskBits+63)/64),
 		BlockLightMask: make(pk.BitSet, (maskBits+63)/64),
 		SkyLight:       []pk.ByteArray{},
@@ -310,6 +311,7 @@ func (c *Chunk) ReadFrom(r io.Reader) (int64, error) {
 		&data,
 		pk.Array(&c.BlockEntity),
 		&lightData{
+			MaskBits:       len(c.Sections) + 2,
 			SkyLightMask:   make(pk.BitSet, (len(c.Sections)+2+63)/64),
 			BlockLightMask: make(pk.BitSet, (len(c.Sections)+2+63)/64),
 			SkyLight:       []pk.ByteArray{},
@@ -487,38 +489,99 @@ func (s *Section) ReadFrom(r io.Reader) (int64, error) {
 }
 
 type lightData struct {
+	MaskBits       int
 	SkyLightMask   pk.BitSet
 	BlockLightMask pk.BitSet
 	SkyLight       []pk.ByteArray
 	BlockLight     []pk.ByteArray
 }
 
-func bitSetRev(set pk.BitSet) pk.BitSet {
+// codecBitSet wraps pk.BitSet using Minecraft 26.3's ByteBufCodecs.BIT_SET
+// (VarInt byte length + little-endian BitSet.toByteArray() bytes with trailing zero bytes stripped).
+type codecBitSet struct {
+	set *pk.BitSet
+}
+
+func (b codecBitSet) WriteTo(w io.Writer) (int64, error) {
+	if b.set == nil || len(*b.set) == 0 {
+		return pk.ByteArray(nil).WriteTo(w)
+	}
+	raw := make([]byte, len(*b.set)*8)
+	for i, word := range *b.set {
+		u := uint64(word)
+		off := i * 8
+		raw[off+0] = byte(u)
+		raw[off+1] = byte(u >> 8)
+		raw[off+2] = byte(u >> 16)
+		raw[off+3] = byte(u >> 24)
+		raw[off+4] = byte(u >> 32)
+		raw[off+5] = byte(u >> 40)
+		raw[off+6] = byte(u >> 48)
+		raw[off+7] = byte(u >> 56)
+	}
+	end := len(raw)
+	for end > 0 && raw[end-1] == 0 {
+		end--
+	}
+	return pk.ByteArray(raw[:end]).WriteTo(w)
+}
+
+func (b codecBitSet) ReadFrom(r io.Reader) (int64, error) {
+	var raw pk.ByteArray
+	n, err := raw.ReadFrom(r)
+	if err != nil {
+		return n, err
+	}
+	words := (len(raw) + 7) / 8
+	res := make(pk.BitSet, words)
+	for i, v := range raw {
+		res[i/8] |= int64(v) << ((uint(i) % 8) * 8)
+	}
+	*b.set = res
+	return n, nil
+}
+
+func bitSetRev(set pk.BitSet, maskBits int) pk.BitSet {
+	if maskBits <= 0 {
+		maskBits = len(set) * 64
+	}
 	rev := make(pk.BitSet, len(set))
 	for i := range rev {
-		rev[i] = ^set[i]
+		inv := ^uint64(set[i])
+		lo := i * 64
+		hi := lo + 64
+		if maskBits <= lo {
+			inv = 0
+		} else if maskBits < hi {
+			valid := uint(maskBits - lo)
+			inv &= (uint64(1) << valid) - 1
+		}
+		rev[i] = int64(inv)
 	}
 	return rev
 }
 
-func (l *lightData) WriteTo(w io.Writer) (n int64, err error) {
+func (l *lightData) WriteTo(w io.Writer) (int64, error) {
+	emptySky := bitSetRev(l.SkyLightMask, l.MaskBits)
+	emptyBlock := bitSetRev(l.BlockLightMask, l.MaskBits)
 	return pk.Tuple{
-		l.SkyLightMask,
-		l.BlockLightMask,
-		bitSetRev(l.SkyLightMask),
-		bitSetRev(l.BlockLightMask),
-		pk.Array(l.SkyLight),
-		pk.Array(l.BlockLight),
+		codecBitSet{set: &l.SkyLightMask},
+		codecBitSet{set: &l.BlockLightMask},
+		codecBitSet{set: &emptySky},
+		codecBitSet{set: &emptyBlock},
+		pk.Array(&l.SkyLight),
+		pk.Array(&l.BlockLight),
 	}.WriteTo(w)
 }
 
 func (l *lightData) ReadFrom(r io.Reader) (int64, error) {
-	var RevSkyLightMask, RevBlockLightMask pk.BitSet
+	varEmptySkyLightMask := new(pk.BitSet)
+	varEmptyBlockLightMask := new(pk.BitSet)
 	return pk.Tuple{
-		&l.SkyLightMask,
-		&l.BlockLightMask,
-		&RevSkyLightMask,
-		&RevBlockLightMask,
+		codecBitSet{set: &l.SkyLightMask},
+		codecBitSet{set: &l.BlockLightMask},
+		codecBitSet{set: varEmptySkyLightMask},
+		codecBitSet{set: varEmptyBlockLightMask},
 		pk.Array(&l.SkyLight),
 		pk.Array(&l.BlockLight),
 	}.ReadFrom(r)

@@ -3,36 +3,66 @@ package server
 import (
 	"math"
 
+	"livingworld/internal/player"
+
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
 func bedrockMetadata(name string, sneaking bool) protocol.EntityMetadata {
+	return bedrockPlayerMetadata(player.PlayerSnapshot{
+		Username:  name,
+		Sneaking:  sneaking,
+		Breathing: true,
+		AirSupply: 300,
+	})
+}
+
+func bedrockPlayerMetadata(p player.PlayerSnapshot) protocol.EntityMetadata {
 	meta := protocol.NewEntityMetadata()
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasGravity)
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasCollision)
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagShowName)
 	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagAlwaysShowName)
-	meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
 
-	meta[protocol.EntityDataKeyName] = name
-	// The dedicated AlwaysShowNameTag byte (not just the flag) is what makes the
-	// nametag render at any distance/angle; without it Bedrock fades it like a mob
-	// nametag (only when close and looked at). Matches dragonfly's reference.
+	breathing := p.Breathing || (p.AirSupply == 0 && p.UUID == [16]byte{})
+	if breathing {
+		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBreathing)
+	}
+	if p.OnFire {
+		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagOnFire)
+	}
+	if p.Sprinting {
+		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSprinting)
+	}
+	if p.Swimming {
+		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSwimming)
+	}
+	if p.Sneaking {
+		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
+	}
+
+	meta[protocol.EntityDataKeyName] = p.Username
 	meta[protocol.EntityDataKeyAlwaysShowNameTag] = uint8(1)
 	meta[protocol.EntityDataKeyScale] = float32(1)
 	meta[protocol.EntityDataKeyWidth] = float32(0.6)
 
-	if sneaking {
-		meta.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagSneaking)
-		meta[protocol.EntityDataKeyPoseIndex] = int32(5)  // Crouching pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.5) // Reduced height
-	} else {
-		meta[protocol.EntityDataKeyPoseIndex] = int32(0)  // Standing pose index
-		meta[protocol.EntityDataKeyHeight] = float32(1.8) // Normal height
+	switch {
+	case p.Swimming:
+		meta[protocol.EntityDataKeyHeight] = float32(0.6)
+	case p.Sneaking:
+		meta[protocol.EntityDataKeyHeight] = float32(1.5)
+	default:
+		meta[protocol.EntityDataKeyHeight] = float32(1.8)
 	}
 
-	// Full air so remote player entities never render drowning bubble particles.
-	meta[protocol.EntityDataKeyAirSupply] = int16(300)
+	air := p.AirSupply
+	if air == 0 && breathing {
+		air = 300
+	}
+	if air < 0 {
+		air = 0
+	}
+	meta[protocol.EntityDataKeyAirSupply] = air
 	meta[protocol.EntityDataKeyAirSupplyMax] = int16(300)
 	return meta
 }

@@ -17,7 +17,10 @@ package server
 import (
 	"context"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"time"
 
 	"livingworld/internal/bedrock"
@@ -42,6 +45,7 @@ type Server struct {
 
 	ops       *OpsList
 	whitelist *Whitelist
+	stopOnce  sync.Once
 }
 
 // Start begins listening on both protocols and enables world persistence and
@@ -83,28 +87,50 @@ func (s *Server) Start() error {
 
 // Stop shuts down both listeners and saves all worlds. Safe to call more than once.
 func (s *Server) Stop() {
-	plugin.Manager().Emit(&plugin.ServerStopEvent{BaseEvent: plugin.BaseEvent{Type_: plugin.EventServerStop}})
-	s.players.SaveAll() // persist player data before disconnecting everyone
-	if s.bedrock != nil {
-		s.bedrock.Stop()
-	}
-	if s.java != nil {
-		s.java.Stop()
-	}
-	if err := s.worlds.Close(); err != nil {
-		s.logger.Error("Error saving worlds on shutdown: %v", err)
-	}
+	s.stopOnce.Do(func() {
+		s.logger.Info("Shutting down LivingWorld...")
+		plugin.Manager().Emit(&plugin.ServerStopEvent{BaseEvent: plugin.BaseEvent{Type_: plugin.EventServerStop}})
+		s.players.SaveAll() // persist player data before disconnecting everyone
+		if s.bedrock != nil {
+			s.bedrock.Stop()
+		}
+		if s.java != nil {
+			s.java.Stop()
+		}
+		if err := s.worlds.Close(); err != nil {
+			s.logger.Error("Error saving worlds on shutdown: %v", err)
+		}
+		s.logger.Info("LivingWorld stopped")
+	})
 }
 
 // Run starts the server and blocks until SIGINT/SIGTERM (or the console
-// "stop" command), then shuts down gracefully via the application harness.
-// The harness owns signal handling, the operator console, ordered component
-// shutdown, and health reporting; see NewHarness for the extensibility seam.
-// It returns the Start error, if any.
+// "stop" command), then shuts down gracefully. It returns the Start error, if any.
 func (s *Server) Run() error {
-	h := s.NewHarness()
-	_ = h.Register(&consoleComponent{srv: s, out: os.Stdout, stop: func() { _ = h.Stop() }})
-	return h.Run(context.Background())
+	if err := s.Start(); err != nil {
+		return err
+	}
+
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	stopCh := make(chan struct{})
+	var closeOnce sync.Once
+	triggerStop := func() {
+		closeOnce.Do(func() { close(stopCh) })
+	}
+
+	con := newConsole(s, os.Stdout, triggerStop)
+	go con.run(os.Stdin)
+	s.logger.Info("Console ready — type 'help' for commands")
+
+	select {
+	case <-sigCtx.Done():
+	case <-stopCh:
+	}
+
+	s.Stop()
+	return nil
 }
 
 // Plugins returns the plugin manager for registering plugins and event handlers.

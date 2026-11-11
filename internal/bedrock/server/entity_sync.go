@@ -2,6 +2,7 @@ package server
 
 import (
 	"livingworld/internal/bedrock/inventory"
+	"livingworld/internal/bedrock/skin"
 	"livingworld/internal/item"
 	"livingworld/internal/player"
 
@@ -41,6 +42,8 @@ func (s *Server) startPlayerEventLoop() {
 					s.updateEquipmentFor(viewer, ev.Player)
 				case player.EventHurt:
 					s.hurtPlayerFor(viewer, ev.Player)
+				case player.EventSkin:
+					s.updateSkinFor(viewer, ev.Player)
 				}
 			})
 		}
@@ -68,6 +71,7 @@ func (s *Server) spawnPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 		viewer.spawnJavaPlayer(p)
 	}
 	s.updateEquipmentFor(viewer, p) // render their held item right away
+	s.syncLocatorFor(viewer, p, false)
 }
 
 func (s *Server) movePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot, teleport bool) {
@@ -91,6 +95,7 @@ func (s *Server) movePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot, 
 		Rotation:        mgl32.Vec3{p.Rotation.Pitch, p.Rotation.Yaw, p.Rotation.Yaw},
 		Flags:           flags,
 	})
+	s.syncLocatorFor(viewer, p, false)
 }
 
 func (s *Server) updateSneakFor(viewer *bedrockSession, p player.PlayerSnapshot) {
@@ -99,16 +104,60 @@ func (s *Server) updateSneakFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	}
 	viewer.write(&packet.SetActorData{
 		EntityRuntimeID: p.EntityRuntimeID,
-		EntityMetadata:  bedrockMetadata(p.Username, p.Sneaking),
+		EntityMetadata:  bedrockPlayerMetadata(p),
 	})
+	s.syncLocatorFor(viewer, p, false)
 }
 
 func (s *Server) removePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionRemove, Entries: []protocol.PlayerListEntry{{UUID: p.UUID}}})
+	s.syncLocatorFor(viewer, p, true)
+	viewer.write(&packet.PlayerList{Entries: []protocol.PlayerListEntry{{ActionType: protocol.PlayerListActionRemove, UUID: p.UUID}}})
 	viewer.write(&packet.RemoveActor{EntityUniqueID: int64(p.EntityRuntimeID)})
+}
+
+// syncLocatorFor broadcasts Bedrock LocatorBar and PlayerLocation packets so the
+// viewer's XP Locator Bar displays (or hides when sneaking/despawned/disabled)
+// the target player.
+func (s *Server) syncLocatorFor(viewer *bedrockSession, p player.PlayerSnapshot, hide bool) {
+	if s.cfg != nil && !s.cfg.World.LocatorBar {
+		hide = true
+	}
+	visible := !hide && !p.Sneaking
+	pos := bedrockPosForSnapshot(p)
+	action := byte(protocol.WaypointActionAdd)
+	if !visible {
+		action = protocol.WaypointActionRemove
+	}
+	viewer.write(&packet.LocatorBar{
+		Waypoints: []protocol.LocatorBarWaypoint{
+			{
+				GroupHandle: p.UUID,
+				Action:      action,
+				Waypoint: protocol.Waypoint{
+					UpdateFlag:              protocol.WaypointUpdateFlagVisible | protocol.WaypointUpdateFlagPosition | protocol.WaypointUpdateFlagClientPositionAuthority | protocol.WaypointUpdateFlagActorUniqueID,
+					Visible:                 protocol.Option(visible),
+					WorldPosition:           protocol.Option(protocol.WaypointWorldPosition{Position: pos, DimensionID: 0}),
+					ClientPositionAuthority: protocol.Option(true),
+					ActorUniqueID:           protocol.Option(int64(p.EntityRuntimeID)),
+				},
+			},
+		},
+	})
+	if !visible {
+		viewer.write(&packet.PlayerLocation{
+			Type:           packet.PlayerLocationTypeHide,
+			EntityUniqueID: int64(p.EntityRuntimeID),
+		})
+		return
+	}
+	viewer.write(&packet.PlayerLocation{
+		Type:           packet.PlayerLocationTypeCoordinates,
+		EntityUniqueID: int64(p.EntityRuntimeID),
+		Position:       pos,
+	})
 }
 
 // hurtPlayerFor plays the red hurt flash on another player's avatar for a viewer.
@@ -119,6 +168,14 @@ func (s *Server) hurtPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) 
 	viewer.write(&packet.ActorEvent{EntityRuntimeID: p.EntityRuntimeID, EventType: packet.ActorEventHurt})
 }
 
+func (s *Server) updateSkinFor(viewer *bedrockSession, p player.PlayerSnapshot) {
+	if p.UUID == viewer.id || p.EntityRuntimeID == 0 || p.Skin == nil {
+		return
+	}
+	sk := skin.JavaFallbackSkinForViewer(p)
+	viewer.write(&packet.PlayerSkin{UUID: p.UUID, Skin: sk})
+}
+
 func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
@@ -126,6 +183,7 @@ func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	viewer.write(&packet.Animate{
 		ActionType:      packet.AnimateActionSwingArm,
 		EntityRuntimeID: p.EntityRuntimeID,
+		SwingSource:     packet.AnimateSwingSourceAttack,
 	})
 }
 
@@ -139,7 +197,7 @@ func (s *Server) updateEquipmentFor(viewer *bedrockSession, p player.PlayerSnaps
 		return
 	}
 	heldItem := pl.Inventory.GetHeldItem()
-	if heldItem == nil || heldItem.ID == 0 {
+	if heldItem == nil || heldItem.ID == 0 || heldItem.Count <= 0 {
 		// Empty hand
 		viewer.write(&packet.MobEquipment{
 			EntityRuntimeID: p.EntityRuntimeID,

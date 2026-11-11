@@ -23,6 +23,36 @@ func init() {
 	dfworld.DefaultBlockRegistry.Finalize()
 }
 
+var (
+	vanillaBlockEntriesOnce sync.Once
+	vanillaBlockEntries     []protocol.BlockEntry
+)
+
+// VanillaBlockEntries returns the vanilla data-driven block definitions
+// shipped by dragonfly's server/world package (dfworld.DataDrivenBlocks()) as
+// []protocol.BlockEntry, ready to assign to minecraft.GameData.CustomBlocks in
+// StartGame. Mirrors dragonfly's private Server.makeBlockEntries().
+//
+// In Bedrock 1.26.50 / 26.52 (protocol 2193, dragonfly v0.11.5), vanilla
+// includes data-driven blocks (~3,931 block states across cinnabar, sulfur,
+// shelf_mushroom, straw_bed, etc.) that are part of DefaultBlockRegistry. If
+// CustomBlocks is omitted from StartGame, the client constructs its runtime-ID
+// palette without those entries and every block runtime ID shifts by ~3,931
+// slots (rendering stone/deepslate/dirt/grass as doors and stairs).
+func VanillaBlockEntries() []protocol.BlockEntry {
+	vanillaBlockEntriesOnce.Do(func() {
+		dd := dfworld.DataDrivenBlocks()
+		vanillaBlockEntries = make([]protocol.BlockEntry, 0, len(dd))
+		for _, b := range dd {
+			vanillaBlockEntries = append(vanillaBlockEntries, protocol.BlockEntry{
+				Name:       b.Name,
+				Properties: b.Components,
+			})
+		}
+	})
+	return vanillaBlockEntries
+}
+
 // ChunkCache is a thread-safe cache wrapper for Bedrock chunks to prevent concurrent
 // access issues between player connection loops and block update loops.
 //

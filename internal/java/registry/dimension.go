@@ -1,6 +1,9 @@
 package registry
 
 import (
+	"strings"
+
+	"github.com/Tnze/go-mc/level/biome"
 	mcregistry "github.com/Tnze/go-mc/registry"
 )
 
@@ -103,11 +106,16 @@ func buildOverworldAttributes() map[string]any {
 }
 
 type biomeEffects struct {
-	FogColor      int32 `nbt:"fog_color"`
-	SkyColor      int32 `nbt:"sky_color"`
-	WaterColor    int32 `nbt:"water_color"`
-	WaterFogColor int32 `nbt:"water_fog_color"`
+	FogColor           int32  `nbt:"fog_color"`
+	SkyColor           int32  `nbt:"sky_color"`
+	WaterColor         int32  `nbt:"water_color"`
+	WaterFogColor      int32  `nbt:"water_fog_color"`
+	GrassColor         *int32 `nbt:"grass_color,omitempty"`
+	FoliageColor       *int32 `nbt:"foliage_color,omitempty"`
+	GrassColorModifier string `nbt:"grass_color_modifier,omitempty"`
 }
+
+func int32Ptr(v int32) *int32 { return &v }
 
 type plainsBiome struct {
 	HasPrecipitation bool         `nbt:"has_precipitation"`
@@ -148,17 +156,76 @@ func registerDimension(r *mcregistry.Registries, sizes map[string]int) {
 }
 
 func registerBiomes(r *mcregistry.Registries, sizes map[string]int) {
-	plainsData := plainsBiome{
-		HasPrecipitation: true,
-		Temperature:      0.8,
-		Downfall:         0.4,
-		Effects: biomeEffects{
-			FogColor:      12638463,
-			SkyColor:      7907327,
-			WaterColor:    4159204,
-			WaterFogColor: 329011,
-		},
+	const biomeCount = 65
+	for i := 0; i < biomeCount; i++ {
+		id := biome.Type(i).String()
+		name := strings.TrimPrefix(id, "minecraft:")
+		bd := plainsBiome{
+			HasPrecipitation: true,
+			Temperature:      0.8,
+			Downfall:         0.4,
+			Effects: biomeEffects{
+				FogColor:      12638463,
+				SkyColor:      7907327,
+				WaterColor:    4159204,
+				WaterFogColor: 329011,
+			},
+		}
+		switch name {
+		case "desert", "badlands", "eroded_badlands", "wooded_badlands", "savanna", "savanna_plateau", "windswept_savanna":
+			bd.HasPrecipitation = false
+			bd.Temperature = 2.0
+			bd.Downfall = 0.0
+			bd.Effects.SkyColor = 7254527
+			if strings.Contains(name, "badlands") {
+				bd.Effects.GrassColor = int32Ptr(9470285)
+				bd.Effects.FoliageColor = int32Ptr(10387789)
+			}
+		case "snowy_plains", "ice_spikes", "snowy_taiga", "snowy_beach", "snowy_slopes", "frozen_peaks", "jagged_peaks", "frozen_river", "frozen_ocean", "deep_frozen_ocean", "grove":
+			bd.Temperature = 0.0
+			bd.Downfall = 0.5
+			bd.Effects.SkyColor = 8364543
+		case "swamp":
+			bd.Temperature = 0.8
+			bd.Downfall = 0.9
+			bd.Effects.WaterColor = 6388580
+			bd.Effects.WaterFogColor = 2302743
+			bd.Effects.FoliageColor = int32Ptr(6975545)
+			bd.Effects.GrassColorModifier = "swamp"
+		case "mangrove_swamp":
+			bd.Temperature = 0.8
+			bd.Downfall = 0.9
+			bd.Effects.WaterColor = 3832426
+			bd.Effects.WaterFogColor = 5077600
+			bd.Effects.FoliageColor = int32Ptr(9285927)
+			bd.Effects.GrassColorModifier = "swamp"
+		case "dark_forest":
+			bd.Temperature = 0.7
+			bd.Downfall = 0.8
+			bd.Effects.GrassColorModifier = "dark_forest"
+		case "pale_garden":
+			bd.Temperature = 0.7
+			bd.Downfall = 0.8
+			bd.Effects.GrassColor = int32Ptr(7832178)
+			bd.Effects.FoliageColor = int32Ptr(8883574)
+		case "cherry_grove":
+			bd.Temperature = 0.5
+			bd.Downfall = 0.8
+			bd.Effects.WaterColor = 6141935
+			bd.Effects.WaterFogColor = 6141935
+			bd.Effects.GrassColor = int32Ptr(11983713)
+			bd.Effects.FoliageColor = int32Ptr(11983713)
+		case "jungle", "bamboo_jungle", "sparse_jungle":
+			bd.Temperature = 0.95
+			bd.Downfall = 0.9
+		case "forest", "flower_forest", "birch_forest", "old_growth_birch_forest", "meadow":
+			bd.Temperature = 0.7
+			bd.Downfall = 0.8
+		case "taiga", "old_growth_pine_taiga", "old_growth_spruce_taiga", "windswept_hills", "windswept_forest", "windswept_gravelly_hills", "stony_shore", "stony_peaks":
+			bd.Temperature = 0.25
+			bd.Downfall = 0.8
+		}
+		r.WorldGenBiome.Put(id, marshalNBT(bd))
 	}
-	r.WorldGenBiome.Put("minecraft:plains", marshalNBT(plainsData))
-	sizes["minecraft:worldgen/biome"] = 1
+	sizes["minecraft:worldgen/biome"] = biomeCount
 }

@@ -88,7 +88,56 @@ func DownloadAndDecodeSkin(url string) ([]byte, error) {
 			rgba[idx+3] = byte(a >> 8)
 		}
 	}
+	if h == w/2 {
+		rgba = UpgradeLegacySkin(rgba, w)
+	}
 	return rgba, nil
+}
+
+// UpgradeLegacySkin converts a legacy 64x32 (or 128x64) RGBA skin buffer into a
+// modern square 64x64 (or 128x128) RGBA skin buffer by copying the top half and
+// mirroring the right leg and right arm into the bottom-half left leg and left
+// arm slots (matching vanilla SkinTextureDownloader.processLegacySkin).
+func UpgradeLegacySkin(src []byte, w int) []byte {
+	h := w / 2
+	if len(src) != w*h*4 {
+		return src
+	}
+	dst := make([]byte, w*w*4)
+	copy(dst, src)
+
+	s := w / 64
+	if s < 1 {
+		return dst
+	}
+	copyMirroredRect := func(srcX, srcY, dstX, dstY, rw, rh int) {
+		srcX, srcY, dstX, dstY, rw, rh = srcX*s, srcY*s, dstX*s, dstY*s, rw*s, rh*s
+		for dy := 0; dy < rh; dy++ {
+			for dx := 0; dx < rw; dx++ {
+				si := ((srcY+dy)*w + (srcX + rw - 1 - dx)) * 4
+				di := ((dstY+dy)*w + (dstX + dx)) * 4
+				copy(dst[di:di+4], src[si:si+4])
+			}
+		}
+	}
+
+	// Right leg (0,16) -> Left leg (16,48)
+	copyMirroredRect(4, 16, 20, 48, 4, 4)
+	copyMirroredRect(8, 16, 24, 48, 4, 4)
+	copyMirroredRect(0, 20, 24, 52, 4, 12)
+	copyMirroredRect(4, 20, 20, 52, 4, 12)
+	copyMirroredRect(8, 20, 16, 52, 4, 12)
+	copyMirroredRect(12, 20, 28, 52, 4, 12)
+
+	// Right arm (40,16) -> Left arm (32,48)
+	copyMirroredRect(44, 16, 36, 48, 4, 4)
+	copyMirroredRect(48, 16, 40, 48, 4, 4)
+	copyMirroredRect(40, 20, 40, 52, 4, 12)
+	copyMirroredRect(44, 20, 36, 52, 4, 12)
+	copyMirroredRect(48, 20, 32, 52, 4, 12)
+	copyMirroredRect(52, 20, 44, 52, 4, 12)
+
+	return dst
 }
 
 // FetchMojangSkin looks up a player's skin via Mojang API by username.

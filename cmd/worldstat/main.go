@@ -8,16 +8,16 @@ import (
 	"fmt"
 	"sort"
 
-	"livingworld/internal/dimension/overworld/pipeline"
+	"livingworld/internal/dimension/overworld"
 	"livingworld/internal/world"
 )
 
 func main() {
 	const seed = 12345
 	const step = 16 // sample every Nth chunk
-	const span = 512
+	const span = 64
 
-	g := pipeline.NewGenerator(seed)
+	g := overworld.New(seed)
 
 	heights := make([]int, 0, span*span/step)
 	minH, maxH := 1<<30, -(1 << 30)

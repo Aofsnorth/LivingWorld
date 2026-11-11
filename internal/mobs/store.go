@@ -86,6 +86,7 @@ type Mob struct {
 	Target        [16]byte
 	HurtBy        [16]byte
 	HurtByTick    int64
+	HurtTicks     int
 	FuseTicks     int
 	JumpCooldown  int
 	Vy            float64
@@ -122,6 +123,7 @@ type Store struct {
 	onSpawn []func(Mob)
 	onDesp  []func(id int64)
 	onMove  []func(Mob)
+	onHurt  []func(Mob)
 	onDeath []func(Mob)
 }
 
@@ -159,6 +161,13 @@ func (s *Store) OnMove(fn func(Mob)) {
 func (s *Store) OnDeath(fn func(Mob)) {
 	s.mu.Lock()
 	s.onDeath = append(s.onDeath, fn)
+	s.mu.Unlock()
+}
+
+// OnHurt registers a callback fired when a mob takes non-lethal damage.
+func (s *Store) OnHurt(fn func(Mob)) {
+	s.mu.Lock()
+	s.onHurt = append(s.onHurt, fn)
 	s.mu.Unlock()
 }
 
@@ -283,6 +292,7 @@ func (s *Store) Hurt(mobID int64, attacker [16]byte) {
 	}
 	m.HurtBy = attacker
 	m.HurtByTick = m.AITick
+	m.HurtTicks = 10
 	def := DefFor(m.Type)
 	if def.IsHostile {
 		var zero [16]byte
@@ -301,22 +311,43 @@ func (s *Store) Hurt(mobID int64, attacker [16]byte) {
 
 // HurtFire applies fire damage from the M0.6 sun-burn path.
 func (s *Store) HurtFire(mobID int64, damage float32) {
+	var hurtSnap, deathSnap *Mob
+	var hurtCbs, deathCbs []func(Mob)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	m, ok := s.mobs[mobID]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	def := DefFor(m.Type)
 	if def.FireImmune {
+		s.mu.Unlock()
 		return
 	}
 	if m.FireTicks < 60 {
 		m.FireTicks = 60
 	}
+	m.HurtTicks = 10
 	m.HP -= damage
+	snap := *m
 	if m.HP <= 0 {
 		m.Despawn = true
+		deathSnap = &snap
+		deathCbs = append(deathCbs, s.onDeath...)
+	} else {
+		hurtSnap = &snap
+		hurtCbs = append(hurtCbs, s.onHurt...)
+	}
+	s.mu.Unlock()
+	if hurtSnap != nil {
+		for _, cb := range hurtCbs {
+			cb(*hurtSnap)
+		}
+	}
+	if deathSnap != nil {
+		for _, cb := range deathCbs {
+			cb(*deathSnap)
+		}
 	}
 }
 
@@ -328,8 +359,8 @@ func (s *Store) HurtDirect(mobID int64, attacker [16]byte, damage float32) {
 // HurtDirectWithKnockback (M7) applies direct damage AND sets a
 // knockback velocity on the mob.
 func (s *Store) HurtDirectWithKnockback(mobID int64, attacker [16]byte, damage float32, dirX, dirZ, kb float64) {
-	var deathSnap *Mob
-	var deathCbs []func(Mob)
+	var hurtSnap, deathSnap *Mob
+	var hurtCbs, deathCbs []func(Mob)
 	s.mu.Lock()
 	m, ok := s.mobs[mobID]
 	if !ok {
@@ -338,21 +369,18 @@ func (s *Store) HurtDirectWithKnockback(mobID int64, attacker [16]byte, damage f
 	}
 	m.HurtBy = attacker
 	m.HurtByTick = m.AITick
+	m.HurtTicks = 10
 	def := DefFor(m.Type)
 	if def.IsHostile {
 		var zero [16]byte
-		if m.Target == zero {
+		if attacker != zero {
 			m.Target = attacker
 			m.State = StatePursue
 		}
+	} else {
+		m.State = StateFlee
 	}
 	m.HP -= damage
-	if m.HP <= 0 {
-		m.Despawn = true
-		snap := *m
-		deathSnap = &snap
-		deathCbs = append(deathCbs, s.onDeath...)
-	}
 	if kb > 0 {
 		resistance := 0.0
 		if def.NoKnockback {
@@ -363,7 +391,21 @@ func (s *Store) HurtDirectWithKnockback(mobID int64, attacker [16]byte, damage f
 		m.KnockbackVZ = nv.Z
 		m.KnockbackVY = nv.Y - m.Vy
 	}
+	snap := *m
+	if m.HP <= 0 {
+		m.Despawn = true
+		deathSnap = &snap
+		deathCbs = append(deathCbs, s.onDeath...)
+	} else {
+		hurtSnap = &snap
+		hurtCbs = append(hurtCbs, s.onHurt...)
+	}
 	s.mu.Unlock()
+	if hurtSnap != nil {
+		for _, cb := range hurtCbs {
+			cb(*hurtSnap)
+		}
+	}
 	if deathSnap != nil {
 		for _, cb := range deathCbs {
 			cb(*deathSnap)

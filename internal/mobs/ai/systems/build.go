@@ -32,8 +32,10 @@ func buildAI(def mobs.MobDef) (goalSel, targetSel *selector.GoalSelector) {
 	hasSwell := def.HasExplosion
 	isSpider := def.Movement == "climb" || strings.Contains(def.Type, "spider")
 
-	// 0: float to the surface in water (every mob).
-	goalSel.Add(0, move.FloatGoal{})
+	// 0: float to the surface in water (non-aquatic mobs only).
+	if def.Movement != "swim" {
+		goalSel.Add(0, move.FloatGoal{})
+	}
 
 	// 1: passive panic when hurt.
 	if !def.IsHostile && def.ThrowDamage == 0 {

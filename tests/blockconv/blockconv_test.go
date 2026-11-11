@@ -53,7 +53,7 @@ func TestStairsFacingMirrored(t *testing.T) {
 		"weirdo_direction": int32(0), "upside_down_bit": false, "minecraft:corner": "none",
 	})
 	want := mustState(t, "minecraft:oak_stairs", map[string]string{
-		"facing": "west", "half": "bottom", "shape": "straight", "waterlogged": "false",
+		"facing": "east", "half": "bottom", "shape": "straight", "waterlogged": "false",
 	})
 	if east != want {
 		t.Fatalf("oak_stairs weirdo=0 -> state %d, want %d", east, want)

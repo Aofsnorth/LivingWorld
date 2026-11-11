@@ -142,19 +142,32 @@ func classifyBlock(name string) BlockLightProps {
 		props.Opacity = 2
 	case strings.HasSuffix(base, "_stairs"):
 		props.Opacity = 2
-	case strings.HasPrefix(base, "oak_") || strings.HasPrefix(base, "spruce_") ||
-		strings.HasPrefix(base, "birch_") || strings.HasPrefix(base, "jungle_") ||
-		strings.HasPrefix(base, "acacia_") || strings.HasPrefix(base, "dark_oak_") ||
-		strings.HasPrefix(base, "crimson_") || strings.HasPrefix(base, "warped_"):
-		// Wooden blocks are opaque
+	case base == "farmland" || base == "dirt_path" || base == "Snow":
+		props.Opacity = 1
+	case base == "leaves" || strings.HasSuffix(base, "_leaves") || base == "mangrove_roots":
+		props.Opacity = 1
+	case base == "grass_block" || base == "dirt" || base == "coarse_dirt" || base == "rooted_dirt" ||
+		base == "podzol" || base == "mycelium" || base == "mud" || base == "packed_mud" ||
+		base == "mud_bricks" || base == "moss_block" || base == "pale_moss_block" ||
+		base == "stone" || base == "cobblestone" || base == "mossy_cobblestone" ||
+		base == "deepslate" || base == "cobbled_deepslate" || base == "tuff" ||
+		base == "calcite" || base == "dripstone_block" || base == "smooth_basalt" ||
+		base == "granite" || base == "diorite" || base == "andesite" ||
+		base == "sand" || base == "red_sand" || base == "sandstone" || base == "red_sandstone" ||
+		base == "gravel" || base == "clay" || base == "terracotta" ||
+		base == "snow_block" || base == "packed_ice" || base == "blue_ice" ||
+		base == "bamboo_block" || base == "stripped_bamboo_block" ||
+		base == "kelp_block" || base == "dried_kelp_block" ||
+		base == "nether_wart_block" || base == "warped_wart_block" ||
+		base == "bone_block" || base == "hay_block" || base == "melon" || base == "pumpkin" ||
+		base == "carved_pumpkin" || base == "bedrock":
 		props.Opacity = 15
-	case base == "grass_block" || base == "dirt" || base == "stone" || base == "cobblestone":
-		props.Opacity = 15
-	case base == "sand" || base == "gravel" || base == "clay":
-		props.Opacity = 15
-	case strings.HasSuffix(base, "_ore") || strings.HasSuffix(base, "_deepslate"):
-		props.Opacity = 15
-	case base == "bedrock":
+	case strings.HasSuffix(base, "_ore") || strings.HasSuffix(base, "_deepslate") ||
+		strings.HasSuffix(base, "_terracotta") || strings.HasSuffix(base, "_concrete") ||
+		strings.HasSuffix(base, "_concrete_powder") || strings.HasSuffix(base, "_wool") ||
+		strings.HasSuffix(base, "_planks") || strings.HasSuffix(base, "_log") ||
+		strings.HasSuffix(base, "_wood") || strings.HasSuffix(base, "_stem") ||
+		strings.HasSuffix(base, "_hyphae") || strings.HasSuffix(base, "_bricks"):
 		props.Opacity = 15
 	}
 
@@ -167,55 +180,71 @@ func classifyBlock(name string) BlockLightProps {
 }
 
 // isNonSolidBlock returns true for blocks that don't fill their cube (flowers, grass, etc.).
+// IMPORTANT: Never use strings.HasPrefix with short plant names like "grass", "bamboo",
+// "nether_wart", or "kelp" because that would falsely match solid blocks like
+// "grass_block", "bamboo_block", "nether_wart_block", etc.
 func isNonSolidBlock(base string) bool {
-	nonSolid := []string{
-		"grass", "fern", "dead_bush", "seagrass", "tall_grass", "large_fern",
+	// Never classify *_block as non-solid here.
+	if strings.HasSuffix(base, "_block") {
+		return false
+	}
+
+	switch base {
+	case "air", "cave_air", "void_air",
+		"short_grass", "grass", "tall_grass", "fern", "large_fern",
+		"short_dry_grass", "tall_dry_grass", "bush", "firefly_bush", "dead_bush",
+		"seagrass", "tall_seagrass", "kelp", "kelp_plant",
 		"dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
 		"red_tulip", "orange_tulip", "white_tulip", "pink_tulip", "oxeye_daisy",
 		"cornflower", "lily_of_the_valley", "wither_rose", "sunflower", "lilac",
 		"rose_bush", "peony", "lily_pad", "sweet_berry_bush",
+		"torchflower", "torchflower_crop", "pitcher_plant", "pitcher_crop",
+		"pink_petals", "wildflowers", "leaf_litter", "cactus_flower",
+		"spore_blossom", "hanging_roots", "glow_lichen", "sculk_vein",
+		"big_dripleaf", "big_dripleaf_stem", "small_dripleaf",
+		"azalea", "flowering_azalea", "mangrove_propagule", "frogspawn",
+		"moss_carpet", "pale_moss_carpet", "pale_hanging_moss",
 		"wheat", "carrots", "potatoes", "beetroots", "melon_stem", "pumpkin_stem",
+		"attached_melon_stem", "attached_pumpkin_stem",
 		"nether_wart", "chorus_flower", "chorus_plant",
-		"red_mushroom", "brown_mushroom",
-		"sugar_cane", "kelp", "bamboo", "vine", "weeping_vines", "twisting_vines",
+		"red_mushroom", "brown_mushroom", "crimson_fungus", "warped_fungus",
+		"sugar_cane", "bamboo", "bamboo_sapling",
+		"vine", "weeping_vines", "weeping_vines_plant",
+		"twisting_vines", "twisting_vines_plant",
+		"cave_vines", "cave_vines_plant",
 		"crimson_roots", "warped_roots", "nether_sprouts",
-		"torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch",
+		"torch", "wall_torch", "soul_torch", "soul_wall_torch",
+		"redstone_torch", "redstone_wall_torch", "copper_torch", "copper_wall_torch",
 		"lever", "rail", "powered_rail", "detector_rail", "activator_rail",
-		"stone_button", "oak_button", "spruce_button", "birch_button", "jungle_button",
-		"acacia_button", "dark_oak_button", "crimson_button", "warped_button", "polished_blackstone_button",
-		"stone_pressure_plate", "oak_pressure_plate", "spruce_pressure_plate", "birch_pressure_plate",
-		"jungle_pressure_plate", "acacia_pressure_plate", "dark_oak_pressure_plate",
-		"crimson_pressure_plate", "warped_pressure_plate", "polished_blackstone_pressure_plate",
-		"light_weighted_pressure_plate", "heavy_weighted_pressure_plate",
-		"tripwire_hook", "tripwire", "snow", "moss_carpet",
+		"tripwire_hook", "tripwire", "snow", "ladder", "scaffolding",
 		"redstone_wire", "repeater", "comparator",
-		"sign", "wall_sign", "oak_sign", "oak_wall_sign",
-		"spruce_sign", "spruce_wall_sign", "birch_sign", "birch_wall_sign",
-		"jungle_sign", "jungle_wall_sign", "acacia_sign", "acacia_wall_sign",
-		"dark_oak_sign", "dark_oak_wall_sign", "crimson_sign", "crimson_wall_sign",
-		"warped_sign", "warped_wall_sign",
 		"item_frame", "glow_item_frame", "painting",
-		"flower_pot", "potted_", "candle", "candles",
-		"end_rod", "lightning_rod", "chain",
+		"flower_pot", "candle", "end_rod", "lightning_rod", "chain", "iron_bars",
 		"bell", "lantern", "soul_lantern", "campfire", "soul_campfire",
-		"cake", "candle_cake",
-		"brewing_stand", "cauldron", "water_cauldron", "lava_cauldron", "powder_snow_cauldron",
-		"composter", "lectern", "grindstone", "stonecutter", "loom", "cartography_table",
-		"fletching_table", "smithing_table", "smoker", "blast_furnace", "furnace",
+		"cake", "brewing_stand", "cauldron", "water_cauldron", "lava_cauldron", "powder_snow_cauldron",
+		"composter", "lectern", "grindstone", "stonecutter",
 		"enchanting_table", "anvil", "chipped_anvil", "damaged_anvil",
-		"beacon", "conduit", "lodestone", "respawn_anchor",
-		"banner", "wall_banner",
+		"beacon", "conduit", "dragon_egg", "turtle_egg", "sniffer_egg", "dried_ghast":
+		return true
 	}
 
-	for _, ns := range nonSolid {
-		if base == ns || strings.HasPrefix(base, ns) {
-			return true
-		}
-	}
-
-	// Check for potted plants
 	if strings.HasPrefix(base, "potted_") {
 		return true
+	}
+
+	nonSolidSuffixes := []string{
+		"_sapling", "_tulip", "_carpet", "_button", "_pressure_plate",
+		"_sign", "_wall_sign", "_hanging_sign", "_wall_hanging_sign",
+		"_banner", "_wall_banner", "_candle", "_candle_cake",
+		"_rail", "_torch", "_lantern", "_fence", "_fence_gate",
+		"_wall", "_door", "_trapdoor", "_glass_pane",
+		"_coral", "_coral_fan", "_coral_wall_fan",
+		"_amethyst_bud", "amethyst_cluster", "_head", "_skull",
+	}
+	for _, suf := range nonSolidSuffixes {
+		if strings.HasSuffix(base, suf) {
+			return true
+		}
 	}
 
 	return false

@@ -30,12 +30,8 @@ func (m *Manager) randomTick(rng *rand.Rand, w *World, x, y, z int) {
 		m.randomTickIce(rng, w, x, y, z)
 	case base == "snow":
 		m.randomTickSnowLayer(rng, w, x, y, z)
-	case base == "snow_block":
-		// Snow blocks only melt in direct sunlight with high light
-		// and warm biomes. Simplified: melt if sky light above >= 12.
-		if localLightAbove(w, x, y, z) >= 12 {
-			m.setWorldBlockAndPublish(w, x, y, z, BlockByID(AirID))
-		}
+	case base == "grass_block", base == "podzol", base == "mycelium":
+		m.syncSnowySurface(w, x, y, z, id, name)
 	case base == "farmland":
 		m.randomTickFarmland(rng, w, x, y, z)
 	case base == "fire" || base == "soul_fire":
@@ -63,7 +59,14 @@ func (m *Manager) randomTickWorld(rng *rand.Rand, w *World) {
 		return
 	}
 	for _, cp := range chunkPositions {
+		c := w.GetChunk(cp.WorldX>>4, cp.WorldZ>>4)
+		if c == nil {
+			continue
+		}
 		for section := 0; section < SectionsPerChunk; section++ {
+			if c.SectionIsEmpty(section) {
+				continue
+			}
 			for i := 0; i < defaultRandomTickSpeed; i++ {
 				bx := cp.WorldX + rng.Intn(ChunkSize)
 				by := MinWorldHeight + section*16 + rng.Intn(16)

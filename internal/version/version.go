@@ -131,10 +131,10 @@ var (
 	registry = []LWVersion{
 		{
 			Label:           "26 (B)",
-			JavaProtocol:    776,
-			JavaBuilds:      []string{"26.2"},
-			BedrockProtocol: 1001,
-			BedrockBuilds:   []string{"1.26.30", "26.32"},
+			JavaProtocol:    777,
+			JavaBuilds:      []string{"26.3"},
+			BedrockProtocol: 2193,
+			BedrockBuilds:   []string{"1.26.50", "26.52"},
 			Capabilities:    CapCustomPlayerModels | CapNetherUpdateNotes,
 			ChangelogURL:    "https://github.com/Aofsnorth/LivingWorld/releases/tag/v26-B",
 		},

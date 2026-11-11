@@ -31,6 +31,7 @@ type PlayerInfo struct {
 }
 
 func (p *Player) handleLoginPacket(packet pk.Packet) error {
+	var gamemode, prevGamemode pk.VarInt
 	err := packet.Scan(
 		(*pk.Int)(&p.EID),
 		(*pk.Boolean)(&p.Hardcore),
@@ -44,15 +45,17 @@ func (p *Player) handleLoginPacket(packet pk.Packet) error {
 		(*pk.VarInt)(&p.WorldInfo.DimensionType),
 		(*pk.Identifier)(&p.DimensionName),
 		(*pk.Long)(&p.HashedSeed),
-		(*pk.UnsignedByte)(&p.Gamemode),
-		(*pk.Byte)(&p.PrevGamemode),
+		&gamemode,
+		&prevGamemode,
 		(*pk.Boolean)(&p.IsDebug),
 		(*pk.Boolean)(&p.IsFlat),
-		// Death dimension & Death location & Portal cooldown are ignored
+		// Death dimension & Death location & Portal cooldown & SeaLevel & onlineMode & enforcesSecureChat are ignored
 	)
 	if err != nil {
 		return Error{err}
 	}
+	p.Gamemode = byte(gamemode)
+	p.PrevGamemode = int8(prevGamemode) - 1
 	err = p.c.Conn.WritePacket(pk.Marshal( // PluginMessage packet
 		packetid.ServerboundCustomPayload,
 		pk.Identifier("minecraft:brand"),
@@ -83,13 +86,14 @@ func (p *Player) handleLoginPacket(packet pk.Packet) error {
 }
 
 func (p *Player) handleRespawnPacket(packet pk.Packet) error {
+	var gamemode, prevGamemode pk.VarInt
 	var copyMeta bool
 	err := packet.Scan(
 		(*pk.VarInt)(&p.DimensionType),
 		(*pk.Identifier)(&p.DimensionName),
 		(*pk.Long)(&p.HashedSeed),
-		(*pk.UnsignedByte)(&p.Gamemode),
-		(*pk.Byte)(&p.PrevGamemode),
+		&gamemode,
+		&prevGamemode,
 		(*pk.Boolean)(&p.IsDebug),
 		(*pk.Boolean)(&p.IsFlat),
 		(*pk.Boolean)(&copyMeta),
@@ -97,5 +101,7 @@ func (p *Player) handleRespawnPacket(packet pk.Packet) error {
 	if err != nil {
 		return Error{err}
 	}
+	p.Gamemode = byte(gamemode)
+	p.PrevGamemode = int8(prevGamemode) - 1
 	return nil
 }

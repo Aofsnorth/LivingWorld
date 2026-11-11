@@ -32,9 +32,6 @@ func (j *javaBridge) startEffectEventLoop() {
 	ch := j.wm.SubscribeWorldEffects("java-bridge-effects", 256)
 	go func() {
 		for ev := range ch {
-			if ev.Source == world.BlockUpdateSourceJava {
-				continue
-			}
 			j.broadcastEffect(ev)
 		}
 	}()
@@ -47,18 +44,28 @@ func (j *javaBridge) broadcastEffect(ev world.WorldEffectEvent) {
 		if stage < 0 {
 			stage = 10 // a stage outside 0..9 clears the overlay
 		}
-		j.sessions.Broadcast(javaBlockDestructionPacket(synthEntityID(ev.Breaker), ev.X, ev.Y, ev.Z, stage))
+		pkt := javaBlockDestructionPacket(synthEntityID(ev.Breaker), ev.X, ev.Y, ev.Z, stage)
+		if ev.Source == world.BlockUpdateSourceJava {
+			j.sessions.BroadcastExcept(ev.Breaker, pkt)
+		} else {
+			j.sessions.Broadcast(pkt)
+		}
 	case world.EffectBlockDestroy:
 		// LevelEvent 2001 = block-break particles + sound. effectId and data are
 		// FIXED 32-bit ints (pk.Int, NOT pk.VarInt); data is the Java block state id
 		// (== canonical BlockID). disableRelativeVolume = false.
-		j.sessions.Broadcast(pk.Marshal(
+		pkt := pk.Marshal(
 			packetid.ClientboundGameLevelEvent,
 			pk.Int(2001),
 			pk.Position{X: ev.X, Y: ev.Y, Z: ev.Z},
 			pk.Int(livingWorldBlockIDToJavaStateID(ev.BlockID)),
 			pk.Boolean(false),
-		))
+		)
+		if ev.Source == world.BlockUpdateSourceJava {
+			j.sessions.BroadcastExcept(ev.Breaker, pkt)
+		} else {
+			j.sessions.Broadcast(pkt)
+		}
 	case world.EffectStatus:
 		j.broadcastStatusEffectAdd(ev)
 	case world.EffectStatusRemove:

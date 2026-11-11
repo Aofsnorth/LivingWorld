@@ -119,6 +119,9 @@ func addCommandNode(g *gmcommand.Graph, c *command.Command) {
 // so a few-second interval is enough to correct drift without spamming.
 func (j *javaBridge) startTimeLoop() {
 	advancing := j.cfg.World.DayNightCycle
+	if j.cfg.World.AlwaysDay {
+		advancing = false
+	}
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()

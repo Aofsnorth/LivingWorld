@@ -45,7 +45,7 @@ func New(opts ...Option) *Harness {
 		lifecycle:       newLifecycle(),
 		hooks:           newHookBus(),
 		health:          newHealthReporter(),
-		logger:          logging.GetLogger("Harness"),
+		logger:          logging.GetLogger("Lifecycle"),
 		metrics:         NoopRecorder{},
 		signals:         NewSignalSource(),
 		shutdownTimeout: 30 * time.Second,

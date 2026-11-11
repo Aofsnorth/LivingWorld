@@ -1,6 +1,8 @@
 package server
 
 import (
+	crand "crypto/rand"
+	"encoding/binary"
 	"math/rand"
 	"time"
 
@@ -26,6 +28,23 @@ import (
 // negligible.
 var serverRNG = rand.New(rand.NewSource(time.Now().UnixNano()))
 
+// generateRandomSeed produces a non-zero 64-bit random world seed using
+// cryptographic entropy (with a timestamp-mixed PRNG fallback).
+func generateRandomSeed() int64 {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err == nil {
+		seed := int64(binary.LittleEndian.Uint64(b[:]))
+		if seed != 0 {
+			return seed
+		}
+	}
+	seed := serverRNG.Int63() ^ time.Now().UnixNano()
+	if seed == 0 {
+		seed = 1
+	}
+	return seed
+}
+
 // New builds a server from cfg. Pass nil to use DefaultConfig. The server does
 // not listen until Start (or Run) is called.
 func New(cfg *Config) *Server {
@@ -37,19 +56,38 @@ func New(cfg *Config) *Server {
 
 	worlds := world.NewManager()
 	dw := worlds.GetDefaultWorld()
+
+	// Attach disk persistence FIRST so level.json (including any persisted world
+	// seed) is loaded before we initialize the terrain generator, and spawn probing
+	// in findLandSpawn loads saved chunks instead of regenerating them via SteelMC.
+	if cfg.World.Persistence {
+		if err := worlds.EnablePersistence(cfg.World.Directory); err != nil {
+			logger.Warn("Failed to enable world persistence in %q: %v", cfg.World.Directory, err)
+		}
+	}
+
+	// If config.yml left `seed:` blank or 0, reuse the world's persisted seed
+	// from level.json if present; otherwise generate a non-zero random 64-bit
+	// seed and persist it to level.json.
+	seedSource := "configured"
+	if cfg.World.Seed == 0 {
+		if savedSeed := dw.Seed(); savedSeed != 0 {
+			cfg.World.Seed = savedSeed
+			seedSource = "persisted"
+		} else {
+			cfg.World.Seed = generateRandomSeed()
+			seedSource = "random"
+		}
+	}
+	dw.SetSeed(cfg.World.Seed)
+	logger.Info("World type=%q seed=%d (%s)", cfg.World.Type, cfg.World.Seed, seedSource)
+
 	switch cfg.World.Type {
 	case "", "superflat":
 		dw.SetGenerator(worldgen.NewSuperflat())
 	case "overworld", "default", "normal":
 		overworld := dimension.NewOverworld()
 		dw.SetGenerator(overworld.Generator(cfg.World.Seed))
-		// Spawn on the generated surface (overworld terrain isn't flat at
-		// y=4), nudging the spawn point to dry land if the configured XZ
-		// is in an ocean or river.
-		sx, sz := findLandSpawn(dw, int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z))
-		cfg.World.Spawn.X = float64(sx) + 0.5
-		cfg.World.Spawn.Z = float64(sz) + 0.5
-		cfg.World.Spawn.Y = float64(dw.HighestSolidY(sx, sz))
 	case "nether":
 		n := dimension.NewNether()
 		dw.SetGenerator(n.Generator(cfg.World.Seed))
@@ -59,6 +97,17 @@ func New(cfg *Config) *Server {
 	default:
 		logger.Warn("Unknown world.type %q, falling back to superflat", cfg.World.Type)
 		dw.SetGenerator(worldgen.NewSuperflat())
+	}
+
+	switch cfg.World.Type {
+	case "overworld", "default", "normal":
+		// Spawn on the generated surface (overworld terrain isn't flat at
+		// y=4), nudging the spawn point to dry land if the configured XZ
+		// is in an ocean or river.
+		sx, sz := findLandSpawn(dw, int(cfg.World.Spawn.X), int(cfg.World.Spawn.Z))
+		cfg.World.Spawn.X = float64(sx) + 0.5
+		cfg.World.Spawn.Z = float64(sz) + 0.5
+		cfg.World.Spawn.Y = float64(dw.HighestSolidY(sx, sz))
 	}
 
 	players := player.NewManager()
@@ -241,6 +290,30 @@ func New(cfg *Config) *Server {
 	// We spawn 2 children at the parent's last position with
 	// Size-1. The bridges get the OnSpawn callback via
 	// SpawnAtSize.
+	worlds.Mobs().OnHurt(func(m mobs.Mob) {
+		worlds.PublishMobSounds([]mobs.SoundEmit{{
+			MobID:   m.EntityID,
+			Sound:   mobs.HurtSoundForMob(m.Type),
+			Volume:  1.0,
+			Pitch:   0.95 + serverRNG.Float32()*0.1,
+			X:       m.X,
+			Y:       m.Y,
+			Z:       m.Z,
+			MobType: m.Type,
+		}})
+	})
+	worlds.Mobs().OnDeath(func(m mobs.Mob) {
+		worlds.PublishMobSounds([]mobs.SoundEmit{{
+			MobID:   m.EntityID,
+			Sound:   mobs.DeathSoundForMob(m.Type),
+			Volume:  1.0,
+			Pitch:   0.95 + serverRNG.Float32()*0.1,
+			X:       m.X,
+			Y:       m.Y,
+			Z:       m.Z,
+			MobType: m.Type,
+		}})
+	})
 	worlds.SetMobSplitCallback(func(w *world.World, mobID int64) {
 		mob := worlds.Mobs().Get(mobID)
 		if mob.Type == "" {
@@ -297,8 +370,16 @@ func New(cfg *Config) *Server {
 	// a fresh window via players.HitIFrames; the per-tick engine
 	// here decrements once per 20 Hz tick. Both share Phase 4e
 	// with the effect tick.
-	worlds.SetIFramesTickCallback(players.IFramesTick)
-	worlds.StartTimeLoop(cfg.World.DayNightCycle)
+	worlds.SetIFramesTickCallback(func() {
+		players.IFramesTick()
+		players.TickEnvironment(worlds.GetDefaultWorld())
+	})
+	advanceDayTime := cfg.World.DayNightCycle
+	if cfg.World.AlwaysDay {
+		advanceDayTime = false
+		worlds.GetDefaultWorld().SetDayTime(6000)
+	}
+	worlds.StartTimeLoop(advanceDayTime)
 	worlds.SetDifficulty(cfg.World.Difficulty)
 	worlds.SetSpawnMode(cfg.World.SpawnMode)
 	worlds.SetSpawnMobsEnabled(cfg.World.SpawnMobs)

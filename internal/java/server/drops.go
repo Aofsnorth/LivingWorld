@@ -187,3 +187,23 @@ func (j *javaBridge) collectDrop(collector *player.Player, d drops.Drop) {
 	// Notify Bedrock server about pickup for Bedrock players (animation + inventory sync).
 	j.wm.NotifyItemPickup(collector.UUID, d.EntityID, collector.EntityRuntimeID)
 }
+
+// spawnExistingDrops sends all currently active world drops to a newly joined
+// Java session so items already on the ground are visible immediately.
+func (s *PlayerSession) spawnExistingDrops() {
+	if s.Bridge == nil || s.Bridge.wm == nil {
+		return
+	}
+	store := s.Bridge.wm.Drops()
+	if store == nil {
+		return
+	}
+	for _, d := range store.All() {
+		_ = s.version.SpawnItemEntity(s, int32(d.EntityID), d.Item, d.Count, d.X, d.Y, d.Z)
+		_ = s.SendPacket(pk.Marshal(
+			packetid.ClientboundGameSetEntityMotion,
+			pk.VarInt(int32(d.EntityID)),
+			toLpVec3(d.VX, d.VY, d.VZ),
+		))
+	}
+}

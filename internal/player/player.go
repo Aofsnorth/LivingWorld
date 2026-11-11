@@ -20,6 +20,8 @@ func NewPlayer(uuid_ uuid.UUID, username string, edition Edition) *Player {
 		Position:   world.Position{X: 0, Y: defaultSpawnY, Z: 0},
 		Rotation:   world.Rotation{Pitch: 0, Yaw: 0},
 		OnGround:   true,
+		Breathing:  true,
+		AirSupply:  300,
 		SkinParts:  system.DefaultSkinParts,
 	}
 }
@@ -34,6 +36,11 @@ func (p *Player) Snapshot() PlayerSnapshot {
 		Rotation:          p.Rotation,
 		OnGround:          p.OnGround,
 		Sneaking:          p.Sneaking,
+		Sprinting:         p.Sprinting,
+		Swimming:          p.Swimming,
+		OnFire:            p.OnFire,
+		Breathing:         p.Breathing,
+		AirSupply:         p.AirSupply,
 		ProfileProperties: append([]ProfileProperty(nil), p.ProfileProperties...),
 		BedrockSkinURL:    p.BedrockSkinURL,
 		Skin:              p.Skin,

@@ -88,7 +88,7 @@ func (g LookAtPlayerGoal) Tick(body any, ctx *context.AIContext) {
 	}
 	m.LookTicks--
 	if p := g.nearest(m, ctx); p != nil {
-		movement.LookAt(m, p.X, p.Y+movement.PlayerEyeHeight, p.Z, false)
+		movement.LookAt(m, p.X, p.Y+movement.PlayerEyeHeight, p.Z, true)
 	}
 }
 
@@ -142,4 +142,5 @@ func (RandomLookAroundGoal) Tick(body any, ctx *context.AIContext) {
 	m.LookTicks--
 	m.HeadYaw = movement.ApproachAngle(m.HeadYaw, m.LookYawTarget, movement.MaxHeadYawTurn)
 	m.HeadPitch = movement.ApproachAngle(m.HeadPitch, 0, movement.MaxHeadPitchTurn)
+	movement.ClampHeadYawToBody(m)
 }

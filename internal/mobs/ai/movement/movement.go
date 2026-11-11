@@ -119,16 +119,35 @@ func NavigateTo(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext, tx, ty, tz
 	return math.Hypot(tx-m.X, tz-m.Z)
 }
 
-// FleeFrom advances the mob one tick directly away from (fx, fz) at
-// the given speed. No pathing — panic is a straight dash (vanilla
-// PanicGoal beelines and re-rolls a target tile, but a direct
-// retreat reads identically at v1 scale).
+// FleeFrom advances the mob one tick along a randomized panic trajectory
+// matching vanilla PanicGoal (LandRandomPos.getPos(mob, 5, 4)): the mob picks
+// a walkable heading roughly away from the attacker on the first ticks, then
+// re-rolls random panic headings every 15-35 ticks or when blocked.
 func FleeFrom(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext, fx, fz, speed float64) {
-	dx, dz := m.X-fx, m.Z-fz
-	if dx == 0 && dz == 0 {
-		dx, dz = math.Sin(m.Yaw*math.Pi/180), math.Cos(m.Yaw*math.Pi/180)
+	if m.WalkTicks <= 0 || m.StuckTicks >= 2 {
+		baseYaw := math.Atan2(-(m.X-fx), m.Z-fz) * 180 / math.Pi
+		jitter := 0.0
+		if ctx != nil && ctx.RNG != nil {
+			if m.AITick-m.HurtByTick <= 15 {
+				// Initial bolt away from attacker with ±60° spread
+				jitter = (ctx.RNG.Float64() - 0.5) * 120.0
+			} else {
+				// Erratic vanilla panic re-rolls across ±135°
+				jitter = (ctx.RNG.Float64() - 0.5) * 270.0
+			}
+			m.WalkTicks = 15 + ctx.RNG.Intn(22)
+		} else {
+			m.WalkTicks = 20
+		}
+		SetBodyYaw(m, baseYaw+jitter)
+		m.HeadYaw = m.Yaw
+		m.HeadPitch = 0
 	}
+	m.WalkTicks--
+	dx := -math.Sin(m.Yaw * math.Pi / 180)
+	dz := math.Cos(m.Yaw * math.Pi / 180)
 	StepHorizontal(m, def, ctx, dx, dz, speed, true)
+	m.HeadYaw = m.Yaw
 }
 
 // StepHorizontal normalises (dx, dz), scales it to a per-tick
@@ -154,10 +173,14 @@ func StepHorizontal(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext, dx, dz
 		return
 	}
 	step := speed * SpeedToBlocksPerTick
+	inWater := false
 	if ctx.WaterAt != nil {
 		fx, fy, fz := int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))
-		if ctx.WaterAt(fx, fy, fz) {
-			step *= 0.5
+		if ctx.WaterAt(fx, fy, fz) || ctx.WaterAt(fx, int(math.Floor(m.Y+0.4)), fz) {
+			inWater = true
+			if def.Movement != "swim" {
+				step *= 0.55
+			}
 		}
 	}
 	if m.Baby {
@@ -166,7 +189,8 @@ func StepHorizontal(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext, dx, dz
 	nx := m.X + dx/dl*step
 	nz := m.Z + dz/dl*step
 	if face {
-		SetBodyYaw(m, math.Atan2(-dx, dz)*180/math.Pi)
+		targetYaw := math.Atan2(-dx, dz) * 180 / math.Pi
+		SetBodyYaw(m, ApproachAngle(m.Yaw, targetYaw, 30.0))
 	}
 	if def.Movement == "climb" {
 		cx, cz := int(math.Floor(nx)), int(math.Floor(nz))
@@ -188,14 +212,29 @@ func StepHorizontal(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext, dx, dz
 				return
 			}
 		}
-		if m.JumpCooldown == 0 && m.OnGround {
+		// Only jump if this is a 1-block step with headroom above the target block.
+		canStepUp := !ctx.SolidAt(bx, by+1, bz) && !ctx.SolidAt(bx, by+2, bz)
+		if canStepUp && m.JumpCooldown == 0 && (m.OnGround || inWater) {
 			JumpMob(m)
+			m.StuckTicks = 0
+		} else if !m.OnGround && m.Vy > 0 && canStepUp {
+			// Ascending mid-jump to clear the 1-block ledge: wait until feet clear
+			// by+1 on the next tick without counting as stuck or turning away.
 		} else {
 			m.StuckTicks++
 			if m.StuckTicks >= 3 {
 				SetBodyYaw(m, m.Yaw+90)
 				m.StuckTicks = 0
 			}
+		}
+		return
+	}
+	// Prevent walking into a low 1-block ceiling at head height.
+	if ctx.SolidAt(bx, by+1, bz) {
+		m.StuckTicks++
+		if m.StuckTicks >= 3 {
+			SetBodyYaw(m, m.Yaw+90)
+			m.StuckTicks = 0
 		}
 		return
 	}
@@ -238,8 +277,23 @@ func WanderStep(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext) {
 	if m.WalkTicks > 0 {
 		dx := -math.Sin(m.Yaw * math.Pi / 180)
 		dz := math.Cos(m.Yaw * math.Pi / 180)
+		// Vanilla WaterAvoidingRandomStrollGoal: land mobs avoid strolling
+		// off steep cliffs (> 2 blocks drop) or into water when currently dry.
+		if def.Movement != "swim" && def.Movement != "fly" && ctx != nil && ctx.SolidAt != nil {
+			aheadX := int(math.Floor(m.X + dx*0.8))
+			aheadZ := int(math.Floor(m.Z + dz*0.8))
+			fy := int(math.Floor(m.Y))
+			inWaterNow := ctx.WaterAt != nil && ctx.WaterAt(int(math.Floor(m.X)), fy, int(math.Floor(m.Z)))
+			aheadWater := ctx.WaterAt != nil && (ctx.WaterAt(aheadX, fy, aheadZ) || ctx.WaterAt(aheadX, fy-1, aheadZ))
+			hasGroundAhead := ctx.SolidAt(aheadX, fy, aheadZ) || ctx.SolidAt(aheadX, fy-1, aheadZ) || ctx.SolidAt(aheadX, fy-2, aheadZ)
+			if (!inWaterNow && aheadWater) || (!inWaterNow && !hasGroundAhead) {
+				SetBodyYaw(m, m.Yaw+120+ctx.RNG.Float64()*120)
+				m.WalkTicks = 0
+				return
+			}
+		}
 		m.WalkTicks--
-		StepHorizontal(m, def, ctx, dx, dz, def.WanderSpeed, false)
+		StepHorizontal(m, def, ctx, dx, dz, def.WanderSpeed, true)
 	}
 }
 
@@ -249,7 +303,7 @@ func WanderStep(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext) {
 // smoothly instead of snapping.
 func LookAt(m *mobs.Mob, tx, ty, tz float64, turnBody bool) {
 	dx, dz := tx-m.X, tz-m.Z
-	yaw := math.Atan2(-dx, dz)*180/math.Pi + 180
+	yaw := math.Atan2(-dx, dz) * 180 / math.Pi
 	dy := ty - (m.Y + MobEyeHeightFor(m))
 	pitch := -math.Atan2(dy, math.Hypot(dx, dz)) * 180 / math.Pi
 	m.HeadYaw = ApproachAngle(m.HeadYaw, yaw, MaxHeadYawTurn)

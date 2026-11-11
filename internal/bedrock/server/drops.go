@@ -99,7 +99,12 @@ func (s *Server) startDropLoop() {
 		dropState[d.EntityID] = st
 		speedSq := bedrockDropSpeedSq(d)
 		settled := d.OnGround && speedSq <= bedrockDropStillVelocitySq
-		sendCorrection := groundChanged || settled || st.moveCount%bedrockDropMoveSendEvery == 0
+		// Bedrock clients simulate 60 FPS item trajectories locally from the
+		// initial AddItemActor velocity. Sending MoveActorAbsolute + SetActorMotion
+		// while the item is still airborne fights the client's local parabola and
+		// causes mid-air stutter/rubberbanding. Only send an authoritative snap when
+		// the item transitions onto/off the ground or settles to a stop.
+		sendCorrection := groundChanged || settled
 		stateMu.Unlock()
 
 		flags := byte(0)
@@ -274,7 +279,13 @@ func (s *Server) handleBedrockPlayerDrop(bs *bedrockSession, hotbarSlot uint32, 
 	if pl.Inventory.Items[slot].Count <= 0 {
 		pl.Inventory.Items[slot] = player.ItemStack{}
 	}
-	s.wm.PlayerDropItem(it.Name, count, pl.Position.X+0.5, pl.Position.Y+0.25, pl.Position.Z+0.5, float64(pl.Rotation.Yaw))
+	s.wm.PlayerDropItem(it.Name, count, pl.Position.X, pl.Position.Y+1.3, pl.Position.Z, float64(pl.Rotation.Pitch), float64(pl.Rotation.Yaw))
+	bs.write(&packet.Animate{
+		ActionType:      packet.AnimateActionSwingArm,
+		EntityRuntimeID: bedrockLocalRuntime,
+		SwingSource:     packet.AnimateSwingSourceAttack,
+	})
+	s.pm.PublishSwing(bs.id)
 	s.syncBedrockInventory(bs, pl)
 	s.pm.PublishEquipmentChange(bs.id)
 }
@@ -310,6 +321,232 @@ func (s *Server) syncBedrockInventory(bs *bedrockSession, pl *player.Player) {
 		WindowID: protocol.WindowIDInventory,
 		Content:  content,
 	})
+	heldSlot := pl.Inventory.HeldSlot
+	if heldSlot < 0 || heldSlot >= 9 {
+		heldSlot = 0
+	}
+	bs.write(&packet.MobEquipment{
+		EntityRuntimeID: bedrockLocalRuntime,
+		NewItem:         content[heldSlot],
+		InventorySlot:   byte(heldSlot),
+		HotBarSlot:      byte(heldSlot),
+		WindowID:        protocol.WindowIDInventory,
+	})
+}
+
+// handleBedrockTransactionActions processes InventoryTransaction actions for item drops.
+// Real Bedrock clients send a pair of InventoryActions on Q / Ctrl+Q or hotbar throw:
+//   - SourceType == InventoryActionSourceWorld (InventorySlot == 0 meaning throw, OldItem=empty, NewItem=thrown stack)
+//   - SourceType == InventoryActionSourceContainer (WindowID == WindowIDInventory, InventorySlot == slot, OldItem.Count > NewItem.Count)
+//
+// Synthetic test packets may send SourceType == InventoryActionSourceWorld with InventorySlot == slot and OldItem.Count > NewItem.Count.
+func (s *Server) handleBedrockTransactionActions(bs *bedrockSession, actions []protocol.InventoryAction) {
+	hasWorldThrow := false
+	worldDropTotal := 0
+	for _, act := range actions {
+		if act.SourceType == protocol.InventoryActionSourceWorld {
+			hasWorldThrow = true
+			if diff := int(act.NewItem.Stack.Count) - int(act.OldItem.Stack.Count); diff > 0 {
+				worldDropTotal += diff
+			}
+		}
+	}
+	if !hasWorldThrow {
+		return
+	}
+
+	handledFromContainer := false
+	for _, act := range actions {
+		winID, hasWin := act.WindowID.Value()
+		if act.SourceType == protocol.InventoryActionSourceContainer &&
+			(!hasWin || winID == protocol.WindowIDInventory || winID == protocol.WindowIDOffHand) {
+			dropCount := int(act.OldItem.Stack.Count) - int(act.NewItem.Stack.Count)
+			if dropCount > 0 {
+				s.handleBedrockPlayerDrop(bs, act.InventorySlot, dropCount)
+				handledFromContainer = true
+			}
+		}
+	}
+	if handledFromContainer {
+		return
+	}
+
+	// Fallback for synthetic test transactions or single-action world drops:
+	for _, act := range actions {
+		if act.SourceType == protocol.InventoryActionSourceWorld {
+			dropCount := int(act.OldItem.Stack.Count) - int(act.NewItem.Stack.Count)
+			if dropCount > 0 {
+				s.handleBedrockPlayerDrop(bs, act.InventorySlot, dropCount)
+				return
+			}
+		}
+	}
+	if worldDropTotal > 0 {
+		if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Inventory != nil {
+			s.handleBedrockPlayerDrop(bs, uint32(pl.Inventory.HeldSlot), worldDropTotal)
+		}
+	}
+}
+
+// handleBedrockItemStackRequest processes Bedrock ItemStackRequest packets for
+// inventory drops (DropStackRequestAction, including drag-to-cursor then drop outside UI)
+// and slot moves/swaps within the player's inventory, then resyncs the inventory
+// and held-item equipment so the client UI and foreign viewers never desync.
+func (s *Server) handleBedrockItemStackRequest(bs *bedrockSession, pk *packet.ItemStackRequest) {
+	pl := s.pm.GetPlayer(bs.id)
+	if pl == nil || pl.Inventory == nil {
+		return
+	}
+
+	responses := make([]protocol.ItemStackResponse, 0, len(pk.Requests))
+	bs.mu.Lock()
+	cursorSlot := bs.cursorSlot
+	bs.mu.Unlock()
+	inventoryDirty := false
+	shouldResync := false
+
+	for _, req := range pk.Requests {
+		for _, action := range req.Actions {
+			switch act := action.(type) {
+			case *protocol.TakeStackRequestAction:
+				srcSlot := bedrockSlotFromRequestSlot(act.Source, cursorSlot)
+				if act.Destination.Container.ContainerID == protocol.ContainerCursor {
+					if srcSlot >= 0 && srcSlot < 36 {
+						cursorSlot = srcSlot
+					}
+				} else {
+					dstSlot := bedrockSlotFromRequestSlot(act.Destination, cursorSlot)
+					if srcSlot >= 0 && srcSlot < 36 && dstSlot >= 0 && dstSlot < 36 && srcSlot != dstSlot {
+						s.moveOrSwapPlayerInventorySlots(pl, srcSlot, dstSlot, int(act.Count))
+						inventoryDirty = true
+						shouldResync = true
+						if act.Source.Container.ContainerID == protocol.ContainerCursor {
+							cursorSlot = -1
+						}
+					}
+				}
+			case *protocol.PlaceStackRequestAction:
+				srcSlot := bedrockSlotFromRequestSlot(act.Source, cursorSlot)
+				if act.Destination.Container.ContainerID == protocol.ContainerCursor {
+					if srcSlot >= 0 && srcSlot < 36 {
+						cursorSlot = srcSlot
+					}
+				} else {
+					dstSlot := bedrockSlotFromRequestSlot(act.Destination, cursorSlot)
+					if srcSlot >= 0 && srcSlot < 36 && dstSlot >= 0 && dstSlot < 36 && srcSlot != dstSlot {
+						s.moveOrSwapPlayerInventorySlots(pl, srcSlot, dstSlot, int(act.Count))
+						inventoryDirty = true
+						shouldResync = true
+						if act.Source.Container.ContainerID == protocol.ContainerCursor {
+							cursorSlot = -1
+						}
+					}
+				}
+			case *protocol.SwapStackRequestAction:
+				srcSlot := bedrockSlotFromRequestSlot(act.Source, cursorSlot)
+				dstSlot := bedrockSlotFromRequestSlot(act.Destination, cursorSlot)
+				if srcSlot >= 0 && srcSlot < 36 && dstSlot >= 0 && dstSlot < 36 && srcSlot != dstSlot &&
+					srcSlot < len(pl.Inventory.Items) && dstSlot < len(pl.Inventory.Items) {
+					srcStack := pl.Inventory.Items[srcSlot]
+					dstStack := pl.Inventory.Items[dstSlot]
+					pl.Inventory.SetItem(srcSlot, dstStack)
+					pl.Inventory.SetItem(dstSlot, srcStack)
+					inventoryDirty = true
+					shouldResync = true
+					cursorSlot = -1
+				}
+			case *protocol.DropStackRequestAction:
+				dropSlot := bedrockSlotFromRequestSlot(act.Source, cursorSlot)
+				if dropSlot < 0 || dropSlot >= 36 {
+					dropSlot = pl.Inventory.HeldSlot
+				}
+				if dropSlot >= 0 && dropSlot < 36 && act.Count > 0 {
+					s.handleBedrockPlayerDrop(bs, uint32(dropSlot), int(act.Count))
+					if act.Source.Container.ContainerID == protocol.ContainerCursor {
+						cursorSlot = -1
+					}
+				}
+			}
+		}
+		responses = append(responses, inventory.RejectItemStackRequest(req.RequestID))
+	}
+
+	bs.mu.Lock()
+	bs.cursorSlot = cursorSlot
+	bs.mu.Unlock()
+
+	bs.write(&packet.ItemStackResponse{Responses: responses})
+	if shouldResync {
+		s.syncBedrockInventory(bs, pl)
+	}
+	if inventoryDirty {
+		s.pm.PublishEquipmentChange(bs.id)
+	}
+}
+
+func bedrockSlotFromRequestSlot(info protocol.StackRequestSlotInfo, cursorSlot int) int {
+	switch info.Container.ContainerID {
+	case protocol.ContainerHotBar, protocol.ContainerInventory, protocol.ContainerCombinedHotBarAndInventory:
+		if info.Slot < 36 {
+			return int(info.Slot)
+		}
+	case protocol.ContainerCursor:
+		return cursorSlot
+	}
+	return -1
+}
+
+func (s *Server) moveOrSwapPlayerInventorySlots(pl *player.Player, srcSlot, dstSlot, count int) {
+	if pl == nil || pl.Inventory == nil || srcSlot < 0 || dstSlot < 0 ||
+		srcSlot >= len(pl.Inventory.Items) || dstSlot >= len(pl.Inventory.Items) {
+		return
+	}
+	src := pl.Inventory.Items[srcSlot]
+	if src.ID == 0 || src.Count <= 0 || count <= 0 {
+		return
+	}
+	if count > int(src.Count) {
+		count = int(src.Count)
+	}
+	dst := pl.Inventory.Items[dstSlot]
+	if dst.ID == 0 || dst.Count <= 0 {
+		moved := src
+		moved.Count = int8(count)
+		pl.Inventory.SetItem(dstSlot, moved)
+		if count == int(src.Count) {
+			pl.Inventory.SetItem(srcSlot, player.ItemStack{})
+		} else {
+			src.Count -= int8(count)
+			pl.Inventory.SetItem(srcSlot, src)
+		}
+		return
+	}
+	if dst.ID == src.ID {
+		maxStack := 64
+		if def, ok := item.ByID(src.ID); ok && def.StackSize > 0 {
+			maxStack = def.StackSize
+		}
+		space := maxStack - int(dst.Count)
+		if space > 0 {
+			move := count
+			if move > space {
+				move = space
+			}
+			dst.Count += int8(move)
+			pl.Inventory.SetItem(dstSlot, dst)
+			if move == int(src.Count) {
+				pl.Inventory.SetItem(srcSlot, player.ItemStack{})
+			} else {
+				src.Count -= int8(move)
+				pl.Inventory.SetItem(srcSlot, src)
+			}
+		}
+		return
+	}
+	if count == int(src.Count) {
+		pl.Inventory.SetItem(srcSlot, dst)
+		pl.Inventory.SetItem(dstSlot, src)
+	}
 }
 
 // spawnExistingDropsFor sends every active drop to a freshly-joined Bedrock

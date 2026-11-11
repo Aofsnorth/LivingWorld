@@ -82,6 +82,10 @@ type WorldConfig struct {
 	// DayNightCycle enables the advancing time-of-day (sun/moon movement).
 	DayNightCycle bool `yaml:"dayNightCycle"`
 
+	// AlwaysDay locks the world time-of-day to daytime (noon, 6000 ticks) and
+	// stops the sun/moon from advancing.
+	AlwaysDay bool `yaml:"alwaysDay"`
+
 	// WeatherCycle enables the automatic clear→rain→thunder weather director.
 	// (Vanilla's doWeatherCycle gamerule.) With it off, weather stays at whatever
 	// was last set (persisted) and only changes via the /weather command.
@@ -93,6 +97,10 @@ type WorldConfig struct {
 	// fixed duration (useful for deterministic testing). Defaults match
 	// vanilla-ish ranges (clear 5-15 min, rain 10-20 min, thunder 3-10 min).
 	WeatherDurations WeatherDurationsConfig `yaml:"weatherDurations"`
+
+	// LocatorBar enables the player position indicator (Locator Bar) on the
+	// XP bar in both Java and Bedrock editions. Defaults to true.
+	LocatorBar bool `yaml:"locatorBar"`
 }
 
 // WeatherDurationsConfig is the per-phase duration range, in seconds, used by
@@ -194,6 +202,7 @@ func Default() *Config {
 			SpawnMobs:       true,
 			SpawnMode:       "java",
 			DayNightCycle:   true,
+			AlwaysDay:       true,
 			WeatherCycle:    true,
 			WeatherDurations: WeatherDurationsConfig{
 				ClearMinSeconds:   300,  // 5 min
@@ -203,6 +212,7 @@ func Default() *Config {
 				ThunderMinSeconds: 180,  // 3 min
 				ThunderMaxSeconds: 600,  // 10 min
 			},
+			LocatorBar: true,
 		},
 		Java: JavaConfig{
 			Bind:               network.DefaultBindAddress,

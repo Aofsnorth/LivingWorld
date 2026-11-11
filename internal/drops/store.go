@@ -273,26 +273,34 @@ func (s *Store) Spawn(item string, count int, x, y, z float64) Drop {
 
 // SpawnFromPlayer is a Spawn variant used when a player actively drops an item
 // (Q / Ctrl+Q). The item gets a stronger forward throw derived from the look
-// yaw so it visibly arcs away from the player instead of just popping up in
-// place like a broken-block drop. yaw is in degrees, 0 = +Z, 90 = -X.
-func (s *Store) SpawnFromPlayer(item string, count int, x, y, z, yaw float64) Drop {
-	rad := yaw * math.Pi / 180.0
-	// Vanilla Player.drop throws with horizontal speed ~0.3 blocks/tick along
-	// the look direction and 0.4 upward.
-	throwX := -math.Sin(rad) * 0.3
-	throwZ := math.Cos(rad) * 0.3
+// pitch and yaw so it visibly arcs away from the player instead of just popping
+// up in place like a broken-block drop. pitch and yaw are in degrees.
+func (s *Store) SpawnFromPlayer(item string, count int, x, y, z, pitch, yaw float64) Drop {
+	pitchRad := pitch * math.Pi / 180.0
+	yawRad := yaw * math.Pi / 180.0
+	sinPitch, cosPitch := math.Sin(pitchRad), math.Cos(pitchRad)
+	sinYaw, cosYaw := math.Sin(yawRad), math.Cos(yawRad)
+	// Vanilla Player.drop throws with speed 0.3 blocks/tick along the 3D look
+	// vector plus a small +0.1 upward arc offset.
+	throwX := -sinYaw * cosPitch * 0.3
+	throwY := -sinPitch*0.3 + 0.1
+	throwZ := cosYaw * cosPitch * 0.3
 	id := s.nextID.Add(1)
 	d := Drop{
-		EntityID:  id,
-		Item:      item,
-		Count:     count,
-		X:         x,
-		Y:         y,
-		Z:         z,
-		VX:        throwX,
-		VY:        0.4,
-		VZ:        throwZ,
-		SpawnTick: s.tick.Load(),
+		EntityID: id,
+		Item:     item,
+		Count:    count,
+		X:        x,
+		Y:        y,
+		Z:        z,
+		VX:       throwX,
+		VY:       throwY,
+		VZ:       throwZ,
+		// Vanilla sets a 40-tick (2.0s) pickup delay on player-thrown drops so
+		// the thrower does not immediately re-collect the item before it clears
+		// their hitbox. Since pickupDelayTicks is 10, offsetting SpawnTick by +30
+		// yields an effective 40-tick pickup delay.
+		SpawnTick: s.tick.Load() + 30,
 		OnGround:  false,
 	}
 	s.mu.Lock()

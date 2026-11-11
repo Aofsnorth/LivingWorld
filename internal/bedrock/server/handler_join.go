@@ -52,7 +52,7 @@ func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
 		HeadYaw:         yaw,
 		Mode:            packet.MoveModeTeleport,
 		OnGround:        true,
-		TeleportCause:   packet.TeleportCauseCommand,
+		TeleportData:    protocol.Option(protocol.TeleportData{TeleportCause: int32(packet.TeleportCauseCommand)}),
 	})
 }
 

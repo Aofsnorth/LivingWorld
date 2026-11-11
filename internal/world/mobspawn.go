@@ -145,6 +145,10 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 		if !ok {
 			return
 		}
+		// Never generate unloaded chunks synchronously from the 20 Hz tick loop.
+		if w.GetChunk(x>>4, z>>4) == nil {
+			continue
+		}
 		// Y sampling differs by edition: Java spawns on the surface column;
 		// Bedrock samples a Y inside the vertical shell around the player so
 		// mobs can appear in caves above/below the player, not just on top.
@@ -230,6 +234,9 @@ func (m *Manager) spawnTick(rng *rand.Rand) {
 				// within ±packSpreadBlocks of the initial position.
 				px = x + int(math.Round((rng.Float64()-rng.Float64())*packSpreadBlocks))
 				pz = z + int(math.Round((rng.Float64()-rng.Float64())*packSpreadBlocks))
+				if w.GetChunk(px>>4, pz>>4) == nil {
+					continue
+				}
 			}
 			py := w.HighestSolidY(px, pz)
 			if mode == spawnModeBedrock {

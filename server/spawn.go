@@ -17,27 +17,38 @@ func zeroUUID() [16]byte { return [16]byte{} }
 func findLandSpawn(w *world.World, x, z int) (int, int) {
 	waterID := world.WaterID
 	iceID := world.StateID("minecraft:ice")
-	isLand := func(px, pz int) bool {
+	isLand := func(px, pz int, evictIfWet bool) bool {
+		cx, cz := px>>4, pz>>4
+		wasLoaded := w.GetChunk(cx, cz) != nil
 		y := w.HighestSolidY(px, pz) // feet Y, one above the surface block
 		if y <= 63 {
+			if evictIfWet && !wasLoaded {
+				w.EvictChunk(cx, cz)
+			}
 			return false
 		}
 		below := w.GetBlock(px, y-1, pz).ID()
-		return below != waterID && below != iceID
+		ok := below != waterID && below != iceID
+		if !ok && evictIfWet && !wasLoaded {
+			w.EvictChunk(cx, cz)
+		}
+		return ok
 	}
-	if isLand(x, z) {
+	if isLand(x, z, false) {
 		return x, z
 	}
-	for radius := 16; radius <= 160; radius += 16 {
-		for dx := -radius; dx <= radius; dx += 16 {
-			for dz := -radius; dz <= radius; dz += 16 {
-				// Ring only: skip interior points already scanned.
-				if dx > -radius && dx < radius && dz > -radius && dz < radius {
-					continue
-				}
-				if isLand(x+dx, z+dz) {
-					return x + dx, z + dz
-				}
+	// Probe 8 cardinal + diagonal directions per ring in 32-block (2-chunk) steps
+	// so ocean spawn searches probe at most 40 chunks instead of 441, and evict
+	// rejected ocean chunks immediately to keep startup RAM low.
+	dirs := [8][2]int{
+		{1, 0}, {-1, 0}, {0, 1}, {0, -1},
+		{1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+	}
+	for radius := 32; radius <= 160; radius += 32 {
+		for _, d := range dirs {
+			px, pz := x+d[0]*radius, z+d[1]*radius
+			if isLand(px, pz, true) {
+				return px, pz
 			}
 		}
 	}

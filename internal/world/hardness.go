@@ -16,8 +16,30 @@ func Hardness(blockID int32) float64 {
 	if h, ok := hardnessTable[name]; ok {
 		return h
 	}
+	if isZeroHardnessByNamePattern(name) {
+		return 0.0
+	}
 	// Default hardness for blocks not in the table
 	return 1.0
+}
+
+func isZeroHardnessByNamePattern(name string) bool {
+	if len(name) > 17 && name[:17] == "minecraft:potted_" {
+		return true
+	}
+	// Saplings, tulips, coral fans/plants, torches
+	switch {
+	case hasSuffix(name, "_sapling"),
+		hasSuffix(name, "_tulip"),
+		hasSuffix(name, "_torch"),
+		hasSuffix(name, "_carpet"):
+		return true
+	}
+	return false
+}
+
+func hasSuffix(s, suffix string) bool {
+	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
 // BreakTicks calculates the number of ticks required to break a block given
@@ -271,37 +293,118 @@ var hardnessTable = map[string]float64{
 	"minecraft:jigsaw":           -1.0,
 
 	// Instant-break blocks (hardness = 0)
-	"minecraft:air":            0.0,
-	"minecraft:cave_air":       0.0,
-	"minecraft:void_air":       0.0,
-	"minecraft:grass":          0.0,
-	"minecraft:fern":           0.0,
-	"minecraft:dead_bush":      0.0,
-	"minecraft:seagrass":       0.0,
-	"minecraft:tall_seagrass":  0.0,
-	"minecraft:dandelion":      0.0,
-	"minecraft:poppy":          0.0,
-	"minecraft:torch":          0.0,
-	"minecraft:redstone_torch": 0.0,
-	"minecraft:fire":           0.0,
-	"minecraft:soul_fire":      0.0,
-	"minecraft:tnt":            0.0,
-	"minecraft:slime_block":    0.0,
-	"minecraft:honey_block":    0.0,
+	"minecraft:air":                   0.0,
+	"minecraft:cave_air":              0.0,
+	"minecraft:void_air":              0.0,
+	"minecraft:grass":                 0.0,
+	"minecraft:short_grass":           0.0,
+	"minecraft:tall_grass":            0.0,
+	"minecraft:fern":                  0.0,
+	"minecraft:large_fern":            0.0,
+	"minecraft:dead_bush":             0.0,
+	"minecraft:short_dry_grass":       0.0,
+	"minecraft:tall_dry_grass":        0.0,
+	"minecraft:bush":                  0.0,
+	"minecraft:firefly_bush":          0.0,
+	"minecraft:leaf_litter":           0.0,
+	"minecraft:wildflowers":           0.0,
+	"minecraft:pink_petals":           0.0,
+	"minecraft:pale_hanging_moss":     0.0,
+	"minecraft:seagrass":              0.0,
+	"minecraft:tall_seagrass":         0.0,
+	"minecraft:kelp":                  0.0,
+	"minecraft:kelp_plant":            0.0,
+	"minecraft:lily_pad":              0.0,
+	"minecraft:sugar_cane":            0.0,
+	"minecraft:dandelion":             0.0,
+	"minecraft:poppy":                 0.0,
+	"minecraft:blue_orchid":           0.0,
+	"minecraft:allium":                0.0,
+	"minecraft:azure_bluet":           0.0,
+	"minecraft:oxeye_daisy":           0.0,
+	"minecraft:cornflower":            0.0,
+	"minecraft:lily_of_the_valley":    0.0,
+	"minecraft:wither_rose":           0.0,
+	"minecraft:torchflower":           0.0,
+	"minecraft:torchflower_crop":      0.0,
+	"minecraft:pitcher_plant":         0.0,
+	"minecraft:pitcher_crop":          0.0,
+	"minecraft:closed_eyeblossom":     0.0,
+	"minecraft:open_eyeblossom":       0.0,
+	"minecraft:sunflower":             0.0,
+	"minecraft:lilac":                 0.0,
+	"minecraft:rose_bush":             0.0,
+	"minecraft:peony":                 0.0,
+	"minecraft:spore_blossom":         0.0,
+	"minecraft:hanging_roots":         0.0,
+	"minecraft:brown_mushroom":        0.0,
+	"minecraft:red_mushroom":          0.0,
+	"minecraft:crimson_fungus":        0.0,
+	"minecraft:warped_fungus":         0.0,
+	"minecraft:crimson_roots":         0.0,
+	"minecraft:warped_roots":          0.0,
+	"minecraft:nether_sprouts":        0.0,
+	"minecraft:weeping_vines":         0.0,
+	"minecraft:weeping_vines_plant":   0.0,
+	"minecraft:twisting_vines":        0.0,
+	"minecraft:twisting_vines_plant":  0.0,
+	"minecraft:cave_vines":            0.0,
+	"minecraft:cave_vines_plant":      0.0,
+	"minecraft:wheat":                 0.0,
+	"minecraft:carrots":               0.0,
+	"minecraft:potatoes":              0.0,
+	"minecraft:beetroots":             0.0,
+	"minecraft:melon_stem":            0.0,
+	"minecraft:attached_melon_stem":   0.0,
+	"minecraft:pumpkin_stem":          0.0,
+	"minecraft:attached_pumpkin_stem": 0.0,
+	"minecraft:sweet_berry_bush":      0.0,
+	"minecraft:azalea":                0.0,
+	"minecraft:flowering_azalea":      0.0,
+	"minecraft:mangrove_propagule":    0.0,
+	"minecraft:torch":                 0.0,
+	"minecraft:wall_torch":            0.0,
+	"minecraft:soul_torch":            0.0,
+	"minecraft:soul_wall_torch":       0.0,
+	"minecraft:redstone_torch":        0.0,
+	"minecraft:redstone_wall_torch":   0.0,
+	"minecraft:redstone_wire":         0.0,
+	"minecraft:repeater":              0.0,
+	"minecraft:comparator":            0.0,
+	"minecraft:tripwire":              0.0,
+	"minecraft:tripwire_hook":         0.0,
+	"minecraft:flower_pot":            0.0,
+	"minecraft:decorated_pot":         0.0,
+	"minecraft:scaffolding":           0.0,
+	"minecraft:fire":                  0.0,
+	"minecraft:soul_fire":             0.0,
+	"minecraft:tnt":                   0.0,
+	"minecraft:slime_block":           0.0,
+	"minecraft:honey_block":           0.0,
 
 	// Soft blocks (hardness < 1.0)
-	"minecraft:dirt":        0.5,
-	"minecraft:grass_block": 0.6,
-	"minecraft:sand":        0.5,
-	"minecraft:red_sand":    0.5,
-	"minecraft:gravel":      0.6,
-	"minecraft:clay":        0.6,
-	"minecraft:farmland":    0.6,
-	"minecraft:soul_sand":   0.5,
-	"minecraft:soul_soil":   0.5,
-	"minecraft:snow":        0.1,
-	"minecraft:snow_block":  0.2,
-	"minecraft:powder_snow": 0.25,
+	"minecraft:dirt":                    0.5,
+	"minecraft:grass_block":             0.6,
+	"minecraft:sand":                    0.5,
+	"minecraft:red_sand":                0.5,
+	"minecraft:gravel":                  0.6,
+	"minecraft:clay":                    0.6,
+	"minecraft:farmland":                0.6,
+	"minecraft:soul_sand":               0.5,
+	"minecraft:soul_soil":               0.5,
+	"minecraft:snow":                    0.1,
+	"minecraft:snow_block":              0.2,
+	"minecraft:powder_snow":             0.25,
+	"minecraft:oak_leaves":              0.2,
+	"minecraft:spruce_leaves":           0.2,
+	"minecraft:birch_leaves":            0.2,
+	"minecraft:jungle_leaves":           0.2,
+	"minecraft:acacia_leaves":           0.2,
+	"minecraft:dark_oak_leaves":         0.2,
+	"minecraft:mangrove_leaves":         0.2,
+	"minecraft:cherry_leaves":           0.2,
+	"minecraft:azalea_leaves":           0.2,
+	"minecraft:flowering_azalea_leaves": 0.2,
 
 	// Wood blocks (hardness = 2.0)
 	"minecraft:oak_log":         2.0,

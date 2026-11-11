@@ -43,25 +43,33 @@ func (j *javaBridge) routeAttack(attacker uuid.UUID, targetEntityID int32) {
 		// returns 1 for any non-sword id).
 		base := float32(1.0)
 		var heldID int32
+		kbStrength := 0.4 // vanilla base knockback
+		dx := 0.0
+		dz := 0.0
 		if p := j.pm.GetPlayer(attacker); p != nil {
 			held := p.Inventory.GetHeldItem()
 			if held != nil {
 				heldID = held.ID
 				base = float32(combat.SwordDamage(heldID))
 			}
+			if !p.OnGround && !p.Sprinting && !p.Swimming {
+				base *= 1.5 // vanilla critical hit multiplier
+			}
+			// combat.Knockback negates (dirX, dirZ): out.X = vel.X/2 - px.
+			// Therefore dirX, dirZ MUST be (attacker - victim) so -px points
+			// from attacker toward victim (pushing the victim away)!
+			dx = p.Position.X - float64(m.X)
+			dz = p.Position.Z - float64(m.Z)
+			if math.Hypot(dx, dz) < 1e-4 {
+				yawRad := float64(p.Rotation.Yaw) * math.Pi / 180.0
+				dx = math.Sin(yawRad)
+				dz = -math.Cos(yawRad)
+			}
+			if p.Sprinting {
+				kbStrength += 0.5 // vanilla sprint-knockback bonus
+				j.pm.UpdateSprinting(attacker, false)
+			}
 		}
-		// Compute push direction (attacker → mob). Reuse the
-		// direction we walk the mob's attacker delta with.
-		dx := float64(m.X) - 0
-		dz := float64(m.Z) - 0
-		// Use the attacker's position for the direction so a
-		// bare hit from a known player direction always
-		// staggers the mob away from the player.
-		if p := j.pm.GetPlayer(attacker); p != nil {
-			dx = float64(m.X) - p.Position.X
-			dz = float64(m.Z) - p.Position.Z
-		}
-		const kbStrength = 0.4 // vanilla bare-hit knockback
 		j.wm.Mobs().HurtDirectWithKnockback(m.EntityID, attackerBytes, base, dx, dz, kbStrength)
 		// Hurt flash: ClientboundGameHurtAnimation (id 0x1C)
 		// with the mob's entity id, plays the red flash on the

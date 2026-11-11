@@ -1,11 +1,8 @@
 package skinbridge
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"image"
-	"image/png"
 	"log"
 	"net"
 	"net/http"
@@ -27,12 +24,20 @@ func New() *Service {
 }
 
 func (s *Service) Start() {
+	s.mu.Lock()
+	if s.addr != "" {
+		s.mu.Unlock()
+		return
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		s.mu.Unlock()
 		log.Printf("[SkinBridge] disabled: %v", err)
 		return
 	}
 	s.addr = "http://" + ln.Addr().String()
+	s.mu.Unlock()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/skins/", s.handleSkin)
 	go func() {
@@ -44,76 +49,63 @@ func (s *Service) Start() {
 }
 
 func (s *Service) GetAddr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.addr
 }
 
-func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) string {
-	if s == nil || s.addr == "" || width <= 0 || height <= 0 || len(rgba) < width*height*4 {
-		return ""
+// RegisterSkin normalizes and compresses a Bedrock player's raw RGBA skin (64x32,
+// 64x64, 128x64, 128x128, 256x256, etc.) into a Java-compatible 64x64 PNG using
+// CompressBedrockSkinRGBA, registers it on the local HTTP server, and returns the
+// HTTP URL, the normalized 64x64 RGBA bytes, and the encoded PNG bytes.
+func (s *Service) RegisterSkin(id uuid.UUID, width, height int, rgba []byte, skinColourHex string) (skinURL string, normRGBA []byte, pngData []byte) {
+	if width <= 0 || height <= 0 || len(rgba) < width*height*4 {
+		return "", nil, nil
 	}
-	var img *image.NRGBA
-
-	isPadded64 := false
-	if width == 128 && height == 128 {
-		isPadded64 = true
-		for y := 0; y < 128; y++ {
-			for x := 0; x < 128; x++ {
-				if x >= 64 || y >= 64 {
-					idx := (y*128 + x) * 4
-					if rgba[idx+3] != 0 {
-						isPadded64 = false
-						break
-					}
-				}
-			}
-			if !isPadded64 {
-				break
-			}
-		}
+	normRGBA, pngData, err := CompressBedrockSkinRGBA(rgba, width, height, skinColourHex)
+	if err != nil {
+		log.Printf("[SkinBridge] compress skin %s (%dx%d) failed: %v", id, width, height, err)
+		return "", nil, nil
+	}
+	if s == nil {
+		return "", normRGBA, pngData
+	}
+	s.mu.RLock()
+	addr := s.addr
+	s.mu.RUnlock()
+	if addr == "" {
+		return "", normRGBA, pngData
 	}
 
-	if isPadded64 {
-		// A 64×64 skin the Bedrock client padded into a 128 canvas: crop back to
-		// the real 64×64 content (lossless).
-		img = image.NewNRGBA(image.Rect(0, 0, 64, 64))
-		for y := 0; y < 64; y++ {
-			for x := 0; x < 64; x++ {
-				srcIdx := (y*128 + x) * 4
-				dstIdx := (y*64 + x) * 4
-				img.Pix[dstIdx] = rgba[srcIdx]
-				img.Pix[dstIdx+1] = rgba[srcIdx+1]
-				img.Pix[dstIdx+2] = rgba[srcIdx+2]
-				img.Pix[dstIdx+3] = rgba[srcIdx+3]
-			}
-		}
-	} else {
-		// Pass the skin through at its FULL native resolution. Java supports HD
-		// (128×128) skins natively, so a genuine HD Bedrock skin must NOT be
-		// downscaled to 64×64 — decimating it threw away 3 of every 4 pixels and
-		// produced the "burik"/blocky look. PNG is lossless, so this preserves the
-		// skin exactly. Valid Minecraft skins are 64×64, legacy 64×32, or HD
-		// 128×128; any of these copy through unchanged.
-		img = image.NewNRGBA(image.Rect(0, 0, width, height))
-		copy(img.Pix, rgba[:width*height*4])
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		log.Printf("[SkinBridge] encode skin %s failed: %v", id, err)
-		return ""
-	}
 	key := id.String() + ".png"
 	s.mu.Lock()
-	s.skins[key] = append([]byte(nil), buf.Bytes()...)
+	s.skins[key] = append([]byte(nil), pngData...)
 	s.mu.Unlock()
-	return s.addr + "/skins/" + key
+	return addr + "/skins/" + key, normRGBA, pngData
+}
+
+// RegisterRGBA normalizes and registers a Bedrock skin on the local HTTP server,
+// always serving a Java-compatible 64x64 PNG so Java clients never reject 128x128
+// textures in SkinTextureDownloader.
+func (s *Service) RegisterRGBA(id uuid.UUID, width, height int, rgba []byte) string {
+	url, _, _ := s.RegisterSkin(id, width, height, rgba, "")
+	return url
 }
 
 func TextureProperty(profileID uuid.UUID, profileName, skinURL string) (name, value string) {
+	return TexturePropertyWithModel(profileID, profileName, skinURL, "wide")
+}
+
+func TexturePropertyWithModel(profileID uuid.UUID, profileName, skinURL, model string) (name, value string) {
+	skinEntry := textureURL{URL: skinURL}
+	if strings.EqualFold(model, "slim") {
+		skinEntry.Metadata = &textureMetadata{Model: "slim"}
+	}
 	payload := texturePayload{
 		Timestamp:   time.Now().UnixMilli(),
 		ProfileID:   strings.ReplaceAll(profileID.String(), "-", ""),
 		ProfileName: profileName,
-		Textures:    textureMap{Skin: textureURL{URL: skinURL}},
+		Textures:    textureMap{Skin: skinEntry},
 	}
 	b, _ := json.Marshal(payload)
 	return "textures", base64.StdEncoding.EncodeToString(b)
@@ -131,7 +123,12 @@ type textureMap struct {
 }
 
 type textureURL struct {
-	URL string `json:"url"`
+	URL      string           `json:"url"`
+	Metadata *textureMetadata `json:"metadata,omitempty"`
+}
+
+type textureMetadata struct {
+	Model string `json:"model,omitempty"`
 }
 
 func (s *Service) handleSkin(w http.ResponseWriter, r *http.Request) {

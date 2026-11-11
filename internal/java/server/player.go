@@ -130,6 +130,7 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	}
 
 	pl := player.NewPlayer(id, name, player.EditionJava)
+	pl.World = j.wm.GetDefaultWorld()
 	pl.Op = j.cfg.IsOp(name)
 	pl.EntityRuntimeID = uint64(session.EntityID())
 	pl.Position.X, pl.Position.Y, pl.Position.Z = session.X, session.Y, session.Z
@@ -167,8 +168,10 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	// already-online player — e.g. a Bedrock player who joined earlier — is
 	// skipped and stays invisible to this client.
 	session.Ready = true
+	session.syncInventory()
 	session.spawnExistingForeignPlayers()
 	session.spawnExistingMobs()
+	session.spawnExistingDrops()
 	session.sendWeather()
 
 	done := make(chan struct{})

@@ -61,7 +61,8 @@ type bedrockSession struct {
 
 	// invOpened tracks whether the player's own inventory ContainerOpen has been
 	// sent. Re-sending ContainerOpen while already open crashes the client.
-	invOpened bool
+	invOpened  bool
+	cursorSlot int
 
 	health float32 // server-tracked health for cross-edition melee damage
 
@@ -99,6 +100,7 @@ func newBedrockSession(id uuid.UUID, username string, runtimeID uint64, conn *mi
 		lastChunkX:   -999999,
 		lastChunkZ:   -999999,
 		viewDistance: 0,
+		cursorSlot:   -1,
 		health:       20,
 		viewers:      newViewerTracker(),
 		mobViewer:    newMobTracker(),
@@ -156,17 +158,14 @@ func (s *bedrockSession) Kick(reason string) {
 // player knows itself as bedrockLocalRuntime (1), NOT bs.runtimeID (the id other
 // viewers see) â€” targeting the wrong id silently no-ops.
 func (s *bedrockSession) Push(vx, vy, vz float64) {
-	// Bedrock here uses client-authoritative movement (StartGame leaves
-	// MovementType=Client), so the client only partially applies a server
-	// SetActorMotion to its own player â€” a Bedrock player shoved by a Java player
-	// feels "heavy" / barely moves while the Java player (whose client applies
-	// SetEntityMotion in full) moves freely, i.e. the push is lopsided. We amplify
-	// the horizontal impulse to compensate. The push loop's force is bounded by
-	// pushStrength(0.08), so even at full overlap this stays at ~0.36 b/t (melee-
-	// knockback scale) and never launches. NOTE: true cross-edition parity needs
-	// server-authoritative movement (specs Â§6); this is the bounded interim tuning.
-	vx *= 4.5
-	vz *= 4.5
+	// Only amplify gentle horizontal entity-collision nudges (vy == 0) where
+	// pushStrength is tiny (~0.08). For melee knockback (vy != 0), PlayerMovementModeServer
+	// applies SetActorMotion 1:1 on the Bedrock client, so multiplying by 4.5
+	// would launch the player 4.5x farther than vanilla.
+	if vy == 0 {
+		vx *= 2.0
+		vz *= 2.0
+	}
 
 	s.write(&packet.SetActorMotion{
 		EntityRuntimeID: bedrockLocalRuntime,
@@ -220,4 +219,17 @@ func (s *Server) forEachSession(fn func(*bedrockSession)) {
 	for _, bs := range list {
 		fn(bs)
 	}
+}
+
+// SyncEnvironment implements player.EnvironmentController: pushes updated
+// entity flags (on-fire, sprinting, swimming, breathing) and air supply
+// (underwater bubble bar) to the local Bedrock client (runtime ID 1).
+func (s *bedrockSession) SyncEnvironment(snap player.PlayerSnapshot) {
+	if snap.Username == "" {
+		snap.Username = s.username
+	}
+	s.write(&packet.SetActorData{
+		EntityRuntimeID: bedrockLocalRuntime,
+		EntityMetadata:  bedrockPlayerMetadata(snap),
+	})
 }

@@ -9,16 +9,15 @@ patch that shares the same wire protocol on each edition.
 
 | Component | Versions | Protocol | Status |
 |-----------|----------|----------|--------|
-| **Java Edition** | 26.2 | **776** | ✅ Supported |
-| **Bedrock Edition** | 1.26.30 / 26.32 | **1001** | ✅ Supported |
+| **Java Edition** | 26.3 | **777** | ✅ Supported |
+| **Bedrock Edition** | 1.26.50 / 26.52 | **2193** | ✅ Supported |
 
-Java 26.3 is the current Mojang release (protocol 777) and is **not yet
-supported** — see "Future Version Targets" below. Bedrock's wire protocol is
-owned entirely by the pinned `gophertunnel`, so `BedrockProtocol` in
-`internal/version` must stay in step with `protocol.CurrentVersion` there.
+Bedrock's wire protocol is owned entirely by the pinned `gophertunnel`, so
+`BedrockProtocol` in `internal/version` must stay in step with
+`protocol.CurrentVersion` there.
 
 > Earlier builds of this doc listed Java 1.20.2 / protocol 764. That was stale: the
-> bundled `third_party/go-mc` fork is hand-patched to `ProtocolVersion = 776`.
+> bundled `third_party/go-mc` fork is patched to `ProtocolVersion = 777` (MC Java 26.3).
 
 ## Library Dependencies
 
@@ -46,7 +45,7 @@ go get -u all
 Java: Check `third_party/go-mc/server/server.go`:
 ```go
 const (
-    ProtocolVersion = 776  // MC Java 26.2
+    ProtocolVersion = 777  // MC Java 26.3
     // ...
 )
 ```
@@ -70,8 +69,8 @@ import/export is supported; Bedrock (LevelDB) is not implemented yet.
 
 | LivingWorld | Date | Changes |
 |-------------|------|---------|
-| 26 (B) | 2026-09-27 | Bedrock → 1.26.50 (proto 2193) via gophertunnel v1.62.0; packet ID/permission/optional-field migrations |
-| (future) | TBD | Java 26.3 (proto 777); Nether/End dimensions; full inventory sync |
+| 26 (B) | 2026-09-27 | Java → 26.3 (proto 777); Bedrock → 1.26.50 / 26.52 (proto 2193) via gophertunnel v1.62.0; packet ID/permission/optional-field migrations |
+| (future) | TBD | Nether/End dimensions; full inventory sync |
 
 ## Known Compatibility Issues
 

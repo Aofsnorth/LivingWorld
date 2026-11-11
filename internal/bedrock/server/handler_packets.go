@@ -10,6 +10,8 @@ import (
 	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/command"
 	"livingworld/internal/item"
+	"livingworld/internal/player"
+	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 	"livingworld/plugin"
 
@@ -76,18 +78,47 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		bs.lastAuthInputAt = time.Now()
 		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, p.InputData.Load(packet.InputFlagVerticalCollision))
 
-		// Update sneaking state
+		// Update sneaking, sprinting, and swimming state
 		sneaking := p.InputData.Load(packet.InputFlagSneaking)
 		s.pm.UpdateSneak(bs.id, sneaking)
+		if p.InputData.Load(packet.InputFlagStartSprinting) {
+			s.pm.UpdateSprinting(bs.id, true)
+		} else if p.InputData.Load(packet.InputFlagStopSprinting) {
+			s.pm.UpdateSprinting(bs.id, false)
+		} else if p.InputData.Load(packet.InputFlagSprinting) {
+			s.pm.UpdateSprinting(bs.id, true)
+		}
+		if p.InputData.Load(packet.InputFlagStartSwimming) {
+			s.pm.UpdateSwimming(bs.id, true)
+		} else if p.InputData.Load(packet.InputFlagStopSwimming) {
+			s.pm.UpdateSwimming(bs.id, false)
+		}
 
-		for _, action := range p.BlockActions {
+		if p.InputData.Load(packet.InputFlagMissedSwing) {
+			s.pm.PublishSwing(bs.id)
+		}
+
+		actions, _ := p.BlockActions.Value()
+		for _, action := range actions {
 			switch action.Action {
 			case protocol.PlayerActionStartBreak:
-				breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID())
+				s.pm.PublishSwing(bs.id)
+				blockID := s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID()
+				isCreative := false
+				if pl := s.pm.GetPlayer(bs.id); pl != nil {
+					isCreative = pl.Gamemode == 1 || pl.Creative
+				}
+				if blockID != 0 && (isCreative || world.Hardness(blockID) == 0) {
+					s.wm.CrackManager().StopBreaking(bs.id)
+					s.breakBedrockBlock(bs, action.BlockPos)
+					continue
+				}
+				breakSecs := bedrockCrackSecondsFor(blockID)
 				s.crackSwitch(bs, action.BlockPos, breakSecs) // clears crack on a previously-targeted block
 				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking, breakSecs)
 				s.publishCrack(bs, action.BlockPos, 0) // start the overlay on Java viewers too
 			case protocol.PlayerActionContinueDestroyBlock:
+				s.pm.PublishSwing(bs.id)
 				// Holding break while the crosshair moves to a new block sends a
 				// continue (not a fresh start); detect that switch and move the
 				// crack overlay so it doesn't stick on the old block.
@@ -109,9 +140,42 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 				s.wm.CrackManager().StopBreaking(bs.id)
 				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStopBlockCracking, 0)
 				s.publishCrack(bs, action.BlockPos, -1) // clear the overlay on Java too
-			case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
+				s.resyncBedrockBlock(conn, action.BlockPos)
+			case protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
+				s.pm.PublishSwing(bs.id)
 				s.wm.CrackManager().StopBreaking(bs.id)
 				s.breakBedrockBlock(bs, action.BlockPos)
+			case protocol.PlayerActionStopBreak:
+				s.pm.PublishSwing(bs.id)
+				if st := s.wm.CrackManager().GetBreaking(bs.id); st != nil {
+					s.wm.CrackManager().StopBreaking(bs.id)
+					targetPos := action.BlockPos
+					if targetPos == (protocol.BlockPos{}) {
+						targetPos = protocol.BlockPos{int32(st.BlockPos.X), int32(st.BlockPos.Y), int32(st.BlockPos.Z)}
+					}
+					s.breakBedrockBlock(bs, targetPos)
+				}
+			case protocol.PlayerActionDropItem:
+				if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Inventory != nil {
+					s.handleBedrockPlayerDrop(bs, uint32(pl.Inventory.HeldSlot), 1)
+				}
+			case protocol.PlayerActionMissedSwing:
+				s.pm.PublishSwing(bs.id)
+			}
+		}
+
+		if p.InputData.Load(packet.InputFlagPerformItemInteraction) {
+			if data, ok := p.ItemInteractionData.Value(); ok && data.ActionType == protocol.UseItemActionBreakBlock {
+				s.pm.PublishSwing(bs.id)
+				s.wm.CrackManager().StopBreaking(bs.id)
+				s.breakBedrockBlock(bs, data.BlockPosition)
+			}
+		}
+		if p.InputData.Load(packet.InputFlagPerformItemStackRequest) {
+			if req, ok := p.ItemStackRequest.Value(); ok {
+				s.handleBedrockItemStackRequest(bs, &packet.ItemStackRequest{
+					Requests: []protocol.ItemStackRequest{req},
+				})
 			}
 		}
 
@@ -119,22 +183,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		if p.TransactionData != nil {
 			switch data := p.TransactionData.(type) {
 			case *protocol.NormalTransactionData, *protocol.MismatchTransactionData:
-				// Q / Ctrl+Q drop: the client sends an InventoryTransaction where one
-				// action has SourceType=World (2), the hotbar slot, OldItem=the held
-				// stack, and NewItem=the held stack minus the dropped count. We do
-				// not try to "balance" the transaction (that would require tracking
-				// the full book-keeping of all client slots); we just spawn the drop
-				// entity and shrink the held slot authoritatively.
-				for _, act := range p.Actions {
-					if act.SourceType != protocol.InventoryActionSourceWorld {
-						continue
-					}
-					dropped := int(act.OldItem.Stack.Count) - int(act.NewItem.Stack.Count)
-					if dropped <= 0 {
-						continue
-					}
-					s.handleBedrockPlayerDrop(bs, act.InventorySlot, dropped)
-				}
+				s.handleBedrockTransactionActions(bs, p.Actions)
 			case *protocol.UseItemTransactionData:
 				switch data.ActionType {
 				case protocol.UseItemActionClickBlock:
@@ -146,6 +195,11 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					pl := s.pm.GetPlayer(bs.id)
 					if pl == nil || pl.Inventory == nil {
 						return
+					}
+					if !pl.Sneaking {
+						if s.wm.InteractBlock(world.BlockUpdateSourceBedrock, int(data.BlockPosition[0]), int(data.BlockPosition[1]), int(data.BlockPosition[2])) {
+							return
+						}
 					}
 					heldSlot := pl.Inventory.HeldSlot
 					held := pl.Inventory.GetHeldItem()
@@ -188,8 +242,12 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 						// block without touching this call site.
 						targetPos := adjacentBlockPos(data.BlockPosition, data.BlockFace)
 						wm := s.wm.GetDefaultWorld()
+						clickedID := wm.GetBlock(int(data.BlockPosition[0]), int(data.BlockPosition[1]), int(data.BlockPosition[2])).ID()
+						if world.IsReplaceableBlock(clickedID) {
+							targetPos = data.BlockPosition
+						}
 						targetID := wm.GetBlock(int(targetPos[0]), int(targetPos[1]), int(targetPos[2])).ID()
-						if targetID != world.AirID {
+						if !world.IsReplaceableBlock(targetID) {
 							// Block at the target position: refuse the place and
 							// re-affirm the world so the client's prediction rolls
 							// back cleanly.
@@ -210,6 +268,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 							return
 						}
 						s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]), world.BlockByID(int32(stateID)))
+						s.wm.OnBlockChanged(world.BlockUpdateSourceBedrock, int(targetPos[0]), int(targetPos[1]), int(targetPos[2]))
 						s.syncBedrockInventory(bs, pl)
 						// Held stack shrank: re-render the hand for others.
 						s.pm.PublishEquipmentChange(bs.id)
@@ -281,7 +340,10 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.resyncBedrockBlock(conn, data.BlockPosition)
 					s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
 				case protocol.UseItemActionBreakBlock:
+					s.pm.PublishSwing(bs.id)
 					s.breakBedrockBlock(bs, data.BlockPosition)
+				case protocol.UseItemActionClickAir:
+					s.pm.PublishSwing(bs.id)
 				}
 			case *protocol.UseItemOnEntityTransactionData:
 				// M5: player attacks on Bedrock arrive as
@@ -290,6 +352,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 				// Attack; Interact is a no-op for now (M0 didn't
 				// implement interact-on-entity either).
 				if data.ActionType == protocol.UseItemOnEntityActionAttack {
+					s.pm.PublishSwing(bs.id)
 					s.routeBedrockAttack(bs.id, int64(data.TargetEntityRuntimeID))
 				}
 			}
@@ -307,19 +370,74 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			s.pm.UpdateSneak(bs.id, true)
 		case protocol.PlayerActionStopSneak:
 			s.pm.UpdateSneak(bs.id, false)
+		case protocol.PlayerActionStartSprint:
+			s.pm.UpdateSprinting(bs.id, true)
+		case protocol.PlayerActionStopSprint:
+			s.pm.UpdateSprinting(bs.id, false)
+		case protocol.PlayerActionStartSwimming:
+			s.pm.UpdateSwimming(bs.id, true)
+		case protocol.PlayerActionStopSwimming:
+			s.pm.UpdateSwimming(bs.id, false)
 		case protocol.PlayerActionStartBreak:
-			breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID())
+			s.pm.PublishSwing(bs.id)
+			blockID := s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID()
+			isCreative := false
+			if pl := s.pm.GetPlayer(bs.id); pl != nil {
+				isCreative = pl.Gamemode == 1 || pl.Creative
+			}
+			if blockID != 0 && (isCreative || world.Hardness(blockID) == 0) {
+				s.wm.CrackManager().StopBreaking(bs.id)
+				s.breakBedrockBlock(bs, p.BlockPosition)
+				break
+			}
+			breakSecs := bedrockCrackSecondsFor(blockID)
 			s.crackSwitch(bs, p.BlockPosition, breakSecs)
 			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking, breakSecs)
 			s.publishCrack(bs, p.BlockPosition, 0)
+		case protocol.PlayerActionContinueDestroyBlock:
+			s.pm.PublishSwing(bs.id)
+			if s.crackSwitch(bs, p.BlockPosition, 0) {
+				breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID())
+				s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking, breakSecs)
+				s.publishCrack(bs, p.BlockPosition, 0)
+			} else {
+				s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventUpdateBlockCracking, 0)
+				if stage, changed := s.wm.CrackManager().AdvanceStage(bs.id, 0); changed {
+					s.publishCrack(bs, p.BlockPosition, stage)
+				}
+			}
 		case protocol.PlayerActionAbortBreak:
 			s.wm.CrackManager().StopBreaking(bs.id)
 			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStopBlockCracking, 0)
 			s.publishCrack(bs, p.BlockPosition, -1)
-		case protocol.PlayerActionStopBreak, protocol.PlayerActionPredictDestroyBlock:
+			s.resyncBedrockBlock(conn, p.BlockPosition)
+		case protocol.PlayerActionPredictDestroyBlock, protocol.PlayerActionCreativePlayerDestroyBlock:
+			s.pm.PublishSwing(bs.id)
+			s.wm.CrackManager().StopBreaking(bs.id)
 			s.breakBedrockBlock(bs, p.BlockPosition)
+		case protocol.PlayerActionStopBreak:
+			s.pm.PublishSwing(bs.id)
+			if st := s.wm.CrackManager().GetBreaking(bs.id); st != nil {
+				s.wm.CrackManager().StopBreaking(bs.id)
+				targetPos := p.BlockPosition
+				if targetPos == (protocol.BlockPos{}) {
+					targetPos = protocol.BlockPos{int32(st.BlockPos.X), int32(st.BlockPos.Y), int32(st.BlockPos.Z)}
+				}
+				s.breakBedrockBlock(bs, targetPos)
+			}
+		case protocol.PlayerActionDropItem:
+			if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Inventory != nil {
+				s.handleBedrockPlayerDrop(bs, uint32(pl.Inventory.HeldSlot), 1)
+			}
+		case protocol.PlayerActionMissedSwing:
+			s.pm.PublishSwing(bs.id)
 		case protocol.PlayerActionStartFlying, protocol.PlayerActionStopFlying:
 			s.sendBedrockSurvivalState(conn, bedrockLocalRuntime)
+		}
+
+	case *packet.Animate:
+		if p.ActionType == packet.AnimateActionSwingArm {
+			s.pm.PublishSwing(bs.id)
 		}
 
 	case *packet.Interact:
@@ -342,15 +460,17 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 
 	case *packet.ContainerClose:
 		bs.invOpened = false
+		bs.mu.Lock()
+		bs.cursorSlot = -1
+		bs.mu.Unlock()
 		// Acknowledge the close so the client allows the inventory to be reopened.
 		_ = conn.WritePacket(&packet.ContainerClose{WindowID: p.WindowID, ContainerType: p.ContainerType})
+		if pl := s.pm.GetPlayer(bs.id); pl != nil {
+			s.syncBedrockInventory(bs, pl)
+		}
 
 	case *packet.ItemStackRequest:
-		responses := make([]protocol.ItemStackResponse, 0, len(p.Requests))
-		for _, req := range p.Requests {
-			responses = append(responses, inventory.RejectItemStackRequest(req.RequestID))
-		}
-		_ = conn.WritePacket(&packet.ItemStackResponse{Responses: responses})
+		s.handleBedrockItemStackRequest(bs, p)
 
 	case *packet.CommandRequest:
 		raw := strings.TrimPrefix(p.CommandLine, "/")
@@ -384,15 +504,32 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			}
 		}
 
-	case *packet.Animate:
-		if p.ActionType == packet.AnimateActionSwingArm {
-			s.pm.PublishSwing(bs.id)
-		}
-
 	case *packet.MobEquipment:
 		// Player switched their held hotbar slot; publish so other clients
 		// (both editions) re-render this player's hand item.
 		s.pm.UpdateHeldSlot(bs.id, int(p.HotBarSlot))
+
+	case *packet.PlayerSkin:
+		// Player changed their skin in-game via Bedrock dressing room.
+		sk := p.Skin
+		w, h := int(sk.SkinImageWidth), int(sk.SkinImageHeight)
+		if w > 0 && h > 0 && len(sk.SkinData) >= w*h*4 && s.skins != nil {
+			model := "wide"
+			if sk.ArmSize == protocol.ArmSizeSlim {
+				model = "slim"
+			}
+			skinURL, normRGBA, pngData := s.skins.RegisterSkin(bs.id, w, h, sk.SkinData, bs.clientData.SkinColour)
+			var skinData *player.SkinData
+			if len(normRGBA) == skinbridge.JavaSkinRGBABytes {
+				skinData = player.NewSkinData(skinURL, model, normRGBA)
+			} else {
+				skinData = player.NewSkinData(skinURL, model, sk.SkinData)
+			}
+			s.pm.UpdateBedrockSkin(bs.id, skinURL, skinData)
+			if len(pngData) > 0 {
+				go s.uploadBedrockSkinPNGToMineSkin(bs.id, bs.username, pngData, model)
+			}
+		}
 
 	case *packet.ResourcePackClientResponse:
 		log.Printf("[Bedrock] Resource pack response: %d", p.Response)

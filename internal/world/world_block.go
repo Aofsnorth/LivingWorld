@@ -5,12 +5,23 @@ package world
 // 4; overworld returns the terrain surface). The column's chunk is loaded
 // (generated if needed); falls back to 64 for an all-air column.
 func (w *World) HighestSolidY(x, z int) int {
-	w.LoadChunk(x>>4, z>>4)
-	// Scan the full canonical column from the top placeable Y (319) down to the
-	// world floor (-64) so both overworld surfaces and any sub-0 floor are found.
-	for y := MinWorldHeight + SectionsPerChunk*16 - 1; y >= MinWorldHeight; y-- {
-		if w.GetBlock(x, y, z).ID() != AirID {
-			return y + 1
+	chunk := w.LoadChunk(x>>4, z>>4)
+	if chunk == nil {
+		return 64
+	}
+	lx, lz := x&15, z&15
+	colBits := (lz << 4) | lx
+	for secIdx := SectionsPerChunk - 1; secIdx >= 0; secIdx-- {
+		sec := &chunk.sections[secIdx]
+		if sec.IsEmpty() || sec.blocks == nil {
+			continue
+		}
+		baseY := MinWorldHeight + secIdx*16
+		blocks := sec.blocks
+		for ly := 15; ly >= 0; ly-- {
+			if blocks[(ly<<8)|colBits] != AirID {
+				return baseY + ly + 1
+			}
 		}
 	}
 	return 64

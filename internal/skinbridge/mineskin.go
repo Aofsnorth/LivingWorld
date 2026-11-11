@@ -2,14 +2,17 @@ package skinbridge
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"image"
 	"image/color"
 	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,112 +25,141 @@ type MineSkinResponse struct {
 	} `json:"data"`
 }
 
-// mineSkinNormalize ensures the PNG is a dimension MineSkin accepts (64x64 or
-// 64x32). HD skins served to Java are kept at 128x128 by RegisterRGBA, but
-// MineSkin rejects anything other than 64x64/64x32, so for the upload path only
-// we downscale a 128x128 skin to 64x64 (2:1 box average — the signed texture is
-// only used to satisfy Java's skin-URL whitelist, not for HD rendering). Skins
-// already 64x64/64x32 pass through untouched.
+type cachedSignedSkin struct {
+	value     string
+	signature string
+}
+
+var (
+	mineSkinCacheMu sync.RWMutex
+	mineSkinCache   = make(map[string]cachedSignedSkin)
+)
+
+// mineSkinNormalize ensures the PNG is a Java-compatible 64x64 PNG with sanitized
+// base-layer alpha using CompressBedrockSkinRGBA.
 func mineSkinNormalize(pngData []byte) []byte {
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
-		return pngData // not a PNG we can read; let the API reject/accept as-is
+		return pngData
 	}
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if (w == 64 && h == 64) || (w == 64 && h == 32) {
-		return pngData // already an accepted dimension
-	}
-	if w != 128 || h != 128 {
-		return pngData // unexpected size; don't guess, send original
-	}
-	// 128x128 → 64x64 with an ALPHA-WEIGHTED average of each 2x2 block: RGB is
-	// averaged weighted by the source alpha (so fully-transparent overlay pixels
-	// don't bleed black halos into edges), and alpha is averaged. This is smoother
-	// than the previous most-opaque pick (which kept harsh/noisy pixels — the
-	// "burik" look) while staying edge-correct, and it's the best a 64x64 skin can
-	// represent of a 128 source.
-	out := image.NewNRGBA(image.Rect(0, 0, 64, 64))
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			var r, g, bl, wsum, asum float64
-			for dy := 0; dy < 2; dy++ {
-				for dx := 0; dx < 2; dx++ {
-					c := color.NRGBAModel.Convert(img.At(b.Min.X+x*2+dx, b.Min.Y+y*2+dy)).(color.NRGBA)
-					w := float64(c.A)
-					r += float64(c.R) * w
-					g += float64(c.G) * w
-					bl += float64(c.B) * w
-					wsum += w
-					asum += float64(c.A)
-				}
-			}
-			px := color.NRGBA{A: uint8(asum / 4)}
-			if wsum > 0 {
-				px.R, px.G, px.B = uint8(r/wsum), uint8(g/wsum), uint8(bl/wsum)
-			}
-			out.SetNRGBA(x, y, px)
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, out); err != nil {
+	if w <= 0 || h <= 0 {
 		return pngData
 	}
-	return buf.Bytes()
+
+	rgba := make([]byte, w*h*4)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := color.NRGBAModel.Convert(img.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
+			idx := (y*w + x) * 4
+			rgba[idx] = c.R
+			rgba[idx+1] = c.G
+			rgba[idx+2] = c.B
+			rgba[idx+3] = c.A
+		}
+	}
+
+	_, compressedPNG, err := CompressBedrockSkinRGBA(rgba, w, h, "")
+	if err != nil || len(compressedPNG) == 0 {
+		return pngData
+	}
+	return compressedPNG
 }
 
-// UploadToMineSkin uploads a PNG to MineSkin API v1 (with Bearer token if using v2 keys)
+// UploadToMineSkin uploads a PNG to MineSkin API (with classic model default).
 func UploadToMineSkin(pngData []byte, apiKey string) (value, signature string, err error) {
+	return UploadToMineSkinWithModel(pngData, "classic", apiKey)
+}
+
+// UploadToMineSkinWithModel uploads a normalized 64x64 PNG to MineSkin API with the
+// appropriate arm variant ("slim" or "classic") and caches signed results by SHA-256.
+func UploadToMineSkinWithModel(pngData []byte, model, apiKey string) (value, signature string, err error) {
 	pngData = mineSkinNormalize(pngData)
 
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
-
-	// MineSkin v1 expects "file"
-	fw, err := w.CreateFormFile("file", "skin.png")
-	if err != nil {
-		return "", "", err
-	}
-	_, err = fw.Write(pngData)
-	if err != nil {
-		return "", "", err
+	variant := "classic"
+	if strings.EqualFold(model, "slim") {
+		variant = "slim"
 	}
 
-	// Add variant = classic (or slim, but we assume classic for now)
-	if err := w.WriteField("variant", "classic"); err != nil {
-		return "", "", err
-	}
-	// visibility = 1 (public) or 0 (private). Use private to not spam the gallery
-	if err := w.WriteField("visibility", "0"); err != nil {
-		return "", "", err
-	}
-	w.Close()
+	// Check SHA-256 in-memory cache so reconnects or shared skins resolve in 0ms.
+	hasher := sha256.New()
+	hasher.Write(pngData)
+	hasher.Write([]byte("|" + variant))
+	cacheKey := hex.EncodeToString(hasher.Sum(nil))
 
-	req, err := http.NewRequest("POST", "https://api.mineskin.org/generate/upload", &b)
-	if err != nil {
-		return "", "", err
+	mineSkinCacheMu.RLock()
+	if cached, ok := mineSkinCache[cacheKey]; ok && cached.value != "" && cached.signature != "" {
+		mineSkinCacheMu.RUnlock()
+		return cached.value, cached.signature, nil
 	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	mineSkinCacheMu.RUnlock()
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("mineskin error %d: %s", resp.StatusCode, string(body))
+	for attempt := 0; attempt < 2; attempt++ {
+		var b bytes.Buffer
+		w := multipart.NewWriter(&b)
+
+		fw, err := w.CreateFormFile("file", "skin.png")
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := fw.Write(pngData); err != nil {
+			return "", "", err
+		}
+		if err := w.WriteField("variant", variant); err != nil {
+			return "", "", err
+		}
+		// visibility = 0 (unlisted) so player skins don't clutter public listings
+		if err := w.WriteField("visibility", "0"); err != nil {
+			return "", "", err
+		}
+		if err := w.Close(); err != nil {
+			return "", "", err
+		}
+
+		req, err := http.NewRequest("POST", "https://api.mineskin.org/generate/upload", &b)
+		if err != nil {
+			return "", "", err
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("User-Agent", "LivingWorld-SkinBridge/1.0 (+https://github.com/Aofsnorth/LivingWorld)")
+		req.Header.Set("Accept", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", "", err
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			return "", "", fmt.Errorf("mineskin error %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var res MineSkinResponse
+		if err := json.Unmarshal(respBody, &res); err != nil {
+			return "", "", err
+		}
+
+		val := res.Data.Texture.Value
+		sig := res.Data.Texture.Signature
+		if val != "" && sig != "" {
+			mineSkinCacheMu.Lock()
+			mineSkinCache[cacheKey] = cachedSignedSkin{value: val, signature: sig}
+			mineSkinCacheMu.Unlock()
+		}
+		return val, sig, nil
 	}
 
-	var res MineSkinResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", "", err
-	}
-
-	return res.Data.Texture.Value, res.Data.Texture.Signature, nil
+	return "", "", fmt.Errorf("mineskin upload exhausted retries")
 }

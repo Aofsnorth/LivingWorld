@@ -20,16 +20,41 @@ func encodePlayerMetadata(p player.PlayerSnapshot) []byte {
 
 	// Index 0: Entity Flags (Byte)
 	var flags byte = 0x00
+	if p.OnFire {
+		flags |= EntityFlagOnFire
+	}
 	if p.Sneaking {
 		flags |= EntityFlagSneaking
+	}
+	if p.Sprinting {
+		flags |= EntityFlagSprinting
+	}
+	if p.Swimming {
+		flags |= EntityFlagSwimming
 	}
 	_, _ = pk.Byte(MetaIndexFlags).WriteTo(&buf)
 	_, _ = pk.VarInt(MetaTypeByte).WriteTo(&buf)
 	_, _ = pk.Byte(flags).WriteTo(&buf)
 
+	// Index 1: Air Supply (VarInt, in ticks; 300 = full 10 bubbles).
+	// Only emitted when AirSupply is populated or the player is actively drowning
+	// so synthetic zero-value PlayerSnapshot literals in unit tests keep their
+	// compact baseline layout.
+	if p.AirSupply > 0 || (p.UUID != [16]byte{} && !p.Breathing) {
+		air := int32(p.AirSupply)
+		if air < 0 {
+			air = 0
+		}
+		_, _ = pk.Byte(MetaIndexAirSupply).WriteTo(&buf)
+		_, _ = pk.VarInt(MetaTypeVarInt).WriteTo(&buf)
+		_, _ = pk.VarInt(air).WriteTo(&buf)
+	}
+
 	// Index 6: Pose (Pose type, Type 20)
 	var pose int32 = PoseStanding
-	if p.Sneaking {
+	if p.Swimming {
+		pose = PoseSwimming
+	} else if p.Sneaking {
 		pose = PoseCrouching
 	}
 	_, _ = pk.Byte(MetaIndexPose).WriteTo(&buf)
@@ -49,7 +74,50 @@ func encodePlayerMetadata(p player.PlayerSnapshot) []byte {
 	return buf.Bytes()
 }
 
-func (h *Handler776) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPos world.Position, exists bool) error {
+// EncodeLocalEnvironmentMetadata builds a ClientboundSetEntityData payload for
+// the local player's own entity containing only server-authoritative environment
+// fields (Index 0 OnFire flag change and/or Index 1 AirSupply bubble count).
+// It intentionally omits Index 6 (Pose) and avoids resending Index 0 on routine
+// sprint/sneak/swim transitions so the server never clobbers client-predicted
+// LocalPlayer swimming/sprinting state in Minecraft 26.3.
+func EncodeLocalEnvironmentMetadata(entityID int32, p player.PlayerSnapshot, includeFlags, includeAir bool) []byte {
+	var buf bytes.Buffer
+	_, _ = pk.VarInt(entityID).WriteTo(&buf)
+
+	if includeFlags {
+		var flags byte = 0x00
+		if p.OnFire {
+			flags |= EntityFlagOnFire
+		}
+		if p.Sneaking {
+			flags |= EntityFlagSneaking
+		}
+		if p.Sprinting {
+			flags |= EntityFlagSprinting
+		}
+		if p.Swimming {
+			flags |= EntityFlagSwimming
+		}
+		_, _ = pk.Byte(MetaIndexFlags).WriteTo(&buf)
+		_, _ = pk.VarInt(MetaTypeByte).WriteTo(&buf)
+		_, _ = pk.Byte(flags).WriteTo(&buf)
+	}
+
+	if includeAir {
+		air := int32(p.AirSupply)
+		if air < 0 {
+			air = 0
+		}
+		_, _ = pk.Byte(MetaIndexAirSupply).WriteTo(&buf)
+		_, _ = pk.VarInt(MetaTypeVarInt).WriteTo(&buf)
+		_, _ = pk.VarInt(air).WriteTo(&buf)
+	}
+
+	_, _ = pk.Byte(-1).WriteTo(&buf)
+	return buf.Bytes()
+}
+
+func (h *Handler777) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPos world.Position, exists bool) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}
@@ -57,38 +125,19 @@ func (h *Handler776) MoveForeignAvatar(s Session, p player.PlayerSnapshot, oldPo
 	pos := p.Position
 	rot := p.Rotation
 
-	dx := pos.X - oldPos.X
-	dy := pos.Y - oldPos.Y
-	dz := pos.Z - oldPos.Z
-	distSq := dx*dx + dy*dy + dz*dz
-
-	isTeleport := !exists || distSq > 64.0 // > 8 blocks distance
-
-	if isTeleport {
-		_ = s.SendPacket(pk.Marshal(
-			packetid.ClientboundGameTeleportEntity,
-			pk.VarInt(entityID),
-			pk.Double(pos.X), pk.Double(pos.Y), pk.Double(pos.Z),
-			pk.Double(0), pk.Double(0), pk.Double(0), // velocity
-			pk.Float(rot.Yaw), pk.Float(rot.Pitch),
-			pk.Int(0), // flags
-			pk.Boolean(p.OnGround),
-		))
-	} else {
-		// Use relative move!
-		deltaX := int16(dx * 4096)
-		deltaY := int16(dy * 4096)
-		deltaZ := int16(dz * 4096)
-
-		_ = s.SendPacket(pk.Marshal(
-			packetid.ClientboundGameMoveEntityPosRot,
-			pk.VarInt(entityID),
-			pk.Short(deltaX), pk.Short(deltaY), pk.Short(deltaZ),
-			pk.Angle(degToAngle(rot.Yaw)),
-			pk.Angle(degToAngle(rot.Pitch)),
-			pk.Boolean(p.OnGround),
-		))
-	}
+	// Always send ClientboundGameTeleportEntity (followed by RotateHead) just like
+	// moveMobPacket and moveDropPacket do. In MC 26.3 (protocol 777), relative
+	// move_entity_pos_rot caused a client DecoderException and int16(dx*4096)
+	// truncation accumulated position drift against unquantized lastSentPos.
+	_ = s.SendPacket(pk.Marshal(
+		packetid.ClientboundGameTeleportEntity,
+		pk.VarInt(entityID),
+		pk.Double(pos.X), pk.Double(pos.Y), pk.Double(pos.Z),
+		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
+		pk.Float(rot.Yaw), pk.Float(rot.Pitch),
+		pk.Int(0), // flags
+		pk.Boolean(p.OnGround),
+	))
 
 	_ = s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameRotateHead,

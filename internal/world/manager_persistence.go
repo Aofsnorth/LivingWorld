@@ -18,7 +18,11 @@ func (m *Manager) EnablePersistence(baseDir string) error {
 				return err
 			}
 		}
-		store, err := NewRegionStorage(filepath.Join(baseDir, storageName))
+		targetDir := filepath.Join(baseDir, storageName)
+		if w.HasRegionStorageDir(targetDir) {
+			continue
+		}
+		store, err := NewRegionStorage(targetDir)
 		if err != nil {
 			return err
 		}

@@ -54,6 +54,19 @@ func (s *PlayerSession) SetGameMode(mode int) error {
 		pl.Gamemode = mode
 		pl.Creative = mode == 1
 	}
+	var abilityFlags byte = 0x00
+	switch mode {
+	case 1:
+		abilityFlags = 0x0D
+	case 3:
+		abilityFlags = 0x07
+	}
+	_ = s.SendPacket(pk.Marshal(
+		packetid.ClientboundGamePlayerAbilities,
+		pk.Byte(abilityFlags),
+		pk.Float(0.05),
+		pk.Float(0.1),
+	))
 	return s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameGameEvent,
 		pk.UnsignedByte(3), // event 3: change gamemode

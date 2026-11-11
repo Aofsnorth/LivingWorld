@@ -7,11 +7,27 @@ import (
 )
 
 // levelData is the small per-world metadata persisted to <worldDir>/level.json
-// next to the region files (weather + time of day).
+// next to the region files (weather + time of day + world seed).
 type levelData struct {
 	Raining    bool  `json:"raining"`
 	Thundering bool  `json:"thundering"`
 	DayTime    int64 `json:"dayTime"`
+	Seed       int64 `json:"seed,omitempty"`
+}
+
+// Seed returns the world's persisted seed (or 0 if unset).
+func (w *World) Seed() int64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.seed
+}
+
+// SetSeed sets the world's seed and persists level.json if disk storage is attached.
+func (w *World) SetSeed(seed int64) {
+	w.mu.Lock()
+	w.seed = seed
+	w.mu.Unlock()
+	w.saveLevel()
 }
 
 // Weather returns the world's current weather state.
@@ -51,13 +67,16 @@ func (w *World) loadLevel() {
 	if ld.DayTime > 0 {
 		w.dayTime = ld.DayTime
 	}
+	if ld.Seed != 0 {
+		w.seed = ld.Seed
+	}
 	w.mu.Unlock()
 }
 
 func (w *World) saveLevel() {
 	w.mu.RLock()
 	dir := w.worldDir
-	ld := levelData{Raining: w.raining, Thundering: w.thundering, DayTime: w.dayTime}
+	ld := levelData{Raining: w.raining, Thundering: w.thundering, DayTime: w.dayTime, Seed: w.seed}
 	w.mu.RUnlock()
 	if dir == "" {
 		return

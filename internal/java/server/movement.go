@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -22,24 +23,26 @@ func (s *PlayerSession) debugChunkf(format string, args ...any) {
 
 func (s *PlayerSession) HandleMovePos(p pk.Packet) {
 	var x, y, z pk.Double
-	var onGround pk.Boolean
-	if err := p.Scan(&x, &y, &z, &onGround); err != nil {
+	var flags pk.Byte
+	if err := p.Scan(&x, &y, &z, &flags); err != nil {
 		return
 	}
-	s.applyMove(float64(x), float64(y), float64(z), bool(onGround))
+	onGround := (flags & 0x01) != 0
+	s.applyMove(float64(x), float64(y), float64(z), onGround)
 }
 
 func (s *PlayerSession) HandleMovePosRot(p pk.Packet) {
 	var x, y, z pk.Double
 	var yaw, pitch pk.Float
-	var onGround pk.Boolean
-	if err := p.Scan(&x, &y, &z, &yaw, &pitch, &onGround); err != nil {
+	var flags pk.Byte
+	if err := p.Scan(&x, &y, &z, &yaw, &pitch, &flags); err != nil {
 		return
 	}
+	onGround := (flags & 0x01) != 0
 	s.mu.Lock()
 	s.Yaw, s.Pitch = float32(yaw), float32(pitch)
 	s.mu.Unlock()
-	s.applyMove(float64(x), float64(y), float64(z), bool(onGround))
+	s.applyMove(float64(x), float64(y), float64(z), onGround)
 }
 
 // applyMove updates position from a movement packet, tracks fall damage, and
@@ -71,28 +74,35 @@ func (s *PlayerSession) applyMove(x, y, z float64, onGround bool) {
 
 func (s *PlayerSession) HandleMoveRot(p pk.Packet) {
 	var yaw, pitch pk.Float
-	var onGround pk.Boolean
-	if err := p.Scan(&yaw, &pitch, &onGround); err != nil {
+	var flags pk.Byte
+	if err := p.Scan(&yaw, &pitch, &flags); err != nil {
 		return
 	}
+	onGround := (flags & 0x01) != 0
 	s.mu.Lock()
 	s.Yaw, s.Pitch = float32(yaw), float32(pitch)
-	s.OnGround = bool(onGround)
+	s.OnGround = onGround
 	x, y, z := s.X, s.Y, s.Z
 	s.mu.Unlock()
-	if s.Bridge != nil && s.Bridge.pm != nil {
-		s.Bridge.pm.UpdatePosition(s.UUID(), x, y, z, s.Pitch, s.Yaw, bool(onGround))
+	if s.Bridge != nil {
+		if s.Bridge.pm != nil {
+			s.Bridge.pm.UpdatePosition(s.UUID(), x, y, z, s.Pitch, s.Yaw, onGround)
+		}
 	}
+	s.trackFall(y, y, onGround)
 }
 
 func (s *PlayerSession) HandleMoveStatusOnly(p pk.Packet) {
-	var onGround pk.Boolean
-	if err := p.Scan(&onGround); err != nil {
+	var flags pk.Byte
+	if err := p.Scan(&flags); err != nil {
 		return
 	}
+	onGround := (flags & 0x01) != 0
 	s.mu.Lock()
-	s.OnGround = bool(onGround)
+	s.OnGround = onGround
+	y := s.Y
 	s.mu.Unlock()
+	s.trackFall(y, y, onGround)
 }
 
 func (s *PlayerSession) HandlePlayerCommand(p pk.Packet) {
@@ -103,11 +113,14 @@ func (s *PlayerSession) HandlePlayerCommand(p pk.Packet) {
 		return
 	}
 
+	// In Minecraft 1.21.2+ / 26.3 (protocol 777), ServerboundPlayerCommand
+	// action IDs are: 0 = STOP_SLEEPING, 1 = START_SPRINTING, 2 = STOP_SPRINTING.
+	// Sneaking is sent via ServerboundGamePlayerInput (bit 0x20).
 	switch actionID {
-	case 0: // Start sneaking
-		s.Bridge.pm.UpdateSneak(s.UUID(), true)
-	case 1: // Stop sneaking
-		s.Bridge.pm.UpdateSneak(s.UUID(), false)
+	case 1: // Start sprinting
+		s.Bridge.pm.UpdateSprinting(s.UUID(), true)
+	case 2: // Stop sprinting
+		s.Bridge.pm.UpdateSprinting(s.UUID(), false)
 	}
 }
 
@@ -186,61 +199,90 @@ func (s *PlayerSession) updateChunksWithBatch(useBatch bool) {
 		return chunkDistSq(toSend[i], cx, cz) < chunkDistSq(toSend[j], cx, cz)
 	})
 
-	// Build the chunk packets concurrently (C2ME-style: chunk generation +
-	// serialization is the CPU-heavy part, so fan it out across cores), then send
-	// them in nearest-first order. world.LoadChunk is mutex-guarded, so parallel
-	// loads/generation are safe.
-	packets := make([]pk.Packet, len(toSend))
-	w := s.Bridge.wm.GetDefaultWorld()
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, chunkBuildWorkers)
-	for i := range toSend {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			pos := toSend[i]
-			lChunk := javaworld.ConvertToLevelChunk(w.LoadChunk(pos.X, pos.Z))
-			packets[i] = javaworld.BuildLevelChunkWithLightPacket(int32(pos.X), int32(pos.Z), lChunk)
-		}(i)
-	}
-	wg.Wait()
-
-	// sendChunk sends one chunk packet and marks it loaded only on success so a
-	// failed send is retried on the next boundary-cross.
-	var sentOK, sentErr int
-	sendChunk := func(i int) {
-		if err := s.SendPacket(packets[i]); err != nil {
-			sentErr++
-			s.debugChunkf("send error (%d,%d): %v", toSend[i].X, toSend[i].Z, err)
-			return
-		}
-		finalLoaded[toSend[i]] = true
-		sentOK++
-	}
-
-	if useBatch && len(packets) > 0 {
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
-		for i := range packets {
-			sendChunk(i)
-		}
-		_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchFinished, pk.VarInt(int32(len(packets)))))
-	} else {
-		for i := range packets {
-			sendChunk(i)
-		}
-	}
-	s.debugChunkf("send total: ok=%d err=%d (of %d)", sentOK, sentErr, len(packets))
-
+	// Record the pruned loaded set first, then progressively add chunks as each
+	// micro-batch is generated and sent. Streaming in progressive micro-batches
+	// (3x3 immediate spawn ground first, then 16-chunk rings outward with a brief
+	// yield) prevents spiking CPU at 100% or stalling login on 441 chunks at once.
 	s.mu.Lock()
 	s.LoadedChunks = finalLoaded
 	s.mu.Unlock()
+
+	if len(toSend) == 0 {
+		return
+	}
+
+	w := s.Bridge.wm.GetDefaultWorld()
+	var sentOK, sentErr int
+
+	for start := 0; start < len(toSend); {
+		step := 16
+		if start == 0 {
+			step = 9 // 3x3 immediate area around player first
+		}
+		end := min(start+step, len(toSend))
+		batchPos := toSend[start:end]
+		start = end
+
+		loadedChunks := w.LoadChunksBatch(batchPos, chunkBuildWorkers)
+		packets := make([]pk.Packet, len(batchPos))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, chunkBuildWorkers)
+		for i := range batchPos {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				pos := batchPos[i]
+				lChunk := javaworld.ConvertToLevelChunk(loadedChunks[i])
+				packets[i] = javaworld.BuildLevelChunkWithLightPacket(int32(pos.X), int32(pos.Z), lChunk)
+			}(i)
+		}
+		wg.Wait()
+
+		sendChunk := func(i int) {
+			if err := s.SendPacket(packets[i]); err != nil {
+				sentErr++
+				s.debugChunkf("send error (%d,%d): %v", batchPos[i].X, batchPos[i].Z, err)
+				return
+			}
+			s.mu.Lock()
+			s.LoadedChunks[batchPos[i]] = true
+			s.mu.Unlock()
+			sentOK++
+		}
+
+		if useBatch && len(packets) > 0 {
+			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchStart))
+			for i := range packets {
+				sendChunk(i)
+			}
+			_ = s.SendPacket(pk.Marshal(packetid.ClientboundGameChunkBatchFinished, pk.VarInt(int32(len(packets)))))
+		} else {
+			for i := range packets {
+				sendChunk(i)
+			}
+		}
+
+		if start < len(toSend) {
+			// Check if player moved significantly; if so, let the next queued update take over.
+			s.mu.Lock()
+			curCX, curCZ := s.ChunkX(), s.ChunkZ()
+			s.mu.Unlock()
+			dx := curCX - cx
+			dz := curCZ - cz
+			if dx < -2 || dx > 2 || dz < -2 || dz > 2 {
+				break
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+	s.debugChunkf("send total: ok=%d err=%d (of %d)", sentOK, sentErr, len(toSend))
 }
 
 // chunkBuildWorkers bounds how many chunks are generated + serialized in
-// parallel per batch (C2ME-style parallel chunk I/O). It scales with CPU cores.
-var chunkBuildWorkers = max(2, runtime.NumCPU())
+// parallel per batch (C2ME-style parallel chunk I/O). Capped to leave CPU headroom.
+var chunkBuildWorkers = min(max(runtime.NumCPU()/2, 2), 4)
 
 // chunkDistSq is the squared chunk distance from pos to the player's chunk
 // (cx,cz), used to send chunks nearest-first.

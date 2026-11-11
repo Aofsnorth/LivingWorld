@@ -30,8 +30,16 @@ func (FloatGoal) CanUse(body any, ctx *context.AIContext) bool {
 	if ctx.WaterAt == nil {
 		return false
 	}
-	fx, fy, fz := int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))
-	return ctx.WaterAt(fx, fy, fz)
+	// Vanilla FloatGoal checks fluidHeight > getFluidJumpThreshold() (~0.4 for
+	// normal mobs, ~0.25 for short/baby mobs) so the mob's body remains submerged
+	// in the top water block with its head above the surface instead of standing
+	// on top of the water surface block.
+	submergeOffset := 0.55
+	if movement.MobEyeHeightFor(m) < 0.9 {
+		submergeOffset = 0.42
+	}
+	fx, fz := int(math.Floor(m.X)), int(math.Floor(m.Z))
+	return ctx.WaterAt(fx, int(math.Floor(m.Y+submergeOffset)), fz)
 }
 
 func (FloatGoal) CanContinue(body any, ctx *context.AIContext) bool {
@@ -43,16 +51,18 @@ func (FloatGoal) Tick(body any, ctx *context.AIContext) {
 	if !ok {
 		return
 	}
-	if m.Vy < 0.1 {
-		m.Vy += 0.04
+	if m.Vy < 0.04 {
+		m.Vy += 0.035
+		if m.Vy > 0.04 {
+			m.Vy = 0.04
+		}
 	}
 	m.OnGround = false
 }
 
-// PanicGoal makes a passive mob sprint away from its last attacker
-// for a short window after being hurt — vanilla PanicGoal.
-// Highest-priority passive move goal so panic overrides
-// grazing/strolling.
+// PanicGoal makes a passive mob sprint to random nearby waypoints when hurt —
+// matching vanilla PanicGoal (100 ticks hurtByTimestamp window, 1.25x-1.4x speed,
+// LandRandomPos(5, 4) waypoint selection).
 type PanicGoal struct {
 	selector.BaseGoal
 }
@@ -64,6 +74,9 @@ func (PanicGoal) CanUse(body any, ctx *context.AIContext) bool {
 	if !ok {
 		return false
 	}
+	if m.FireTicks > 0 {
+		return true
+	}
 	if m.HurtBy == context.ZeroUUID() {
 		return false
 	}
@@ -74,11 +87,19 @@ func (PanicGoal) CanContinue(body any, ctx *context.AIContext) bool {
 	return PanicGoal{}.CanUse(body, ctx)
 }
 
-// PanicDurationTicks is the vanilla passive panic window (2 s).
-const PanicDurationTicks = 40
+// PanicDurationTicks is the vanilla passive panic window (100 ticks = 5 s).
+const PanicDurationTicks = 100
 
-// PanicSpeedMul is the vanilla PanicGoal speed modifier.
-const PanicSpeedMul = 2.0
+// PanicSpeedMul is the vanilla PanicGoal speed modifier (1.35x wander speed).
+const PanicSpeedMul = 1.35
+
+func (PanicGoal) Start(body any, ctx *context.AIContext) {
+	m, ok := body.(*mobs.Mob)
+	if !ok {
+		return
+	}
+	m.WalkTicks = 0
+}
 
 func (PanicGoal) Tick(body any, ctx *context.AIContext) {
 	m, ok := body.(*mobs.Mob)

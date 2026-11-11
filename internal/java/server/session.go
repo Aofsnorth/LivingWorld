@@ -40,8 +40,16 @@ type PlayerSession struct {
 	Saturation  float32
 	GameModeVal int32
 
-	SelectedSlot int32
-	LoadedChunks map[world.ChunkPos]bool
+	SelectedSlot   int32
+	CarriedItem    player.ItemStack
+	CraftGrid2x2   [4]player.ItemStack
+	CraftGrid3x3   [9]player.ItemStack
+	StationSlots   [5]player.ItemStack
+	EnderChest     [27]player.ItemStack
+	OpenWindowID   int32
+	OpenWindowType int32
+	OpenBlockPos   [3]int
+	LoadedChunks   map[world.ChunkPos]bool
 	lastSentPos  map[uuid.UUID]world.Position
 	// viewers tracks which foreign players are currently spawned on this client,
 	// for the Area-Of-Interest spawn/despawn diff (#9). Has its own mutex — never
@@ -68,31 +76,34 @@ type PlayerSession struct {
 	// their bytes and corrupt the packet stream — which showed up as chunks
 	// rendering wrong / not at all while moving (the moment with the most
 	// concurrent traffic: chunk streaming + entity sync at once).
-	writeMu sync.Mutex
-	Ready   bool
+	writeMu       sync.Mutex
+	Ready         bool
+	lastOnFire    bool
+	lastAirSupply int16
 }
 
 func NewPlayerSession(username string, id uuid.UUID, conn *gmnet.Conn, bridge *javaBridge) *PlayerSession {
 	spawn := bridge.cfg.World.Spawn
 	return &PlayerSession{
-		EntityIDVal:  nextEntityID.Add(1),
-		UUIDVal:      id,
-		UsernameVal:  username,
-		Conn_:        conn,
-		Bridge:       bridge,
-		X:            spawn.X,
-		Y:            spawn.Y,
-		Z:            spawn.Z,
-		Health:       MaxHealth,
-		Food:         MaxFood,
-		Saturation:   MaxSaturation,
-		GameModeVal:  0, // survival — required for hunger drain and fall damage
-		LoadedChunks: make(map[world.ChunkPos]bool),
-		lastSentPos:  make(map[uuid.UUID]world.Position),
-		viewers:      newViewerTracker(),
-		mobViewer:    newJavaMobTracker(),
-		chunkQueue:   make(chan struct{}, 1),
-		sendQueue:    make(chan func(), 1024),
+		EntityIDVal:   nextEntityID.Add(1),
+		UUIDVal:       id,
+		UsernameVal:   username,
+		Conn_:         conn,
+		Bridge:        bridge,
+		X:             spawn.X,
+		Y:             spawn.Y,
+		Z:             spawn.Z,
+		Health:        MaxHealth,
+		Food:          MaxFood,
+		Saturation:    MaxSaturation,
+		GameModeVal:   0, // survival — required for hunger drain and fall damage
+		LoadedChunks:  make(map[world.ChunkPos]bool),
+		lastSentPos:   make(map[uuid.UUID]world.Position),
+		viewers:       newViewerTracker(),
+		mobViewer:     newJavaMobTracker(),
+		chunkQueue:    make(chan struct{}, 1),
+		sendQueue:     make(chan func(), 1024),
+		lastAirSupply: 300,
 	}
 }
 
@@ -116,6 +127,10 @@ func (s *PlayerSession) EntityID() int32 {
 
 func (s *PlayerSession) Config() *config.Config {
 	return s.Bridge.cfg
+}
+
+func blockStateName(b world.Block) string {
+	return world.StateName(b.ID())
 }
 
 func (s *PlayerSession) PlayerManager() *player.Manager {

@@ -26,7 +26,20 @@ type ItemStack struct {
 // chance- and range-based drops. Returns nil if the block has no drops (e.g. a
 // drop table gated entirely on tools, or an unknown block).
 func Rolls(blockName string, rng *rand.Rand) []ItemStack {
-	drops, ok := blockDrops[blockName]
+	return RollsWithTool(blockName, "", rng)
+}
+
+// RollsWithTool returns the concrete item stacks a block drops when broken with
+// the given tool item name (e.g. "minecraft:shears", or "" for bare hand).
+func RollsWithTool(blockName, toolName string, rng *rand.Rand) []ItemStack {
+	var drops []Drop
+	var ok bool
+	if toolName == "minecraft:shears" {
+		drops, ok = shearDrops[blockName]
+	}
+	if !ok {
+		drops, ok = blockDrops[blockName]
+	}
 	if !ok {
 		return nil
 	}
@@ -39,6 +52,10 @@ func Rolls(blockName string, rng *rand.Rand) []ItemStack {
 		if d.Max > d.Min {
 			count += rng.Intn(d.Max - d.Min + 1)
 		}
+		switch blockName {
+		case "minecraft:wildflowers", "minecraft:pink_petals", "minecraft:leaf_litter":
+			count = 1
+		}
 		if count <= 0 {
 			continue
 		}
@@ -49,6 +66,17 @@ func Rolls(blockName string, rng *rand.Rand) []ItemStack {
 
 // HasDrops reports whether a block has any bare-hand drop entry.
 func HasDrops(blockName string) bool {
+	_, ok := blockDrops[blockName]
+	return ok
+}
+
+// HasDropsWithTool reports whether a block has any drop entry when broken with toolName.
+func HasDropsWithTool(blockName, toolName string) bool {
+	if toolName == "minecraft:shears" {
+		if _, ok := shearDrops[blockName]; ok {
+			return true
+		}
+	}
 	_, ok := blockDrops[blockName]
 	return ok
 }

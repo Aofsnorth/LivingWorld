@@ -199,7 +199,7 @@ func (h *Harness) Start(ctx context.Context) error {
 		return h.abortStart(ctx, err)
 	}
 	h.metrics.Counter("harness.start.count", 1, "result", "ok")
-	h.logger.Info("harness: running with %d component(s)", len(comps))
+	h.logger.Info("lifecycle: running with %d component(s)", len(comps))
 	return nil
 }
 
@@ -268,7 +268,7 @@ func (h *Harness) shutdown() error {
 	rt := h.newRuntime(ctx)
 
 	if err := h.hooks.dispatch(PhaseBeforeStop, rt); err != nil {
-		h.logger.Warn("harness: before-stop hook failed: %v", err)
+		h.logger.Warn("lifecycle: before-stop hook failed: %v", err)
 	}
 
 	var errs []error
@@ -280,7 +280,7 @@ func (h *Harness) shutdown() error {
 	}
 
 	if err := h.hooks.dispatch(PhaseAfterStop, rt); err != nil {
-		h.logger.Warn("harness: after-stop hook failed: %v", err)
+		h.logger.Warn("lifecycle: after-stop hook failed: %v", err)
 	}
 
 	cause := errors.Join(errs...)
@@ -293,7 +293,7 @@ func (h *Harness) shutdown() error {
 	}
 	h.lifecycle.endStop(cause)
 	h.metrics.Counter("harness.shutdown.count", 1, "result", resultTag(cause))
-	h.logger.Info("harness: stopped")
+	h.logger.Info("lifecycle: stopped")
 	return cause
 }
 
@@ -302,7 +302,7 @@ func (h *Harness) shutdown() error {
 // cannot crash the harness.
 func (h *Harness) initComponent(rt Runtime, c Component) error {
 	start := time.Now()
-	h.logger.Debug("harness: init %s", c.Key())
+	h.logger.Debug("lifecycle: init %s", c.Key())
 	err := safeCall(func() error { return c.Init(rt) })
 	h.metrics.Duration("harness.component.init", time.Since(start),
 		"component", c.Key(), "result", resultTag(err))
@@ -314,7 +314,7 @@ func (h *Harness) initComponent(rt Runtime, c Component) error {
 
 func (h *Harness) startComponent(rt Runtime, c Component) error {
 	start := time.Now()
-	h.logger.Info("harness: start %s", c.Key())
+	h.logger.Info("lifecycle: start %s", c.Key())
 	err := safeCall(func() error { return c.Start(rt) })
 	h.metrics.Duration("harness.component.start", time.Since(start),
 		"component", c.Key(), "result", resultTag(err))
@@ -326,7 +326,7 @@ func (h *Harness) startComponent(rt Runtime, c Component) error {
 
 func (h *Harness) stopComponent(rt Runtime, c Component) error {
 	start := time.Now()
-	h.logger.Debug("harness: stop %s", c.Key())
+	h.logger.Debug("lifecycle: stop %s", c.Key())
 	err := safeCall(func() error { return c.Stop(rt) })
 	h.metrics.Duration("harness.component.stop", time.Since(start),
 		"component", c.Key(), "result", resultTag(err))

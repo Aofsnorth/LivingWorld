@@ -141,8 +141,22 @@ func TestChunkWireFormatProto775(t *testing.T) {
 		t.Fatalf("expected 0 block entities, got %d (misaligned)", be)
 	}
 
-	// (4) Light data: 4 BitSets, then sky/block light prefixed arrays.
-	readBitSet := func(what string) { skipLongs(readVarInt(what+" len"), what) }
+	// (4) Light data: 4 BitSets (ByteBufCodecs.BIT_SET in 26.3 / protocol 777:
+	// VarInt byte length <= 2048 followed by little-endian bytes), then
+	// sky/block light prefixed byte arrays.
+	readBitSet := func(what string) {
+		n := readVarInt(what + " byte len")
+		if n < 0 || n > 2048 {
+			t.Fatalf("%s byte len = %d out of [0, 2048] (ByteBufCodecs.BIT_SET overflow)", what, n)
+		}
+		b := make([]byte, n)
+		if _, err := io.ReadFull(r, b); err != nil {
+			t.Fatalf("read %s bytes (len %d): %v", what, n, err)
+		}
+		if n > 0 && b[n-1] == 0 {
+			t.Fatalf("%s has non-canonical trailing zero byte in BitSet.toByteArray()", what)
+		}
+	}
 	readBitSet("sky light mask")
 	readBitSet("block light mask")
 	readBitSet("empty sky light mask")

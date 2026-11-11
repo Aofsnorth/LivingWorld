@@ -76,8 +76,13 @@ func Count() int { return len(all) }
 // food, ...) return ok=false.
 func BlockStateID(name string) (int32, bool) {
 	n := normalize(name)
-	if n == "minecraft:air" {
+	switch n {
+	case "minecraft:air":
 		return world.AirID, false
+	case "minecraft:water_bucket":
+		n = "minecraft:water"
+	case "minecraft:lava_bucket":
+		n = "minecraft:lava"
 	}
 	id := world.StateID(n)
 	if id == world.AirID {

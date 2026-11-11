@@ -7,7 +7,7 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
+func (h *Handler777) HandlePacket(s Session, p pk.Packet) {
 	switch packetid.ServerboundPacketID(p.ID) {
 	case packetid.ServerboundGameMovePlayerPos:
 		s.HandleMovePos(p)
@@ -19,6 +19,8 @@ func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
 		s.HandleMoveStatusOnly(p)
 	case packetid.ServerboundGamePlayerAction:
 		s.HandlePlayerAction(p)
+	case packetid.ServerboundGameAttack:
+		s.HandleAttack(p)
 	case packetid.ServerboundGameInteract:
 		s.HandleInteract(p)
 	case packetid.ServerboundGameUseItemOn:
@@ -31,15 +33,27 @@ func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
 		s.HandleCreativeSlot(p)
 	case packetid.ServerboundGameSetCarriedItem:
 		s.HandleSetCarriedItem(p)
+	case packetid.ServerboundGameContainerClick:
+		s.HandleContainerClick(p)
 	case packetid.ServerboundGamePunch:
 		s.HandleSwing(p)
 	case packetid.ServerboundGamePlayerCommand:
 		s.HandlePlayerCommand(p)
+	case packetid.ServerboundGameClientCommand:
+		s.HandleClientCommand(p)
 	case packetid.ServerboundGamePlayerInput:
 		var flags pk.Byte
 		if err := p.Scan(&flags); err == nil {
 			sneaking := (flags & 0x20) != 0
 			s.PlayerManager().UpdateSneak(s.UUID(), sneaking)
+			// In 1.21.2+ / 26.3, ServerboundPlayerInputPacket bit 0x40 is the raw
+			// sprint key state, whereas actual sprinting state is driven by
+			// ServerboundPlayerCommandPacket (START_SPRINTING / STOP_SPRINTING).
+			// Never clear sprinting when bit 0x40 is 0, or double-tap W / toggle
+			// sprint and water swimming get cancelled on the very next tick!
+			if (flags&0x40) != 0 && (flags&0x01) != 0 && !sneaking {
+				s.PlayerManager().UpdateSprinting(s.UUID(), true)
+			}
 		}
 	case packetid.ServerboundGameKeepAlive:
 	case packetid.ServerboundGameAcceptTeleportation:
@@ -64,6 +78,7 @@ func (h *Handler776) HandlePacket(s Session, p pk.Packet) {
 	case packetid.ServerboundGamePong:
 	case packetid.ServerboundGameClientTickEnd:
 	case packetid.ServerboundGameContainerClose:
+		s.HandleContainerClose(p)
 	case packetid.ServerboundGameContainerSlotStateChanged:
 	default:
 	}

@@ -16,6 +16,7 @@ import (
 func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p player.PlayerSnapshot) {
 	sk := skin.SkinFromClientData(target.clientData)
 	entry := protocol.PlayerListEntry{
+		ActionType:     protocol.PlayerListActionAdd,
 		UUID:           target.id,
 		EntityUniqueID: int64(target.runtimeID),
 		Username:       target.username,
@@ -24,7 +25,8 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 		BuildPlatform:  int32(target.clientData.DeviceOS),
 		Skin:           sk,
 	}
-	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionAdd, Entries: []protocol.PlayerListEntry{entry}})
+	viewer.write(&packet.PlayerList{Entries: []protocol.PlayerListEntry{entry}})
+	p.Username = target.username
 	viewer.write(&packet.AddPlayer{
 		UUID:             target.id,
 		Username:         target.username,
@@ -36,7 +38,7 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 		Yaw:              p.Rotation.Yaw,
 		HeadYaw:          p.Rotation.Yaw,
 		GameType:         0,
-		EntityMetadata:   bedrockMetadata(target.username, p.Sneaking),
+		EntityMetadata:   bedrockPlayerMetadata(p),
 		EntityProperties: protocol.EntityProperties{},
 		AbilityData:      bedrockSurvivalAbilityData(target.runtimeID),
 		EntityLinks:      nil,
@@ -50,14 +52,16 @@ func (viewer *bedrockSession) spawnBedrockPlayer(target *bedrockSession, p playe
 func (viewer *bedrockSession) spawnJavaPlayer(p player.PlayerSnapshot) {
 	s := skin.JavaFallbackSkinForViewer(p)
 	entry := protocol.PlayerListEntry{
+		ActionType:     protocol.PlayerListActionAdd,
 		UUID:           p.UUID,
 		EntityUniqueID: int64(p.EntityRuntimeID),
 		Username:       p.Username,
 		XUID:           "",
 		PlatformChatID: "",
+		BuildPlatform:  int32(protocol.DeviceUnknown),
 		Skin:           s,
 	}
-	viewer.write(&packet.PlayerList{ActionType: packet.PlayerListActionAdd, Entries: []protocol.PlayerListEntry{entry}})
+	viewer.write(&packet.PlayerList{Entries: []protocol.PlayerListEntry{entry}})
 	viewer.write(&packet.AddPlayer{
 		UUID:             p.UUID,
 		Username:         p.Username,
@@ -69,10 +73,12 @@ func (viewer *bedrockSession) spawnJavaPlayer(p player.PlayerSnapshot) {
 		Yaw:              p.Rotation.Yaw,
 		HeadYaw:          p.Rotation.Yaw,
 		GameType:         0,
-		EntityMetadata:   bedrockMetadata(p.Username, p.Sneaking),
+		EntityMetadata:   bedrockPlayerMetadata(p),
 		EntityProperties: protocol.EntityProperties{},
 		AbilityData:      bedrockSurvivalAbilityData(p.EntityRuntimeID),
 		EntityLinks:      nil,
+		DeviceID:         "",
+		BuildPlatform:    int32(protocol.DeviceUnknown),
 	})
 	// Re-send the skin explicitly while the player is in the player list. Some
 	// Bedrock clients do not reliably apply synthetic Java skins from PlayerList

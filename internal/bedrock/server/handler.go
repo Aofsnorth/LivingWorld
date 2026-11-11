@@ -10,6 +10,7 @@ import (
 	bedrockworld "livingworld/internal/bedrock/world"
 	"livingworld/internal/player"
 	"livingworld/internal/shared/constants/system"
+	"livingworld/internal/skinbridge"
 	"livingworld/internal/world"
 
 	"github.com/go-gl/mathgl/mgl32"
@@ -32,7 +33,7 @@ const (
 // Vanilla Bedrock servers (and Realms) send 2 to ops and 1 to everyone else;
 // the previous hardcoded 1 silently downgraded ops to member and the client
 // refused to show the cheat controls.
-func playerPerms(isOp bool) int32 {
+func playerPerms(isOp bool) byte {
 	if isOp {
 		return 2
 	}
@@ -73,6 +74,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	spawnFeet := mgl32.Vec3{float32(feetX), float32(feetY), float32(feetZ)}
 	spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)
+	doDaylight := s.cfg.World.DayNightCycle
+	if s.cfg.World.AlwaysDay {
+		doDaylight = false
+	}
 
 	gameData := minecraft.GameData{
 		WorldName:        s.cfg.ServerName,
@@ -91,8 +96,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		XBLBroadcastMode: 0,
 		Time:             s.wm.GetDefaultWorld().GetDayTime(),
 		GameRules: []protocol.GameRule{
-			{Name: "doDaylightCycle", Value: true},
+			{Name: "doDaylightCycle", Value: doDaylight},
 			{Name: "showcoordinates", Value: true},
+			{Name: "locatorbar", Value: s.cfg.World.LocatorBar},
+			{Name: "locatorBar", Value: s.cfg.World.LocatorBar},
 		},
 		ServerBlockStateChecksum: 0,
 		PlayerMovementSettings: protocol.PlayerMovementSettings{
@@ -109,6 +116,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		// the controls the server is willing to honour.
 		PlayerPermissions:   playerPerms(isOp),
 		BaseGameVersion:     protocol.CurrentVersion,
+		CustomBlocks:        bedrockworld.VanillaBlockEntries(),
 		Items:               inventory.VanillaItemEntries(),
 		PersonaDisabled:     false,
 		CustomSkinsDisabled: false,
@@ -129,6 +137,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.addSession(bs)
 	defer s.removeSession(playerID)
 	pl := player.NewPlayer(playerID, playerName, player.EditionBedrock)
+	pl.World = s.wm.GetDefaultWorld()
 	pl.EntityRuntimeID = bs.runtimeID
 	pl.Op = isOp // resolved before StartGame (PlayerPermissions needs it)
 	pl.Position.X = float64(spawnFeet[0])
@@ -150,21 +159,33 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if s.skins != nil {
 		sk := skin.SkinFromClientData(bs.clientData)
-		// Register the skin to the local skinbridge HTTP server first (instant) so
-		// the player can join immediately. This gives an unsigned texture property
-		// pointing to http://127.0.0.1:PORT/skins/{uuid}.png â€” authlib-injector
-		// clients accept it, but vanilla Java clients reject unsigned non-whitelisted
-		// domains and render the player as a black silhouette.
-		pl.BedrockSkinURL = s.skins.RegisterRGBA(playerID, int(sk.SkinImageWidth), int(sk.SkinImageHeight), sk.SkinData)
+		model := "wide"
+		if sk.ArmSize == protocol.ArmSizeSlim {
+			model = "slim"
+		}
+		// Compress and normalize the Bedrock skin (64x32, 64x64, 128x128, 256x256)
+		// into a perceptually faithful 64x64 PNG and RGBA buffer immediately so both
+		// the local skinbridge HTTP server and MineSkin receive a valid 64x64 texture
+		// with sanitized base-layer alpha.
+		skinURL, normRGBA, pngData := s.skins.RegisterSkin(
+			playerID,
+			int(sk.SkinImageWidth),
+			int(sk.SkinImageHeight),
+			sk.SkinData,
+			bs.clientData.SkinColour,
+		)
+		pl.BedrockSkinURL = skinURL
+		if len(normRGBA) == skinbridge.JavaSkinRGBABytes {
+			pl.Skin = player.NewSkinData(skinURL, model, normRGBA)
+		} else if len(sk.SkinData) >= int(sk.SkinImageWidth)*int(sk.SkinImageHeight)*4 {
+			pl.Skin = player.NewSkinData(skinURL, model, sk.SkinData)
+		}
 
-		// Upload to MineSkin asynchronously (2-5s) to get a SIGNED texture property
-		// on a Mojang-whitelisted domain (textures.minecraft.net). Once the upload
-		// completes, UpdateProfileProperty triggers EventSkin â†’ Java clients despawn
-		// and respawn the avatar with the new signed property, and the skin becomes
-		// visible. MineSkin downscales to 64Ã—64, so HD skins lose resolution, but
-		// cross-play with vanilla Java clients requires this trade-off.
-		if s.cfg.Java.MineSkinAPIKey != "" {
-			go s.uploadBedrockSkinToMineSkin(playerID, playerName, sk.SkinData, int(sk.SkinImageWidth), int(sk.SkinImageHeight))
+		// Upload compressed 64x64 PNG to MineSkin asynchronously (works both with and
+		// without an API key, with SHA-256 caching) to obtain a Mojang-signed texture
+		// property on textures.minecraft.net for vanilla Java clients.
+		if len(pngData) > 0 {
+			go s.uploadBedrockSkinPNGToMineSkin(playerID, playerName, pngData, model)
 		}
 	}
 	s.pm.AddPlayer(pl)

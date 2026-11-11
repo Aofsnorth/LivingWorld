@@ -229,13 +229,17 @@ func Translate(bedrockName string, props map[string]any) (javaName string, javaP
 			}
 			derived = true
 		}
-		out["waterlogged"] = "false"
+		if derived {
+			out["waterlogged"] = "false"
+		}
 	case strings.HasSuffix(base, "_slab"):
 		if v, present := get("minecraft:vertical_half"); present {
 			out["type"] = str(v)
 			derived = true
 		}
-		out["waterlogged"] = "false"
+		if derived {
+			out["waterlogged"] = "false"
+		}
 	case base == "water" || base == "lava":
 		putInt(out, "level", props, "liquid_depth")
 		derived = true
@@ -272,6 +276,16 @@ func Translate(bedrockName string, props map[string]any) (javaName string, javaP
 		derived = true
 	case base == "kelp_plant":
 		derived = true // no properties either side
+	case base == "tall_grass" || base == "large_fern" || base == "sunflower" ||
+		base == "lilac" || base == "rose_bush" || base == "peony" || base == "pitcher_plant":
+		if v, present := get("upper_block_bit"); present {
+			if truthy(v) {
+				out["half"] = "upper"
+			} else {
+				out["half"] = "lower"
+			}
+			derived = true
+		}
 	case strings.HasSuffix(base, "_wall_sign") || strings.HasSuffix(base, "_sign"):
 		out["waterlogged"] = "false"
 		derived = true

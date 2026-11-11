@@ -23,19 +23,25 @@ const (
 	// Sending skin parts at the old index 17 makes a 26.1 client crash with
 	// "Invalid entity data item type ... old=0.0(Float), new=...(Byte)".
 	MetaIndexFlags     = 0
+	MetaIndexAirSupply = 1
 	MetaIndexPose      = 6
 	MetaIndexMainHand  = 15
 	MetaIndexSkinParts = 16
 
 	// Metadata Types
-	MetaTypeByte = 0
-	MetaTypePose = 20
+	MetaTypeByte   = 0
+	MetaTypeVarInt = 1
+	MetaTypePose   = 20
 
 	// Entity Flags
-	EntityFlagSneaking = 0x02
+	EntityFlagOnFire    = 0x01
+	EntityFlagSneaking  = 0x02
+	EntityFlagSprinting = 0x08
+	EntityFlagSwimming  = 0x10
 
 	// Pose Enum Values
 	PoseStanding  = 0
+	PoseSwimming  = 3
 	PoseCrouching = 5
 )
 
@@ -66,8 +72,12 @@ type Session interface {
 	HandleChat(p pk.Packet)
 	HandleCreativeSlot(p pk.Packet)
 	HandleSetCarriedItem(p pk.Packet)
+	HandleContainerClick(p pk.Packet)
+	HandleContainerClose(p pk.Packet)
 	HandleSwing(p pk.Packet)
 	HandlePlayerCommand(p pk.Packet)
+	HandleClientCommand(p pk.Packet)
+	HandleAttack(p pk.Packet)
 	HandleInteract(p pk.Packet)
 	SendPacket(p pk.Packet) error
 }

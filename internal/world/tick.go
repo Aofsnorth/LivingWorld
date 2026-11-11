@@ -176,7 +176,7 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	for _, w := range worlds {
 		aisystems.Tick(m.mobs, mobs.AIContext{
 			RNG:               rng,
-			SolidAt:           func(x, y, z int) bool { return w.GetBlock(x, y, z).ID() != AirID },
+			SolidAt:           func(x, y, z int) bool { return IsSolidBlock(w.GetBlock(x, y, z).ID()) },
 			SkyLightAt:        func(x, y, z int) uint8 { return w.GetSkyLight(x, y, z) },
 			Players:           m.aiPlayerList,
 			OnMeleeAttack:     m.aiMeleeAttack,
@@ -234,7 +234,7 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	m.projectiles.Tick(mobs.ProjectileTickContext{
 		SolidAt: func(x, y, z int) bool {
 			w := worlds[0]
-			return w.GetBlock(x, y, z).ID() != AirID
+			return IsSolidBlock(w.GetBlock(x, y, z).ID())
 		},
 		Players: func() []mobs.ProjectileTarget {
 			if m.aiPlayerList == nil {
@@ -295,7 +295,7 @@ func (m *Manager) runOneTick(advanceDayTime bool, lastSave *time.Time) {
 	// Phase 5: drop physics at 20 Hz. Matches StartDropPhysics cadence.
 	for _, w := range worlds {
 		m.drops.TickPhysics(func(x, y, z int) bool {
-			return w.GetBlock(x, y, z).ID() != AirID
+			return IsSolidBlock(w.GetBlock(x, y, z).ID())
 		})
 		// Void-despawn: drops that fell below the world get cleaned up so
 		// they don't keep broadcasting move packets. Same rule as the

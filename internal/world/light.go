@@ -32,15 +32,23 @@ func (le *LightEngine) QueueUpdate(cx, cz int) {
 // so the caller can re-send light to players (a no-op relight — common when a
 // neighbour load doesn't affect already-correct open terrain — reports nothing
 // and triggers no network traffic).
+const maxRelightsPerTick = 8
+
 func (le *LightEngine) ProcessUpdates() []ChunkPos {
 	le.mu.Lock()
-	pending := le.pending
-	le.pending = make(map[ChunkPos]struct{})
-	le.mu.Unlock()
-
-	if len(pending) == 0 {
+	if len(le.pending) == 0 {
+		le.mu.Unlock()
 		return nil
 	}
+	batch := make([]ChunkPos, 0, min(len(le.pending), maxRelightsPerTick))
+	for pos := range le.pending {
+		batch = append(batch, pos)
+		delete(le.pending, pos)
+		if len(batch) >= maxRelightsPerTick {
+			break
+		}
+	}
+	le.mu.Unlock()
 
 	// Keep the world read lock for the whole batch. ComputeChunkLight's
 	// world-coordinate helpers intentionally use getChunkUnlocked because chunk
@@ -57,8 +65,8 @@ func (le *LightEngine) ProcessUpdates() []ChunkPos {
 	le.world.mu.RLock()
 	defer le.world.mu.RUnlock()
 
-	items := make([]relit, 0, len(pending))
-	for pos := range pending {
+	items := make([]relit, 0, len(batch))
+	for _, pos := range batch {
 		if c := le.world.chunks[pos]; c != nil {
 			items = append(items, relit{pos: pos, chunk: c, before: lightFingerprint(c)})
 		}

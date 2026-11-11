@@ -22,9 +22,15 @@ type ChunkGenerator interface {
 	Generate(cx, cz int) *Chunk
 }
 
+type chunkLoadCall struct {
+	done  chan struct{}
+	chunk *Chunk
+}
+
 type World struct {
 	name      string
 	chunks    map[ChunkPos]*Chunk
+	inflight  map[ChunkPos]*chunkLoadCall
 	players   map[uint64]*Player
 	generator ChunkGenerator
 	storage   Storage
@@ -35,6 +41,7 @@ type World struct {
 
 	raining    bool
 	thundering bool
+	seed       int64
 	worldDir   string // set when a disk RegionStorage is attached; holds level.json
 
 	light *LightEngine // Phase 4b: sky + block light propagation
@@ -44,12 +51,22 @@ func NewWorld(name string) *World {
 	w := &World{
 		name:      name,
 		chunks:    make(map[ChunkPos]*Chunk),
+		inflight:  make(map[ChunkPos]*chunkLoadCall),
 		players:   make(map[uint64]*Player),
 		dimension: DimensionOverworld,
 		storage:   NopStorage{},
 	}
 	w.light = NewLightEngine(w)
 	return w
+}
+
+// HasRegionStorageDir reports whether w is already backed by a RegionStorage
+// rooted at regionDir, avoiding redundant directory stat and level.json reloads.
+func (w *World) HasRegionStorageDir(regionDir string) bool {
+	w.mu.RLock()
+	rs, ok := w.storage.(*RegionStorage)
+	w.mu.RUnlock()
+	return ok && rs != nil && rs.dir == regionDir
 }
 
 // SetStorage attaches a persistence backend to the world. Pass NopStorage{} to
@@ -59,12 +76,29 @@ func (w *World) SetStorage(s Storage) {
 	if s == nil {
 		s = NopStorage{}
 	}
+	prevDir := w.worldDir
+	_, wasNop := w.storage.(NopStorage)
 	w.storage = s
 	if rs, ok := s.(*RegionStorage); ok {
-		w.worldDir = filepath.Dir(rs.dir)
+		newDir := filepath.Dir(rs.dir)
+		w.worldDir = newDir
+		// Clear any chunks generated in memory before persistence was attached
+		// (or when switching to a different world directory) so subsequent
+		// LoadChunk calls consult the attached RegionStorage.
+		if wasNop || prevDir != newDir {
+			w.chunks = make(map[ChunkPos]*Chunk)
+		}
 	}
 	w.mu.Unlock()
 	w.loadLevel()
+}
+
+// EvictChunk removes a chunk from in-memory world map (used to discard
+// rejected ocean chunks probed during initial spawn search).
+func (w *World) EvictChunk(cx, cz int) {
+	w.mu.Lock()
+	delete(w.chunks, ChunkPos{cx, cz})
+	w.mu.Unlock()
 }
 
 // Save persists every chunk with unsaved changes. Safe to call concurrently.
@@ -147,59 +181,244 @@ func (w *World) LoadChunk(cx, cz int) *Chunk {
 	}
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	// Re-check under the write lock: another goroutine may have loaded it.
 	if chunk = w.chunks[pos]; chunk != nil {
+		w.mu.Unlock()
 		return chunk
 	}
+	if call, ok := w.inflight[pos]; ok {
+		w.mu.Unlock()
+		<-call.done
+		return call.chunk
+	}
+	call := &chunkLoadCall{done: make(chan struct{})}
+	if w.inflight == nil {
+		w.inflight = make(map[ChunkPos]*chunkLoadCall)
+	}
+	w.inflight[pos] = call
+	storage := w.storage
+	gen := w.generator
+	w.mu.Unlock()
 
-	// Prefer the saved chunk (player edits) over regeneration.
-	if w.storage != nil {
-		if c, ok, err := w.storage.LoadChunk(cx, cz); err != nil {
+	// Run disk I/O and CPU-intensive terrain generation OUTSIDE w.mu.Lock()
+	// (Moonrise/C2ME lock-free concurrent chunk pipeline principle) so worker
+	// goroutines scale across all CPU cores without blocking world readers/tick loop.
+	var loadedFromDisk bool
+	if storage != nil {
+		if c, ok, err := storage.LoadChunk(cx, cz); err != nil {
 			log.Printf("[World %s] load chunk (%d,%d) failed, regenerating: %v", w.name, cx, cz, err)
 		} else if ok {
-			w.chunks[pos] = c
-			// Persistence stores blocks only (see persistence.go: "light ...
-			// regenerated on load"). A disk-loaded chunk therefore has all-zero
-			// sky/block light; recompute it here, exactly as the generate branch
-			// below does. Without this the Java client — which trusts server
-			// light, unlike Bedrock which computes its own — receives sky light 0
-			// for every section and renders the surface pitch black at noon.
-			if w.light != nil {
-				w.light.ComputeChunkLight(c, cx, cz)
-				w.queueNeighborRelight(cx, cz)
-			}
-			return c
+			chunk = c
+			loadedFromDisk = true
 		}
 	}
 
-	if w.generator != nil {
-		chunk = w.generator.Generate(cx, cz)
-		// Persist freshly generated terrain, not just edited chunks.
-		//
-		// Only SetBlock marks a chunk dirty, so before this a generated
-		// chunk was written to disk only if the player later edited it.
-		// Every other chunk was re-derived from the generator on each
-		// start, which meant bumping the Minecraft version silently rewrote
-		// all untouched terrain: the overworld pipeline is regenerated from
-		// the new vanilla data (density functions, noise settings, biomes),
-		// so a chunk that was never saved came back subtly — or drastically —
-		// different. Marking it dirty pins the terrain to the version that
-		// first generated it, which is what keeps an old world intact across
-		// a protocol update.
-		if w.storage != nil {
-			chunk.MarkDirty()
+	if !loadedFromDisk {
+		if gen != nil {
+			chunk = gen.Generate(cx, cz)
+			if storage != nil {
+				chunk.MarkDirty()
+			}
+		} else {
+			chunk = NewChunk()
 		}
-	} else {
-		chunk = NewChunk()
 	}
-	w.chunks[pos] = chunk
-	// Phase 4b: compute light for newly loaded/generated chunks.
+
+	// Pre-compute the chunk's own heightmap outside the world lock (touches only chunk).
 	if w.light != nil {
-		w.light.ComputeChunkLight(chunk, cx, cz)
-		w.queueNeighborRelight(cx, cz)
+		w.light.computeHeightmap(chunk, cx, cz)
 	}
+
+	w.mu.Lock()
+	// If SetChunk or SetStorage intervened while unlocked, respect any already-stored chunk.
+	if existing := w.chunks[pos]; existing != nil {
+		chunk = existing
+	} else {
+		w.chunks[pos] = chunk
+		if w.light != nil {
+			w.light.computeSkyLight(chunk, cx, cz)
+			w.light.computeBlockLight(chunk, cx, cz)
+			w.queueNeighborRelight(cx, cz)
+		}
+	}
+	call.chunk = chunk
+	delete(w.inflight, pos)
+	close(call.done)
+	w.mu.Unlock()
+
 	return chunk
+}
+
+// LoadChunksBatch loads or generates multiple chunks concurrently across up to
+// workers goroutines without holding w.mu during disk I/O or terrain generation,
+// then computes their lighting once the entire batch is registered in w.chunks.
+// Because all chunks in the batch are already present in w.chunks when lighting
+// runs, cross-chunk heightmaps and border light settle on the first pass.
+func (w *World) LoadChunksBatch(coords []ChunkPos, workers int) []*Chunk {
+	n := len(coords)
+	if n == 0 {
+		return nil
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	results := make([]*Chunk, n)
+	newlyInserted := make([]bool, n)
+
+	// Fast path: check which chunks are already loaded under RLock.
+	missingCount := 0
+	w.mu.RLock()
+	for i, pos := range coords {
+		if c := w.chunks[pos]; c != nil {
+			results[i] = c
+		} else {
+			missingCount++
+		}
+	}
+	w.mu.RUnlock()
+
+	if missingCount == 0 {
+		return results
+	}
+
+	type pendingItem struct {
+		idx  int
+		pos  ChunkPos
+		call *chunkLoadCall
+		own  bool
+	}
+	pending := make([]pendingItem, 0, missingCount)
+
+	w.mu.Lock()
+	if w.inflight == nil {
+		w.inflight = make(map[ChunkPos]*chunkLoadCall)
+	}
+	storage := w.storage
+	gen := w.generator
+	for i, pos := range coords {
+		if results[i] != nil {
+			continue
+		}
+		if c := w.chunks[pos]; c != nil {
+			results[i] = c
+			continue
+		}
+		if call, ok := w.inflight[pos]; ok {
+			pending = append(pending, pendingItem{idx: i, pos: pos, call: call, own: false})
+			continue
+		}
+		call := &chunkLoadCall{done: make(chan struct{})}
+		w.inflight[pos] = call
+		pending = append(pending, pendingItem{idx: i, pos: pos, call: call, own: true})
+	}
+	w.mu.Unlock()
+
+	// Phase 1: Generate / disk-load all owned missing chunks in parallel outside w.mu.
+	// Cap generator concurrency at 4 so SteelMC's internal Rayon pool is not over-saturated.
+	genWorkers := min(workers, 4)
+	generated := make([]*Chunk, len(pending))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, genWorkers)
+	for pIdx, item := range pending {
+		if !item.own {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(pIdx int, pos ChunkPos) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			var chunk *Chunk
+			var loadedFromDisk bool
+			if storage != nil {
+				if c, ok, err := storage.LoadChunk(pos.X, pos.Z); err != nil {
+					log.Printf("[World %s] load chunk (%d,%d) failed, regenerating: %v", w.name, pos.X, pos.Z, err)
+				} else if ok {
+					chunk = c
+					loadedFromDisk = true
+				}
+			}
+			if !loadedFromDisk {
+				if gen != nil {
+					chunk = gen.Generate(pos.X, pos.Z)
+					if storage != nil {
+						chunk.MarkDirty()
+					}
+				} else {
+					chunk = NewChunk()
+				}
+			}
+			if w.light != nil {
+				w.light.computeHeightmap(chunk, pos.X, pos.Z)
+			}
+			generated[pIdx] = chunk
+		}(pIdx, item.pos)
+	}
+	wg.Wait()
+
+	// Phase 2: Register all newly generated chunks into w.chunks, then run light
+	// propagation with all batch neighbors already present in w.chunks.
+	batchSet := make(map[ChunkPos]struct{}, len(pending))
+	w.mu.Lock()
+	for pIdx, item := range pending {
+		if !item.own {
+			continue
+		}
+		c := generated[pIdx]
+		if existing := w.chunks[item.pos]; existing != nil {
+			c = existing
+		} else {
+			w.chunks[item.pos] = c
+			newlyInserted[item.idx] = true
+			batchSet[item.pos] = struct{}{}
+		}
+		results[item.idx] = c
+	}
+
+	if w.light != nil {
+		for _, item := range pending {
+			if !item.own || !newlyInserted[item.idx] {
+				continue
+			}
+			c := results[item.idx]
+			w.light.computeSkyLight(c, item.pos.X, item.pos.Z)
+			w.light.computeBlockLight(c, item.pos.X, item.pos.Z)
+		}
+		// Queue relights only for already-loaded neighbors outside this batch.
+		for _, item := range pending {
+			if !item.own || !newlyInserted[item.idx] {
+				continue
+			}
+			for _, d := range [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+				npos := ChunkPos{item.pos.X + d[0], item.pos.Z + d[1]}
+				if _, inBatch := batchSet[npos]; !inBatch && w.chunks[npos] != nil {
+					w.light.QueueUpdate(npos.X, npos.Z)
+				}
+			}
+		}
+	}
+
+	for _, item := range pending {
+		if !item.own {
+			continue
+		}
+		item.call.chunk = results[item.idx]
+		delete(w.inflight, item.pos)
+		close(item.call.done)
+	}
+	w.mu.Unlock()
+
+	// Wait for any chunks that were already in-flight from another goroutine.
+	for _, item := range pending {
+		if item.own {
+			continue
+		}
+		<-item.call.done
+		results[item.idx] = item.call.chunk
+	}
+
+	return results
 }
 
 // queueNeighborRelight queues the four already-loaded cardinal neighbours of a

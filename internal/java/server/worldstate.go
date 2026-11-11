@@ -78,5 +78,9 @@ func (s *PlayerSession) sendWorldState() {
 	_ = s.SendPacket(buildChangeDifficultyPacket(s.Bridge.cfg.World.DifficultyByte(), true))
 
 	w := s.Bridge.wm.GetDefaultWorld()
-	_ = s.SendPacket(buildSetTimePacket(w.GetTime(), w.GetDayTime(), s.Bridge.cfg.World.DayNightCycle))
+	advancing := s.Bridge.cfg.World.DayNightCycle
+	if s.Bridge.cfg.World.AlwaysDay {
+		advancing = false
+	}
+	_ = s.SendPacket(buildSetTimePacket(w.GetTime(), w.GetDayTime(), advancing))
 }

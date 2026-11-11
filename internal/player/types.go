@@ -47,6 +47,11 @@ type PlayerSnapshot struct {
 	Rotation          world.Rotation
 	OnGround          bool
 	Sneaking          bool
+	Sprinting         bool
+	Swimming          bool
+	OnFire            bool
+	Breathing         bool
+	AirSupply         int16
 	ProfileProperties []ProfileProperty
 	BedrockSkinURL    string
 	Skin              *SkinData
@@ -65,6 +70,13 @@ type Player struct {
 	Rotation          world.Rotation
 	OnGround          bool
 	Sneaking          bool
+	Sprinting         bool
+	Swimming          bool
+	OnFire            bool
+	Breathing         bool
+	AirSupply         int16
+	FireTicks         int
+	LavaTickCooldown  int
 	Health            float32
 	Food              int
 	Saturation        float32

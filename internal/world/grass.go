@@ -66,7 +66,14 @@ func (m *Manager) grassTickWorld(rng *rand.Rand, w *World) {
 		return
 	}
 	for _, cp := range chunkPositions {
+		c := w.GetChunk(cp.WorldX>>4, cp.WorldZ>>4)
+		if c == nil {
+			continue
+		}
 		for section := 0; section < SectionsPerChunk; section++ {
+			if c.SectionIsEmpty(section) {
+				continue
+			}
 			for i := 0; i < defaultRandomTickSpeed; i++ {
 				bx := cp.WorldX + rng.Intn(ChunkSize)
 				by := MinWorldHeight + section*16 + rng.Intn(16)
@@ -103,7 +110,55 @@ func (m *Manager) randomTickGrassBlock(rng *rand.Rand, w *World, x, y, z int, di
 		if !grassCanSpreadTo(w, tx, ty, tz) {
 			continue
 		}
-		m.setWorldBlockAndPublish(w, tx, ty, tz, BlockByID(grassID))
+		targetGrassID := grassID
+		if aboveID, ok := loadedBlockID(w, tx, ty+1, tz); ok && isSnowBlockID(aboveID) {
+			if snowyID := StateIDWithProperties("minecraft:grass_block", map[string]string{"snowy": "true"}); snowyID != AirID {
+				targetGrassID = snowyID
+			}
+		}
+		m.setWorldBlockAndPublish(w, tx, ty, tz, BlockByID(targetGrassID))
+	}
+}
+
+func isSnowBlockID(id int32) bool {
+	if id == AirID {
+		return false
+	}
+	switch StateName(id) {
+	case "minecraft:snow", "minecraft:snow_block", "minecraft:powder_snow":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) clearSnowyBelow(w *World, x, y, z int) {
+	belowID, ok := loadedBlockID(w, x, y, z)
+	if !ok {
+		return
+	}
+	name := StateName(belowID)
+	switch name {
+	case "minecraft:grass_block", "minecraft:podzol", "minecraft:mycelium":
+		normalID := StateIDWithProperties(name, map[string]string{"snowy": "false"})
+		if normalID != AirID && belowID != normalID {
+			m.setWorldBlockAndPublish(w, x, y, z, BlockByID(normalID))
+		}
+	}
+}
+
+func (m *Manager) syncSnowySurface(w *World, x, y, z int, id int32, name string) {
+	aboveID, ok := loadedBlockID(w, x, y+1, z)
+	if !ok {
+		return
+	}
+	wantSnowy := "false"
+	if isSnowBlockID(aboveID) {
+		wantSnowy = "true"
+	}
+	wantID := StateIDWithProperties(name, map[string]string{"snowy": wantSnowy})
+	if wantID != AirID && id != wantID {
+		m.setWorldBlockAndPublish(w, x, y, z, BlockByID(wantID))
 	}
 }
 

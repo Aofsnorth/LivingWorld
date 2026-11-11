@@ -59,3 +59,7 @@ config.yml
 logs/
 third_party/go-mc/logs/
 third_party/go-mc/temp/
+
+# SteelMC native bridge build artifacts
+/native/target/
+/native/.steel/

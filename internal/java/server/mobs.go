@@ -167,8 +167,8 @@ func moveMobPacket(m mobs.Mob) pk.Packet {
 		pk.Double(m.X), pk.Double(m.Y), pk.Double(m.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
 		pk.Float(float32(m.Yaw)), pk.Float(float32(m.HeadPitch)), // body yaw (degrees), pitch (head tilt)
-		pk.Int(0),        // flags
-		pk.Boolean(true), // onGround
+		pk.Int(0),              // flags
+		pk.Boolean(m.OnGround), // onGround
 	)
 }
 
@@ -215,16 +215,18 @@ func spawnMobPacket(m mobs.Mob) pk.Packet {
 		typeID = int32(entity.Pig.ID)
 	}
 	yaw := yawToAngle(m.Yaw)
+	headYaw := yawToAngle(m.HeadYaw)
+	pitch := yawToAngle(m.HeadPitch)
 	return pk.Marshal(
 		packetid.ClientboundGameAddEntity,
 		pk.VarInt(int32(m.EntityID)),
 		pk.UUID(m.UUID),
 		pk.VarInt(typeID),
 		pk.Double(m.X), pk.Double(m.Y), pk.Double(m.Z),
-		pk.Byte(0),  // head pitch
-		pk.Angle(0), // pitch
-		yaw,         // yaw
-		yaw,         // head yaw
+		pk.Byte(0), // velocity / head pitch byte
+		pitch,      // pitch
+		yaw,        // yaw
+		headYaw,    // head yaw
 		pk.VarInt(mobDataVarInt(m)),
 	)
 }

@@ -11,8 +11,8 @@ import (
 // dropping a sapling with 5% chance). Leaves with a nearby log are "sustained"
 // and never decay.
 func (m *Manager) randomTickLeaves(rng *rand.Rand, w *World, x, y, z int, leafID int32) {
-	// Check for a nearby log (4-block Manhattan distance).
-	const checkRange = 4
+	// Check for a nearby log (6-block Manhattan distance, matching vanilla leaf decay range).
+	const checkRange = 6
 	for dx := -checkRange; dx <= checkRange; dx++ {
 		for dy := -checkRange; dy <= checkRange; dy++ {
 			for dz := -checkRange; dz <= checkRange; dz++ {
@@ -82,18 +82,25 @@ func leafToSapling(leafName string) string {
 	return leafToSappling(leafName)
 }
 
-// randomTickIce melts ice when exposed to high light (>= 11 sky light above).
-// Vanilla: ice melts at light level >= 11 above the block.
+// randomTickIce melts ice when exposed to artificial block light (>= 12 above).
+// Vanilla: ice only melts from block light, never from sky light.
 func (m *Manager) randomTickIce(_ *rand.Rand, w *World, x, y, z int) {
-	if localLightAbove(w, x, y, z) >= 11 {
+	if w.GetBlockLight(x, y+1, z) >= 12 {
 		m.setWorldBlockAndPublish(w, x, y, z, BlockByName("minecraft:water"))
 	}
 }
 
-// randomTickSnowLayer melts snow when light above >= 11.
+// randomTickSnowLayer melts snow when artificial block light >= 12.
+// Vanilla: snow layers never melt from sky light.
 func (m *Manager) randomTickSnowLayer(_ *rand.Rand, w *World, x, y, z int) {
-	if localLightAbove(w, x, y, z) >= 11 {
+	if w.GetBlockLight(x, y, z) >= 12 {
 		m.setWorldBlockAndPublish(w, x, y, z, BlockByID(AirID))
+		m.clearSnowyBelow(w, x, y-1, z)
+		return
+	}
+	if w.GetBlockLight(x, y+1, z) >= 12 {
+		m.setWorldBlockAndPublish(w, x, y, z, BlockByID(AirID))
+		m.clearSnowyBelow(w, x, y-1, z)
 	}
 }
 

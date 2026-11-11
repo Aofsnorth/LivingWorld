@@ -1,6 +1,7 @@
 package server
 
 import (
+	"livingworld/internal/java/protocol"
 	"livingworld/internal/player"
 )
 
@@ -67,6 +68,9 @@ func (s *PlayerSession) moveForeignAvatar(p player.PlayerSnapshot) {
 	s.lastSentPos[p.UUID] = p.Position
 	s.mu.Unlock()
 	_ = s.version.MoveForeignAvatar(s, p, oldPos, exists)
+	if h777, ok := s.version.(*protocol.Handler777); ok {
+		_ = h777.SyncPlayerWaypoint(s, p, false)
+	}
 }
 
 func (s *PlayerSession) removeForeignAvatar(p player.PlayerSnapshot) {
@@ -96,7 +100,7 @@ func (s *PlayerSession) hurtForeignAvatar(p player.PlayerSnapshot) {
 }
 
 func (s *PlayerSession) updateForeignMetadata(p player.PlayerSnapshot) {
-	if !s.Ready {
+	if !s.Ready || p.UUID == s.UUID() {
 		return
 	}
 	_ = s.version.UpdateForeignMetadata(s, p)

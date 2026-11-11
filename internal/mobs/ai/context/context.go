@@ -1,12 +1,12 @@
 // Package aicontext owns the cross-package read-only AI surface:
 //
 //   - AIContext : the per-tick input the AI tick receives (world probes +
-//                 side-effect callbacks). It mirrors vanilla's
-//                 net.minecraft.world.entity.ai.Brain inputs but is
-//                 edition-neutral.
+//     side-effect callbacks). It mirrors vanilla's
+//     net.minecraft.world.entity.ai.Brain inputs but is
+//     edition-neutral.
 //   - PlayerTarget : the slice of a player's state the AI is allowed to read.
 //   - SoundEmit / HitEffect : small struct types the world layer
-//                 passes through the AI callbacks.
+//     passes through the AI callbacks.
 //
 // The package is Mob-free: it owns the AIContext + PlayerTarget
 // types and the small zero/find helpers. mobs re-exports the types
@@ -28,22 +28,22 @@ type AIContext struct {
 	SkyLightAt func(x, y, z int) uint8
 	Players    func() []PlayerTarget
 
-	OnMeleeAttack    func(targetUUID [16]byte, attackerID int64, damage float32)
-	OnShootArrow     func(shooterID int64, x, y, z, yaw, pitch float64)
-	OnExplode        func(attackerID int64, x, y, z float64, power float64)
-	OnFireDamage     func(mobID int64, damage float32)
-	OnSound          func(emits []SoundEmit)
-	OnHitEffect      func(targetUUID [16]byte, attackerID int64, effect HitEffect)
-	OnThrow          func(targetUUID [16]byte, attackerID int64, damage float32)
+	OnMeleeAttack     func(targetUUID [16]byte, attackerID int64, damage float32)
+	OnShootArrow      func(shooterID int64, x, y, z, yaw, pitch float64)
+	OnExplode         func(attackerID int64, x, y, z float64, power float64)
+	OnFireDamage      func(mobID int64, damage float32)
+	OnSound           func(emits []SoundEmit)
+	OnHitEffect       func(targetUUID [16]byte, attackerID int64, effect HitEffect)
+	OnThrow           func(targetUUID [16]byte, attackerID int64, damage float32)
 	OnShootProjectile func(ownerID int64, x, y, z, yaw, pitch float64, projectileType string)
 
-	WaterAt      func(x, y, z int) bool
-	IsDay        func() bool
-	DoorAt       func(x, y, z int) bool
-	OnBreakDoor  func(x, y, z int) bool
-	Difficulty   string
-	HeldItem     func(playerUUID [16]byte) string
-	BlockNameAt  func(x, y, z int) string
+	WaterAt     func(x, y, z int) bool
+	IsDay       func() bool
+	DoorAt      func(x, y, z int) bool
+	OnBreakDoor func(x, y, z int) bool
+	Difficulty  string
+	HeldItem    func(playerUUID [16]byte) string
+	BlockNameAt func(x, y, z int) string
 }
 
 // PlayerTarget is the read-only slice of a player's state the AI is
@@ -67,10 +67,12 @@ type PlayerTarget struct {
 // ("minecraft:entity.zombie.ambient") — the world layer translates
 // it into per-edition packet ids.
 type SoundEmit struct {
-	MobID  int64
-	Sound  string
-	Volume float32
-	Pitch  float32
+	MobID   int64
+	Sound   string
+	Volume  float32
+	Pitch   float32
+	X, Y, Z float64
+	MobType string
 }
 
 // HitEffect is the on-hit status effect a melee swing can apply

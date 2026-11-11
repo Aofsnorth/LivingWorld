@@ -33,7 +33,6 @@ type Chunk struct {
 	sections  []ChunkSection
 	heightMap []int32
 	biomes    []byte
-	lightData *LightData
 	dirty     atomic.Bool
 }
 
@@ -47,20 +46,10 @@ func (c *Chunk) MarkDirty() { c.dirty.Store(true) }
 func (c *Chunk) ClearDirty() { c.dirty.Store(false) }
 
 func NewChunk() *Chunk {
-	sections := make([]ChunkSection, SectionsPerChunk)
-	for i := range sections {
-		sections[i] = ChunkSection{
-			blocks:     make([]int32, 4096),
-			metadata:   make([]byte, 2048),
-			blockLight: make([]byte, 2048),
-			skyLight:   make([]byte, 2048),
-		}
-	}
 	return &Chunk{
-		sections:  sections,
+		sections:  make([]ChunkSection, SectionsPerChunk),
 		heightMap: make([]int32, 256),
 		biomes:    make([]byte, 256),
-		lightData: NewLightData(),
 	}
 }
 
@@ -153,9 +142,63 @@ func (c *Chunk) GetHeightmap(x, z int) int32 {
 	return c.heightMap[x*16+z]
 }
 
+// SectionIsEmpty reports whether section secIdx (0..23) contains only air.
+func (c *Chunk) SectionIsEmpty(secIdx int) bool {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return true
+	}
+	return c.sections[secIdx].IsEmpty()
+}
+
+// SectionBlocks returns the raw 4096-entry block state slice for section secIdx
+// indexed by (ly<<8)|(lz<<4)|lx, or nil if secIdx is out of range.
+func (c *Chunk) SectionBlocks(secIdx int) []int32 {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return nil
+	}
+	return c.sections[secIdx].blocks
+}
+
+// SectionSkyLight returns the raw 2048-byte packed sky-light nibble slice for
+// section secIdx, or nil if secIdx is out of range.
+func (c *Chunk) SectionSkyLight(secIdx int) []byte {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return nil
+	}
+	return c.sections[secIdx].skyLight
+}
+
+// SectionBlockLight returns the raw 2048-byte packed block-light nibble slice for
+// section secIdx, or nil if secIdx is out of range.
+func (c *Chunk) SectionBlockLight(secIdx int) []byte {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return nil
+	}
+	return c.sections[secIdx].blockLight
+}
+
+// SectionBiomes returns the 4x4x4 (64-entry) canonical biome ID array for
+// section secIdx indexed by (by<<4)|(bz<<2)|bx, or nil if unset/out of range.
+func (c *Chunk) SectionBiomes(secIdx int) *[64]int32 {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return nil
+	}
+	return c.sections[secIdx].biomes
+}
+
+// SetSectionBiomes stores the 4x4x4 (64-entry) canonical biome ID array for
+// section secIdx indexed by (by<<4)|(bz<<2)|bx.
+func (c *Chunk) SetSectionBiomes(secIdx int, biomes [64]int32) {
+	if secIdx < 0 || secIdx >= SectionsPerChunk {
+		return
+	}
+	b := biomes
+	c.sections[secIdx].biomes = &b
+}
+
 type ChunkSection struct {
 	blocks       []int32
-	metadata     []byte
+	biomes       *[64]int32
 	blockLight   []byte
 	skyLight     []byte
 	nonAirBlocks int32
@@ -163,25 +206,29 @@ type ChunkSection struct {
 }
 
 func NewChunkSection() *ChunkSection {
-	return &ChunkSection{
-		blocks:     make([]int32, 4096),
-		metadata:   make([]byte, 2048),
-		blockLight: make([]byte, 2048),
-		skyLight:   make([]byte, 2048),
-	}
+	return &ChunkSection{}
 }
 
-func (s *ChunkSection) IsEmpty() bool { return s.nonAirBlocks == 0 }
+func (s *ChunkSection) IsEmpty() bool { return s.nonAirBlocks == 0 || s.blocks == nil }
 
 func (s *ChunkSection) GetBlock(x, y, z int) Block {
+	if s.blocks == nil {
+		return BlockAir{}
+	}
 	idx := (y << 8) | (z << 4) | x
 	return BlockByID(s.blocks[idx])
 }
 
 func (s *ChunkSection) SetBlock(x, y, z int, block Block) {
+	newID := block.ID()
+	if s.blocks == nil {
+		if newID == 0 {
+			return
+		}
+		s.blocks = make([]int32, 4096)
+	}
 	idx := (y << 8) | (z << 4) | x
 	oldID := s.blocks[idx]
-	newID := block.ID()
 	if oldID == 0 && newID != 0 {
 		s.nonAirBlocks++
 	} else if oldID != 0 && newID == 0 {
@@ -204,10 +251,13 @@ func (s *ChunkSection) GetSkyLight(x, y, z int) uint8 {
 
 // SetSkyLight sets the sky light level (0-15) at the given section-local coordinates.
 func (s *ChunkSection) SetSkyLight(x, y, z int, val uint8) {
-	idx := (y << 8) | (z << 4) | x
 	if s.skyLight == nil {
+		if val == 0 {
+			return
+		}
 		s.skyLight = make([]byte, 2048)
 	}
+	idx := (y << 8) | (z << 4) | x
 	byteIdx := idx >> 1
 	if idx&1 == 0 {
 		s.skyLight[byteIdx] = (s.skyLight[byteIdx] & 0xF0) | (val & 0x0F)
@@ -230,26 +280,17 @@ func (s *ChunkSection) GetBlockLight(x, y, z int) uint8 {
 
 // SetBlockLight sets the block light level (0-15) at the given section-local coordinates.
 func (s *ChunkSection) SetBlockLight(x, y, z int, val uint8) {
-	idx := (y << 8) | (z << 4) | x
 	if s.blockLight == nil {
+		if val == 0 {
+			return
+		}
 		s.blockLight = make([]byte, 2048)
 	}
+	idx := (y << 8) | (z << 4) | x
 	byteIdx := idx >> 1
 	if idx&1 == 0 {
 		s.blockLight[byteIdx] = (s.blockLight[byteIdx] & 0xF0) | (val & 0x0F)
 	} else {
 		s.blockLight[byteIdx] = (s.blockLight[byteIdx] & 0x0F) | ((val & 0x0F) << 4)
-	}
-}
-
-type LightData struct {
-	skyLight   []byte
-	blockLight []byte
-}
-
-func NewLightData() *LightData {
-	return &LightData{
-		skyLight:   make([]byte, 2048),
-		blockLight: make([]byte, 2048),
 	}
 }

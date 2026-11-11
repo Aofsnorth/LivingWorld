@@ -146,7 +146,6 @@ func (p *Player) ApplyPersisted(d *PersistedPlayer) {
 	}
 	p.Food = d.Food
 	p.Saturation = d.Saturation
-	p.Creative = d.Creative
 	if d.Inventory != nil {
 		p.Inventory = d.Inventory
 	}
@@ -159,4 +158,8 @@ func (p *Player) ApplyPersisted(d *PersistedPlayer) {
 	if d.Gamemode >= 0 && d.Gamemode <= 3 {
 		p.Gamemode = d.Gamemode
 	}
+	// Keep Creative strictly synchronized with Gamemode (1 = Creative) so legacy
+	// playerdata files with `"creative": true` and `gamemode: 0` do not cause
+	// Survival players on Java to instant-break every block.
+	p.Creative = p.Gamemode == 1
 }

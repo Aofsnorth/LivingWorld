@@ -10,6 +10,8 @@
 package player
 
 import (
+	"math"
+
 	"livingworld/internal/world"
 
 	"github.com/google/uuid"
@@ -20,26 +22,26 @@ import (
 // EffectSpeed..EffectSlowFalling — a happy accident we lean on so a single
 // id travels through both bridges unchanged.
 const (
-	EffectSpeed        int32 = 1
-	EffectSlowness     int32 = 2
-	EffectHaste        int32 = 3
+	EffectSpeed         int32 = 1
+	EffectSlowness      int32 = 2
+	EffectHaste         int32 = 3
 	EffectMiningFatigue int32 = 4
-	EffectStrength     int32 = 5
+	EffectStrength      int32 = 5
 	EffectInstantHealth int32 = 6
 	EffectInstantDamage int32 = 7
-	EffectJumpBoost    int32 = 8
-	EffectNausea       int32 = 9
-	EffectRegeneration int32 = 10
-	EffectResistance   int32 = 11
-	EffectFireResist   int32 = 12
-	EffectWaterBreath  int32 = 13
-	EffectInvisibility int32 = 14
-	EffectBlindness    int32 = 15
-	EffectNightVision  int32 = 16
-	EffectHunger       int32 = 17
-	EffectWeakness     int32 = 18
-	EffectPoison       int32 = 19
-	EffectWither       int32 = 20
+	EffectJumpBoost     int32 = 8
+	EffectNausea        int32 = 9
+	EffectRegeneration  int32 = 10
+	EffectResistance    int32 = 11
+	EffectFireResist    int32 = 12
+	EffectWaterBreath   int32 = 13
+	EffectInvisibility  int32 = 14
+	EffectBlindness     int32 = 15
+	EffectNightVision   int32 = 16
+	EffectHunger        int32 = 17
+	EffectWeakness      int32 = 18
+	EffectPoison        int32 = 19
+	EffectWither        int32 = 20
 )
 
 // Effect is one active status effect on one player.
@@ -384,4 +386,195 @@ func (m *Manager) SetEffectBus(bus effectBus) {
 	m.busMu.Lock()
 	m.effectBus = bus
 	m.busMu.Unlock()
+}
+
+type envTickOutcome struct {
+	id          uuid.UUID
+	snap        PlayerSnapshot
+	metaChanged bool
+	damage      float32
+}
+
+// TickEnvironment runs at 20 Hz from the world tick to update underwater air
+// supply (breathing bubbles & drowning), water swimming state, lava contact
+// damage, and fire burn ticks across both Java and Bedrock players.
+func (m *Manager) TickEnvironment(defaultWorld *world.World) {
+	m.mu.Lock()
+	if len(m.players) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	outcomes := make([]envTickOutcome, 0, len(m.players))
+	for _, p := range m.players {
+		w := p.World
+		if w == nil {
+			w = defaultWorld
+		}
+		if w == nil {
+			continue
+		}
+
+		var metaChanged bool
+		var dmg float32
+
+		// Creative / Spectator players do not drown or burn.
+		if p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
+			if p.AirSupply != 300 || !p.Breathing || p.OnFire || p.FireTicks != 0 {
+				p.AirSupply = 300
+				p.Breathing = true
+				p.OnFire = false
+				p.FireTicks = 0
+				p.LavaTickCooldown = 0
+				metaChanged = true
+			}
+			inWater := isPlayerInWater(w, p.Position.X, p.Position.Y, p.Position.Z)
+			if !inWater && p.Swimming {
+				p.Swimming = false
+				metaChanged = true
+			} else if inWater && p.Sprinting && !p.Swimming {
+				p.Swimming = true
+				metaChanged = true
+			}
+			if metaChanged {
+				outcomes = append(outcomes, envTickOutcome{
+					id:          p.UUID,
+					snap:        p.Snapshot(),
+					metaChanged: true,
+				})
+			}
+			continue
+		}
+
+		if p.AirSupply == 0 && p.Breathing {
+			p.AirSupply = 300
+		}
+
+		bx := int(math.Floor(p.Position.X))
+		bz := int(math.Floor(p.Position.Z))
+		feetY := int(math.Floor(p.Position.Y))
+		bodyY := int(math.Floor(p.Position.Y + 0.4))
+		eyeOffset := 1.62
+		if p.Swimming {
+			eyeOffset = 0.4
+		} else if p.Sneaking {
+			eyeOffset = 1.27
+		}
+		eyeY := int(math.Floor(p.Position.Y + eyeOffset))
+
+		feetID := w.GetBlock(bx, feetY, bz).ID()
+		bodyID := w.GetBlock(bx, bodyY, bz).ID()
+		eyeID := w.GetBlock(bx, eyeY, bz).ID()
+
+		inWater := world.IsWaterBlockID(feetID) || world.IsWaterBlockID(bodyID) || isPlayerInWater(w, p.Position.X, p.Position.Y, p.Position.Z)
+		eyeInWater := world.IsWaterBlockID(eyeID)
+		inLava := world.IsLavaBlockID(feetID) || world.IsLavaBlockID(bodyID) || world.IsLavaBlockID(eyeID)
+
+		// 1. Water swimming state transition
+		if !inWater && !eyeInWater {
+			if p.Swimming {
+				p.Swimming = false
+				metaChanged = true
+			}
+		} else if p.Sprinting && !p.Swimming {
+			p.Swimming = true
+			metaChanged = true
+		}
+
+		// 2. Underwater air supply (breathing bubbles) & drowning (1:1 vanilla)
+		if eyeInWater && !p.effects.has(EffectWaterBreath) {
+			if p.Breathing {
+				p.Breathing = false
+				metaChanged = true
+			}
+			p.AirSupply--
+			if p.AirSupply <= -20 {
+				p.AirSupply = 0
+				dmg += 2.0 // 1 heart drowning damage per second
+				metaChanged = true
+			} else if p.AirSupply >= 0 && p.AirSupply%10 == 0 {
+				metaChanged = true
+			}
+		} else {
+			if !p.Breathing {
+				p.Breathing = true
+				metaChanged = true
+			}
+			if p.AirSupply < 300 {
+				p.AirSupply += 4
+				if p.AirSupply >= 300 {
+					p.AirSupply = 300
+					metaChanged = true
+				} else if p.AirSupply%12 == 0 {
+					metaChanged = true
+				}
+			}
+		}
+
+		// 3. Water extinguishes fire immediately
+		if inWater || eyeInWater {
+			if p.FireTicks > 0 || p.OnFire {
+				p.FireTicks = 0
+				p.OnFire = false
+				metaChanged = true
+			}
+		}
+
+		// 4. Lava contact damage & fire ignition (1:1 vanilla: 4 HP per 10 ticks + 15s fire)
+		hasFireRes := p.effects.has(EffectFireResist)
+		if inLava {
+			if !hasFireRes {
+				p.FireTicks = 300
+				if !p.OnFire {
+					p.OnFire = true
+					metaChanged = true
+				}
+				if p.LavaTickCooldown <= 0 {
+					dmg += 4.0
+					p.LavaTickCooldown = 10
+				} else {
+					p.LavaTickCooldown--
+				}
+			}
+		} else {
+			p.LavaTickCooldown = 0
+		}
+
+		// 5. Residual fire ticks (1 HP every 20 ticks when burning outside lava)
+		if p.FireTicks > 0 {
+			p.FireTicks--
+			if !inLava && p.FireTicks%20 == 0 && !hasFireRes {
+				dmg += 1.0
+			}
+			if p.FireTicks == 0 && p.OnFire {
+				p.OnFire = false
+				metaChanged = true
+			}
+		}
+
+		if metaChanged || dmg > 0 {
+			outcomes = append(outcomes, envTickOutcome{
+				id:          p.UUID,
+				snap:        p.Snapshot(),
+				metaChanged: metaChanged,
+				damage:      dmg,
+			})
+		}
+	}
+	m.mu.Unlock()
+
+	for _, o := range outcomes {
+		if o.metaChanged {
+			m.publish(Event{Type: EventSneak, Player: o.snap})
+			m.syncEnvironment(o.snap)
+		}
+		if o.damage > 0 {
+			m.ctrlMu.RLock()
+			c := m.controllers[o.id]
+			m.ctrlMu.RUnlock()
+			if c != nil {
+				c.Hurt(o.damage)
+			}
+			m.publish(Event{Type: EventHurt, Player: o.snap})
+		}
+	}
 }

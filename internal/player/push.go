@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"livingworld/internal/combat"
 	"livingworld/internal/shared/constants/gameplay"
 
 	"github.com/google/uuid"
@@ -74,12 +75,12 @@ func (m *Manager) pushTick() {
 	}
 }
 
-// MeleeAttack applies vanilla-style melee knockback to the player whose entity
-// runtime ID is targetEntityID, knocking them away from the attacker. Health
-// damage and the hurt flash are not synced cross-edition yet; knockback is the
-// visible hit feedback (the same server-authoritative path player-push uses).
+// MeleeAttack applies 1:1 vanilla-style melee knockback and weapon damage to
+// the player whose entity runtime ID is targetEntityID, knocking them away
+// from the attacker while respecting 10-tick post-hit invulnerability frames
+// and sprint-knockback bonus.
 func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
-	m.mu.RLock()
+	m.mu.Lock()
 	attacker := m.players[attackerUUID]
 	var target *Player
 	for _, p := range m.players {
@@ -88,10 +89,26 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 			break
 		}
 	}
-	m.mu.RUnlock()
 	if attacker == nil || target == nil || target.UUID == attackerUUID {
+		m.mu.Unlock()
 		return
 	}
+	if target.IFrames > 0 {
+		m.mu.Unlock()
+		return
+	}
+	target.IFrames = 10
+
+	dmg := float32(meleeDamage)
+	if attacker.Inventory != nil {
+		if held := attacker.Inventory.GetHeldItem(); held != nil && held.ID != 0 {
+			dmg = float32(combat.SwordDamage(held.ID))
+		}
+	}
+	if !attacker.OnGround && !attacker.Sprinting && !attacker.Swimming {
+		dmg *= 1.5
+	}
+
 	dx := target.Position.X - attacker.Position.X
 	dz := target.Position.Z - attacker.Position.Z
 	d := math.Hypot(dx, dz)
@@ -99,10 +116,25 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 		yaw := float64(attacker.Rotation.Yaw) * math.Pi / 180
 		dx, dz, d = -math.Sin(yaw), math.Cos(yaw), 1
 	}
-	const kb = 0.4
-	m.push(target.UUID, dx/d*kb, 0.4, dz/d*kb)
-	m.hurt(target.UUID, meleeDamage)                             // target's own health + red flash
-	m.publish(Event{Type: EventHurt, Player: target.Snapshot()}) // hurt flash on all viewers
+	kb := 0.4
+	wasSprinting := attacker.Sprinting
+	if wasSprinting {
+		kb += 0.5
+	}
+	vy := 0.0
+	if target.OnGround {
+		vy = 0.4
+	}
+	targetUUID := target.UUID
+	targetSnap := target.Snapshot()
+	m.mu.Unlock()
+
+	if wasSprinting {
+		m.UpdateSprinting(attackerUUID, false)
+	}
+	m.push(targetUUID, dx/d*kb, vy, dz/d*kb)
+	m.hurt(targetUUID, dmg)                                // target's own health + red flash
+	m.publish(Event{Type: EventHurt, Player: targetSnap}) // hurt flash on all viewers
 }
 
 // meleeDamage is the bare-hand attack damage (vanilla: 1 point = half a heart).

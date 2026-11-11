@@ -67,7 +67,14 @@ func (m *Manager) gravityTickWorld(rng *rand.Rand, w *World) {
 	// high sample rate isn't needed. Each unsupported block drops
 	// immediately, so one scan catches cascading falls.
 	for _, cp := range chunkPositions {
+		c := w.GetChunk(cp.WorldX>>4, cp.WorldZ>>4)
+		if c == nil {
+			continue
+		}
 		for section := 0; section < SectionsPerChunk; section++ {
+			if c.SectionIsEmpty(section) {
+				continue
+			}
 			for i := 0; i < 2; i++ {
 				bx := cp.WorldX + rng.Intn(ChunkSize)
 				by := MinWorldHeight + section*16 + rng.Intn(16)

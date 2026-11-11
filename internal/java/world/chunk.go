@@ -23,6 +23,15 @@ func ExportConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 	return ConvertToLevelChunk(wChunk)
 }
 
+func hasNonZeroBytes(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 	lChunk := level.EmptyChunk(24)
 	lChunk.Status = level.StatusFull
@@ -39,44 +48,54 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 
 	for secIdx := 0; secIdx < 24; secIdx++ {
 		sec := &lChunk.Sections[secIdx]
-		sec.Biomes = level.NewBiomesPaletteContainer(4*4*4, biome.Type(0))
+		if secBiomes := wChunk.SectionBiomes(secIdx); secBiomes != nil {
+			first := biome.Type(secBiomes[0])
+			sec.Biomes = level.NewBiomesPaletteContainer(4*4*4, first)
+			for i := 1; i < 64; i++ {
+				if b := biome.Type(secBiomes[i]); b != first {
+					sec.Biomes.Set(i, b)
+				}
+			}
+		} else {
+			sec.Biomes = level.NewBiomesPaletteContainer(4*4*4, biome.Type(world.DefaultBiomeID))
+		}
 
-		// Phase 4b: read real sky light from the world chunk instead of hardcoding 0xFF.
-		// If the world chunk has light data, use it; otherwise fall back to full sky light.
-		sec.SkyLight = make([]byte, 2048)
-		sec.BlockLight = make([]byte, 2048)
-		hasLight := false
+		// Copy packed nibble arrays directly from the canonical chunk section
+		// instead of unpacking 4,096 nibbles one by one. Both use (ly<<8)|(lz<<4)|lx.
+		srcSky := wChunk.SectionSkyLight(secIdx)
+		srcBlock := wChunk.SectionBlockLight(secIdx)
+		hasSky := hasNonZeroBytes(srcSky)
+		hasBlk := hasNonZeroBytes(srcBlock)
+		if hasSky || hasBlk {
+			sec.SkyLight = make([]byte, 2048)
+			sec.BlockLight = make([]byte, 2048)
+			if hasSky {
+				copy(sec.SkyLight, srcSky)
+			}
+			if hasBlk {
+				copy(sec.BlockLight, srcBlock)
+			}
+		}
+
+		// Fast path: if the section has no non-air blocks, skip scanning 4,096 cells.
+		if wChunk.SectionIsEmpty(secIdx) {
+			sec.BlockCount = 0
+			sec.FluidCount = 0
+			continue
+		}
 
 		minSecY := -64 + secIdx*16
-		// Sections -64..-1 are now valid (canonical Y unification): emit them so
-		// deepslate/bedrock and caves below Y=0 render instead of being skipped.
-
+		blocks := wChunk.SectionBlocks(secIdx)
 		blockCount := int16(0)
+		fluidCount := int16(0)
 		for ly := 0; ly < 16; ly++ {
 			y := minSecY + ly
+			yBase := ly << 8
 			for lz := 0; lz < 16; lz++ {
+				yzBase := yBase | (lz << 4)
 				for lx := 0; lx < 16; lx++ {
-					b := wChunk.GetBlock(lx, y, lz)
-					rawID := b.ID()
-
-					// Phase 4b: read light values from the chunk
-					skyLight := wChunk.GetSkyLight(lx, y, lz)
-					blockLight := wChunk.GetBlockLight(lx, y, lz)
-					if skyLight > 0 || blockLight > 0 {
-						hasLight = true
-					}
-
-					// Pack light values into nibble arrays
-					idx := (ly << 8) | (lz << 4) | lx
-					byteIdx := idx >> 1
-					if idx&1 == 0 {
-						sec.SkyLight[byteIdx] = (sec.SkyLight[byteIdx] & 0xF0) | (skyLight & 0x0F)
-						sec.BlockLight[byteIdx] = (sec.BlockLight[byteIdx] & 0xF0) | (blockLight & 0x0F)
-					} else {
-						sec.SkyLight[byteIdx] = (sec.SkyLight[byteIdx] & 0x0F) | ((skyLight & 0x0F) << 4)
-						sec.BlockLight[byteIdx] = (sec.BlockLight[byteIdx] & 0x0F) | ((blockLight & 0x0F) << 4)
-					}
-
+					idx := yzBase | lx
+					rawID := blocks[idx]
 					if rawID == 0 {
 						continue
 					}
@@ -93,22 +112,23 @@ func ConvertToLevelChunk(wChunk *world.Chunk) *level.Chunk {
 
 					if stateID != airStateID {
 						sec.States.Set(idx, level.BlocksState(stateID))
-						blockCount++
-						if y > highestBlock[lx][lz] {
-							highestBlock[lx][lz] = y
+						props := world.GetLightProps(rawID)
+						// Do not count cave_air / void_air as non-air blocks or heightmap surfaces.
+						if rawID != world.CaveAirID && rawID != world.VoidAirID {
+							blockCount++
+							if world.IsFluidBlockID(rawID) {
+								fluidCount++
+							}
+							if props.Opacity > 0 && y > highestBlock[lx][lz] {
+								highestBlock[lx][lz] = y
+							}
 						}
 					}
 				}
 			}
 		}
 		sec.BlockCount = blockCount
-
-		// Optimization: if the section has no light data (all zeros), clear the
-		// arrays so the empty-light-mask optimization applies (saves ~49KB/chunk).
-		if !hasLight {
-			sec.SkyLight = nil
-			sec.BlockLight = nil
-		}
+		sec.FluidCount = fluidCount
 	}
 
 	chunkHeight := 24 * 16

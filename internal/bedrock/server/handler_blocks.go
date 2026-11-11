@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	bedrockworld "livingworld/internal/bedrock/world"
+	"livingworld/internal/item"
 	"livingworld/internal/shared/constants/gameplay"
 	"livingworld/internal/world"
 
@@ -76,9 +77,45 @@ func (s *Server) breakBedrockBlock(bs *bedrockSession, pos protocol.BlockPos) {
 	s.wm.PublishBlockDestroy(world.BlockUpdateSourceBedrock, bs.id, int(pos[0]), int(pos[1]), int(pos[2]), current.ID())
 
 	// Roll vanilla loot and spawn item entities before the block becomes air.
-	s.wm.DropBlockLoot(current.ID(), int(pos[0]), int(pos[1]), int(pos[2]))
+	isCreative := false
+	toolName := ""
+	if p := bs.pm.GetPlayer(bs.id); p != nil {
+		isCreative = p.Gamemode == 1
+		if p.Inventory != nil {
+			held := p.Inventory.GetHeldItem()
+			if held.ID != 0 && held.Count > 0 {
+				if it, ok := item.ByID(held.ID); ok {
+					toolName = it.Name
+				}
+			}
+		}
+	}
+	if !isCreative {
+		s.wm.DropBlockLootWithTool(current.ID(), toolName, int(pos[0]), int(pos[1]), int(pos[2]))
+	}
 
 	s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]), world.BlockAir{})
+	s.wm.OnBlockChanged(world.BlockUpdateSourceBedrock, int(pos[0]), int(pos[1]), int(pos[2]))
+
+	// Also clear the paired upper/lower half of any 2-block-tall plant.
+	name := world.StateName(current.ID())
+	switch name {
+	case "minecraft:tall_grass", "minecraft:large_fern",
+		"minecraft:sunflower", "minecraft:lilac",
+		"minecraft:rose_bush", "minecraft:peony",
+		"minecraft:tall_seagrass", "minecraft:pitcher_plant":
+		dw := s.wm.GetDefaultWorld()
+		for _, dy := range [2]int{1, -1} {
+			otherY := int(pos[1]) + dy
+			other := dw.GetBlock(int(pos[0]), otherY, int(pos[2]))
+			if other.ID() != 0 && world.StateName(other.ID()) == name {
+				s.broadcastBlockBreakEffect(int32(pos[0]), int32(otherY), int32(pos[2]), other.ID())
+				s.wm.PublishBlockDestroy(world.BlockUpdateSourceBedrock, bs.id, int(pos[0]), otherY, int(pos[2]), other.ID())
+				s.wm.SetBlockAndPublish(world.BlockUpdateSourceBedrock, int(pos[0]), otherY, int(pos[2]), world.BlockAir{})
+				s.wm.OnBlockChanged(world.BlockUpdateSourceBedrock, int(pos[0]), otherY, int(pos[2]))
+			}
+		}
+	}
 }
 
 // publishCrack mirrors a Bedrock crack-overlay change to Java via the effect bus.

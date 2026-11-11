@@ -21,6 +21,13 @@ type Controller interface {
 	Hurt(amount float32)
 }
 
+// EnvironmentController is an optional extension implemented by sessions that
+// push local player metadata (air supply bubbles, on-fire flag, swimming pose)
+// back to the owning client.
+type EnvironmentController interface {
+	SyncEnvironment(snap PlayerSnapshot)
+}
+
 type Manager struct {
 	mu      sync.RWMutex
 	players map[uuid.UUID]*Player
@@ -35,8 +42,8 @@ type Manager struct {
 	// to the bridges when effects are added/expired. The pointer is
 	// read under busMu so a late SetEffectBus call from server.go
 	// never races a TickEffects in flight.
-	busMu      sync.RWMutex
-	effectBus  effectBus
+	busMu     sync.RWMutex
+	effectBus effectBus
 
 	dataMu  sync.RWMutex
 	dataDir string // player-data directory; empty disables persistence
@@ -103,5 +110,14 @@ func (m *Manager) push(id uuid.UUID, vx, vy, vz float64) {
 	m.ctrlMu.RUnlock()
 	if c != nil {
 		c.Push(vx, vy, vz)
+	}
+}
+
+func (m *Manager) syncEnvironment(snap PlayerSnapshot) {
+	m.ctrlMu.RLock()
+	c := m.controllers[snap.UUID]
+	m.ctrlMu.RUnlock()
+	if ec, ok := c.(EnvironmentController); ok {
+		ec.SyncEnvironment(snap)
 	}
 }

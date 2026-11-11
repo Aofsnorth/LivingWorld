@@ -11,26 +11,25 @@
 package nether
 
 import (
-	"livingworld/internal/dimension/overworld/noise"
 	"livingworld/internal/world"
 )
 
 // Dimension is the Nether chunk generator.
 type Dimension struct {
 	seed   int64
-	perlin *noise.Perlin
+	perlin *Perlin
 	// secondPerlin is used for lava pocket / air pocket detection
 	// at a different frequency for variety.
-	secondPerlin *noise.Perlin
+	secondPerlin *Perlin
 }
 
 // New returns a Nether dimension for the given world seed.
 func New(seed int64) *Dimension {
-	rng := noise.NewWorldgenRandom(seed ^ 0x4E65_7468) // "Neth" XOR
+	rng := NewWorldgenRandom(seed ^ 0x4E65_7468) // "Neth" XOR
 	return &Dimension{
 		seed:         seed,
-		perlin:       noise.NewPerlin(rng.NextLong()),
-		secondPerlin: noise.NewPerlin(rng.NextLong()),
+		perlin:       NewPerlin(rng.NextLong()),
+		secondPerlin: NewPerlin(rng.NextLong()),
 	}
 }
 
@@ -44,13 +43,13 @@ const (
 
 // Noise parameters for the Nether cave carving.
 const (
-	caveFreqX    = 1.0 / 16.0  // horizontal cave frequency
-	caveFreqY    = 1.0 / 8.0   // vertical cave frequency
-	caveFreqZ    = 1.0 / 16.0  // horizontal cave frequency
-	caveThreshLo = -0.3         // low noise threshold for caves
-	caveThreshHi = 0.3          // high noise threshold for caves
-	pocketFreq   = 1.0 / 24.0   // frequency for lava/air pockets
-	pocketThresh = 0.55          // threshold for pocket detection
+	caveFreqX    = 1.0 / 16.0 // horizontal cave frequency
+	caveFreqY    = 1.0 / 8.0  // vertical cave frequency
+	caveFreqZ    = 1.0 / 16.0 // horizontal cave frequency
+	caveThreshLo = -0.3       // low noise threshold for caves
+	caveThreshHi = 0.3        // high noise threshold for caves
+	pocketFreq   = 1.0 / 24.0 // frequency for lava/air pockets
+	pocketThresh = 0.55       // threshold for pocket detection
 )
 
 // Generate builds a Nether chunk with noise-carved caves, lava pockets,

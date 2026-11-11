@@ -1,6 +1,9 @@
 package server
 
 import (
+	"sort"
+	"time"
+
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -57,32 +60,89 @@ func (s *Server) updateBedrockChunks(bs *bedrockSession, cx, cz int32) {
 	})
 
 	// Clean up (unload) chunks that have drifted out of the player's view distance
+	var unloaded []protocol.ChunkPos
 	bs.chunkMu.Lock()
 	for pos := range bs.LoadedChunks {
 		dx := pos.X() - cx
 		dz := pos.Z() - cz
 		if dx < -radius || dx > radius || dz < -radius || dz > radius {
 			delete(bs.LoadedChunks, pos)
+			unloaded = append(unloaded, pos)
+		}
+	}
+	bs.chunkMu.Unlock()
+	if len(unloaded) > 0 && bs.chunkCache != nil {
+		bs.chunkCache.Mu.Lock()
+		for _, pos := range unloaded {
+			delete(bs.chunkCache.Cache, pos)
+		}
+		bs.chunkCache.Mu.Unlock()
+	}
+
+	// Load and send new chunks in view distance (nearest-first, preloaded in parallel).
+	w := s.wm.GetDefaultWorld()
+	var toSend []protocol.ChunkPos
+	bs.chunkMu.Lock()
+	for dx := -radius; dx <= radius; dx++ {
+		for dz := -radius; dz <= radius; dz++ {
+			pos := protocol.ChunkPos{cx + dx, cz + dz}
+			if !bs.LoadedChunks[pos] {
+				bs.LoadedChunks[pos] = true
+				toSend = append(toSend, pos)
+			}
 		}
 	}
 	bs.chunkMu.Unlock()
 
-	// Load and send new chunks in view distance
-	w := s.wm.GetDefaultWorld()
-	for dx := -radius; dx <= radius; dx++ {
-		for dz := -radius; dz <= radius; dz++ {
-			pos := protocol.ChunkPos{cx + dx, cz + dz}
-			bs.chunkMu.Lock()
-			isLoaded := bs.LoadedChunks[pos]
-			if !isLoaded {
-				bs.LoadedChunks[pos] = true
-			}
-			bs.chunkMu.Unlock()
+	if len(toSend) == 0 {
+		return
+	}
 
-			if !isLoaded {
-				s.converter.SendChunk(bs.conn, w, int(pos.X()), int(pos.Z()), bs.chunkCache)
+	sort.Slice(toSend, func(i, j int) bool {
+		dxi, dzi := toSend[i].X()-cx, toSend[i].Z()-cz
+		dxj, dzj := toSend[j].X()-cx, toSend[j].Z()-cz
+		return dxi*dxi+dzi*dzi < dxj*dxj+dzj*dzj
+	})
+
+	// Send the immediate 3x3 area (9 chunks) synchronously so the player spawns on
+	// solid terrain right away, then stream outer rings progressively in a goroutine.
+	immediate := min(9, len(toSend))
+	firstBatch := toSend[:immediate]
+	s.converter.PreloadChunks(w, firstBatch, bs.chunkCache)
+	for _, pos := range firstBatch {
+		s.converter.SendChunk(bs.conn, w, int(pos.X()), int(pos.Z()), bs.chunkCache)
+	}
+
+	rest := toSend[immediate:]
+	if len(rest) > 0 {
+		go func(remaining []protocol.ChunkPos, radius int32) {
+			const batchSize = 16
+			for start := 0; start < len(remaining); start += batchSize {
+				curCX, curCZ := bs.chunkCenter()
+				end := min(start+batchSize, len(remaining))
+				var active []protocol.ChunkPos
+				for _, pos := range remaining[start:end] {
+					dx := pos.X() - curCX
+					dz := pos.Z() - curCZ
+					if dx >= -radius && dx <= radius && dz >= -radius && dz <= radius {
+						active = append(active, pos)
+					} else {
+						bs.chunkMu.Lock()
+						delete(bs.LoadedChunks, pos)
+						bs.chunkMu.Unlock()
+					}
+				}
+				if len(active) > 0 {
+					s.converter.PreloadChunks(w, active, bs.chunkCache)
+					for _, pos := range active {
+						s.converter.SendChunk(bs.conn, w, int(pos.X()), int(pos.Z()), bs.chunkCache)
+					}
+				}
+				if end < len(remaining) {
+					time.Sleep(15 * time.Millisecond)
+				}
 			}
-		}
+		}(rest, radius)
 	}
 }
 

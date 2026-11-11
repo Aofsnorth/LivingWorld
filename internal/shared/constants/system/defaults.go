@@ -12,8 +12,10 @@ const (
 	// DefaultMaxPlayers adalah jumlah maksimum players default
 	DefaultMaxPlayers = 100
 
-	// DefaultWorldSeed adalah seed default untuk world generation
-	DefaultWorldSeed = int64(12345)
+	// DefaultWorldSeed adalah seed default untuk world generation.
+	// Nilai 0 menandakan seed belum diisi sehingga server otomatis men-generate
+	// random 64-bit seed saat dunia baru dibuat.
+	DefaultWorldSeed = int64(0)
 )
 
 // Player defaults

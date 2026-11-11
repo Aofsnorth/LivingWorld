@@ -32,20 +32,31 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 		// Held item → sword damage. Bare hand = 1 HP.
 		base := float32(1.0)
 		var heldID int32
+		kbStrength := 0.4
+		dx, dz := 0.0, 0.0
 		if p := s.pm.GetPlayer(attacker); p != nil {
 			held := p.Inventory.GetHeldItem()
 			if held != nil {
 				heldID = held.ID
 				base = float32(combat.SwordDamage(heldID))
 			}
+			if !p.OnGround && !p.Sprinting && !p.Swimming {
+				base *= 1.5
+			}
+			// combat.Knockback negates (dirX, dirZ): out.X = vel.X/2 - px.
+			// Pass (attacker - victim) so the mob is knocked away from the attacker.
+			dx = p.Position.X - float64(m.X)
+			dz = p.Position.Z - float64(m.Z)
+			if math.Hypot(dx, dz) < 1e-4 {
+				yawRad := float64(p.Rotation.Yaw) * math.Pi / 180.0
+				dx = math.Sin(yawRad)
+				dz = -math.Cos(yawRad)
+			}
+			if p.Sprinting {
+				kbStrength += 0.5
+				s.pm.UpdateSprinting(attacker, false)
+			}
 		}
-		// Push direction: mob minus attacker.
-		dx, dz := float64(m.X), float64(m.Z)
-		if p := s.pm.GetPlayer(attacker); p != nil {
-			dx = float64(m.X) - p.Position.X
-			dz = float64(m.Z) - p.Position.Z
-		}
-		const kbStrength = 0.4
 		s.wm.Mobs().HurtDirectWithKnockback(m.EntityID, attackerBytes, base, dx, dz, kbStrength)
 		// Hurt flash on every Bedrock viewer. ActorEvent(2) =
 		// Hurt. Sends a red flash on the mob for the local

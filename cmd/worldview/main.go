@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	bedrockworld "livingworld/internal/bedrock/world"
-	"livingworld/internal/dimension/overworld/pipeline"
+	"livingworld/internal/dimension/overworld"
 	"livingworld/internal/world"
 
 	dfworld "github.com/df-mc/dragonfly/server/world"
@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	g := pipeline.NewGenerator(12345)
+	g := overworld.New(12345)
 	rng := dfworld.Overworld.Range()
 	fmt.Printf("dragonfly range: min=%d max=%d Height()=%d -> subChunkCount=%d\n",
 		rng.Min(), rng.Max(), rng.Height(), (rng.Height()>>4)+1)

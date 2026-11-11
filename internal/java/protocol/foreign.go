@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"log"
+	"math"
 
 	"livingworld/internal/player"
 	"livingworld/internal/skinbridge"
@@ -12,7 +13,39 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-func (h *Handler776) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) SyncPlayerWaypoint(s Session, p player.PlayerSnapshot, hide bool) error {
+	if p.UUID == s.UUID() || p.EntityRuntimeID == 0 {
+		return nil
+	}
+	if s.Config() != nil && !s.Config().World.LocatorBar {
+		hide = true
+	}
+	if hide || p.Sneaking {
+		return s.SendPacket(pk.Marshal(
+			packetid.ClientboundGameWaypoint,
+			pk.VarInt(1), // Operation.UNTRACK
+			pk.Boolean(true),
+			pk.UUID(p.UUID),
+			pk.Identifier("minecraft:default"),
+			pk.Boolean(false),
+			pk.VarInt(0), // TrackedWaypoint.Type.EMPTY
+		))
+	}
+	return s.SendPacket(pk.Marshal(
+		packetid.ClientboundGameWaypoint,
+		pk.VarInt(0), // Operation.TRACK (inserts or updates in ClientWaypointManager)
+		pk.Boolean(true),
+		pk.UUID(p.UUID),
+		pk.Identifier("minecraft:default"),
+		pk.Boolean(false),
+		pk.VarInt(1), // TrackedWaypoint.Type.VEC3I
+		pk.VarInt(int32(math.Floor(p.Position.X))),
+		pk.VarInt(int32(math.Floor(p.Position.Y))),
+		pk.VarInt(int32(math.Floor(p.Position.Z))),
+	))
+}
+
+func (h *Handler777) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.UUID == s.UUID() || p.EntityRuntimeID == 0 {
 		return nil
 	}
@@ -44,13 +77,14 @@ func (h *Handler776) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) erro
 
 	// Send initial metadata (including sneak status) so the spawned avatar renders correctly
 	_ = h.UpdateForeignMetadata(s, p)
+	_ = h.SyncPlayerWaypoint(s, p, false)
 
 	return nil
 }
 
 const javaPlayerInfoAddPlayerBit = 0x01 | 0x04 | 0x08
 
-func (h *Handler776) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error {
 	var buf bytes.Buffer
 	_, _ = pk.Byte(javaPlayerInfoAddPlayerBit).WriteTo(&buf)
 	_, _ = pk.VarInt(1).WriteTo(&buf)
@@ -63,9 +97,13 @@ func (h *Handler776) SendPlayerInfoAdd(s Session, p player.PlayerSnapshot) error
 		// whitelisted domains, so discarding it (the old `bedrockHDSkins` branch)
 		// forced vanilla clients to the default Steve. Only when no signed property
 		// exists yet — MineSkin upload still pending, or no API key configured — do
-		// we fall back to the unsigned local HD URL, which only lenient
-		// (authlib-injector) launchers accept.
-		name, val := skinbridge.TextureProperty(p.UUID, p.Username, p.BedrockSkinURL)
+		// we fall back to the unsigned local 64x64 URL, which lenient
+		// (authlib-injector / offline skin-mod) launchers accept immediately.
+		model := "wide"
+		if p.Skin != nil && p.Skin.Model != "" {
+			model = p.Skin.Model
+		}
+		name, val := skinbridge.TexturePropertyWithModel(p.UUID, p.Username, p.BedrockSkinURL, model)
 		props = upsertUnsignedTextures(props, name, val)
 	}
 	_, _ = pk.VarInt(len(props)).WriteTo(&buf)
@@ -120,17 +158,18 @@ func upsertUnsignedTextures(props []player.ProfileProperty, name, val string) []
 	return append(out, player.ProfileProperty{Name: name, Value: val})
 }
 
-func (h *Handler776) SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) SendPlayerInfoRemove(s Session, p player.PlayerSnapshot) error {
 	var buf bytes.Buffer
 	_, _ = pk.VarInt(1).WriteTo(&buf)
 	_, _ = pk.UUID(p.UUID).WriteTo(&buf)
 	return s.SendPacket(pk.Packet{ID: int32(packetid.ClientboundGamePlayerInfoRemove), Data: buf.Bytes()})
 }
 
-func (h *Handler776) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}
+	_ = h.SyncPlayerWaypoint(s, p, true)
 	_ = s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameRemoveEntities,
 		pk.Ary[pk.VarInt]{Ary: []pk.VarInt{pk.VarInt(p.EntityRuntimeID)}},
@@ -138,24 +177,30 @@ func (h *Handler776) RemoveForeignAvatar(s Session, p player.PlayerSnapshot) err
 	return h.SendPlayerInfoRemove(s, p)
 }
 
-func (h *Handler776) SwingForeignAvatar(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) SwingForeignAvatar(s Session, p player.PlayerSnapshot) error {
 	if p.EntityRuntimeID == uint64(s.EntityID()) {
 		return nil
 	}
 	return s.SendPacket(pk.Marshal(
-		packetid.ClientboundGameAnimate,
-		pk.VarInt(int32(p.EntityRuntimeID)), pk.UnsignedByte(0),
+		packetid.ClientboundGameSwingAnimation,
+		pk.VarInt(int32(p.EntityRuntimeID)),
+		pk.VarInt(0), // InteractionHand.MAIN_HAND = 0
+		pk.VarInt(1), // SwingAnimationType.WHACK = 1
+		pk.VarInt(6), // SwingAnimation.DEFAULT.duration = 6
 	))
 }
 
-func (h *Handler776) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) UpdateForeignMetadata(s Session, p player.PlayerSnapshot) error {
+	if p.UUID != s.UUID() {
+		_ = h.SyncPlayerWaypoint(s, p, false)
+	}
 	return s.SendPacket(pk.Packet{
 		ID:   int32(packetid.ClientboundGameSetEntityData),
 		Data: encodePlayerMetadata(p),
 	})
 }
 
-func (h *Handler776) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error {
+func (h *Handler777) UpdateForeignEquipment(s Session, p player.PlayerSnapshot) error {
 	if p.UUID == s.UUID() {
 		return nil // the client renders its own held item from its inventory
 	}
