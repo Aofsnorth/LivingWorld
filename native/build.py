@@ -71,9 +71,16 @@ def main():
         env={
             **os.environ,
             "RUSTC_BOOTSTRAP": os.environ.get("RUSTC_BOOTSTRAP", "1"),
-            "RUSTFLAGS": os.environ.get("RUSTFLAGS", "-C target-cpu=native"),
+            "RUSTFLAGS": os.environ.get("RUSTFLAGS", "-C target-cpu=native -C embed-bitcode=no"),
         },
     )
+    if sys.platform.startswith("linux") and (ROOT / "target").exists():
+        for archive in (ROOT / "target").rglob("*.a"):
+            if archive.is_file():
+                subprocess.run(
+                    ["objcopy", "--remove-section=.llvmbc", "--remove-section=.llvmcmd", str(archive)],
+                    check=True,
+                )
 
 
 if __name__ == "__main__":

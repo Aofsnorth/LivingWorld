@@ -40,6 +40,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native -> target
+          cache-on-failure: true
 
       - name: build native steel bridge
         run: python3 native/build.py
@@ -74,17 +75,6 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
-
-      - name: install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native -> target
-
-      - name: build native steel bridge
-        run: python3 native/build.py
 
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
