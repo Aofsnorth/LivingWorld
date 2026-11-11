@@ -23,6 +23,8 @@ jobs:
   build:
     name: build / vet / test
     runs-on: ubuntu-latest
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/native/target/release
     steps:
       - name: checkout
         uses: actions/checkout@v4

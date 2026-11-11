@@ -1,7 +1,7 @@
 package overworld
 
 /*
-#cgo !windows LDFLAGS: -L${SRCDIR}/../../../native/target/release -lsteel_bridge
+#cgo !windows LDFLAGS: -L${SRCDIR}/../../../native/target/release -Wl,-rpath,${SRCDIR}/../../../native/target/release -lsteel_bridge
 #cgo darwin LDFLAGS: -framework Security -framework CoreFoundation
 #cgo linux LDFLAGS: -lm -ldl -lpthread
 #include "../../../native/steel.h"
