@@ -36,6 +36,14 @@ func isBedrockFallResetBlock(name string) bool {
 	return false
 }
 
+func isSolidSupportBlock(blockID int32) bool {
+	if blockID == 0 || world.IsReplaceableBlock(blockID) || world.IsWaterBlockID(blockID) || world.IsLavaBlockID(blockID) {
+		return false
+	}
+	name := world.StateName(blockID)
+	return name != "" && name != "minecraft:air" && !isBedrockFallResetBlock(name)
+}
+
 func (s *Server) isSolidGroundAt(x, feetY, z float64) bool {
 	if s.wm == nil {
 		return false
@@ -44,21 +52,41 @@ func (s *Server) isSolidGroundAt(x, feetY, z float64) bool {
 	if dw == nil {
 		return false
 	}
-	fracY := feetY - math.Floor(feetY)
-	if fracY > 0.15 && math.Abs(fracY-0.5) > 0.15 && fracY < 0.90 {
-		return false
-	}
-	by := int(math.Floor(feetY - 0.06))
-	for _, off := range [5][2]float64{{0, 0}, {-0.29, -0.29}, {-0.29, 0.29}, {0.29, -0.29}, {0.29, 0.29}} {
-		bx := int(math.Floor(x + off[0]))
-		bz := int(math.Floor(z + off[1]))
-		blockID := dw.GetBlock(bx, by, bz).ID()
-		if blockID == 0 || world.IsReplaceableBlock(blockID) || world.IsWaterBlockID(blockID) || world.IsLavaBlockID(blockID) {
-			continue
-		}
-		name := world.StateName(blockID)
-		if name != "minecraft:air" && !isBedrockFallResetBlock(name) {
+	offsets := [5][2]float64{{0, 0}, {-0.29, -0.29}, {-0.29, 0.29}, {0.29, -0.29}, {0.29, 0.29}}
+
+	// Full-block top surface check: block at by has top face at float64(by+1).
+	by := int(math.Floor(feetY - 0.20))
+	topDiff := feetY - float64(by+1)
+	if topDiff >= -0.12 && topDiff <= 0.22 {
+		for _, off := range offsets {
+			bx := int(math.Floor(x + off[0]))
+			bz := int(math.Floor(z + off[1]))
+			if !isSolidSupportBlock(dw.GetBlock(bx, by, bz).ID()) {
+				continue
+			}
+			// Ensure the block space at feet level is not another solid wall/pillar block.
+			if isSolidSupportBlock(dw.GetBlock(bx, by+1, bz).ID()) {
+				continue
+			}
 			return true
+		}
+	}
+
+	// Half-slab / stair mid-block surface check around Y + 0.5.
+	bySlab := int(math.Floor(feetY - 0.05))
+	slabFrac := feetY - float64(bySlab)
+	if math.Abs(slabFrac-0.5) <= 0.15 {
+		for _, off := range offsets {
+			bx := int(math.Floor(x + off[0]))
+			bz := int(math.Floor(z + off[1]))
+			blockID := dw.GetBlock(bx, bySlab, bz).ID()
+			if !isSolidSupportBlock(blockID) {
+				continue
+			}
+			name := world.StateName(blockID)
+			if strings.Contains(name, "slab") || strings.Contains(name, "stairs") {
+				return true
+			}
 		}
 	}
 	return false
@@ -86,6 +114,7 @@ func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, 
 				bs.mu.Lock()
 				bs.fallDistance = 0
 				bs.mu.Unlock()
+				s.pm.SyncFallState(bs.id, false, 0)
 				return
 			}
 			belowBlock := dw.GetBlock(bx, int(math.Floor(newY-0.2)), bz).ID()
@@ -93,6 +122,7 @@ func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, 
 				bs.mu.Lock()
 				bs.fallDistance = 0
 				bs.mu.Unlock()
+				s.pm.SyncFallState(bs.id, false, 0)
 				return
 			}
 		}
@@ -114,7 +144,6 @@ func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, 
 	bs.fallDistance = 0
 	bs.mu.Unlock()
 	s.pm.SyncFallState(bs.id, true, 0)
-	s.pm.SyncFallState(bs.id, true, 0)
 
 	const fallSafeBlocks = 3.35
 	if dist <= fallSafeBlocks {
@@ -124,6 +153,7 @@ func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, 
 	if dmg <= 0 {
 		return
 	}
+	s.pm.AddExhaustion(bs.id, 0.1)
 	bs.Hurt(float32(dmg))
 }
 
@@ -198,19 +228,15 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		// it as the primary movement source and ignore duplicate MovePlayer bursts.
 		bs.lastAuthInputAt = time.Now()
 		fx, fy, fz := bedrockSharedFeetFromLocalClient(p.Position)
-		jumping := p.InputData.Load(packet.InputFlagStartJumping) || p.InputData.Load(packet.InputFlagJumping)
+		bs.mu.Lock()
+		prevY := bs.lastY
+		hasPrev := !bs.lastMovePublish.IsZero()
+		curFall := bs.fallDistance
+		bs.mu.Unlock()
+		ascending := (hasPrev && fy > prevY+0.02) || (curFall == 0 && (p.InputData.Load(packet.InputFlagStartJumping) || p.Delta[1] > 0.05))
 		solidBelow := s.isSolidGroundAt(fx, fy, fz)
-		onGround := !jumping && p.Delta[1] <= 0.02 && solidBelow && (p.InputData.Load(packet.InputFlagVerticalCollision) || math.Abs(float64(p.Delta[1])) < 0.08)
+		onGround := !ascending && solidBelow && (p.InputData.Load(packet.InputFlagVerticalCollision) || !hasPrev || fy <= prevY+0.02 || p.Delta[1] <= 0.02)
 		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, onGround)
-		if !onGround {
-			fallStep := 0.05
-			if p.Delta[1] < 0 {
-				if d := float64(-p.Delta[1]); d > fallStep {
-					fallStep = d
-				}
-			}
-			s.pm.SyncFallState(bs.id, false, fallStep)
-		}
 
 		// Update sneaking, sprinting, jumping, and swimming state
 		sneaking := p.InputData.Load(packet.InputFlagSneaking)
@@ -725,27 +751,39 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 	spawn := s.cfg.World.Spawn
 	spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)
 
+	now := time.Now()
 	bs.mu.Lock()
 	wasDead := bs.health <= 0
-	bs.health = 20
-	bs.fallDistance = 0
-	bs.lastX = feetX
-	bs.lastY = feetY
-	bs.lastZ = feetZ
-	bs.lastMovePublish = time.Now()
-	bs.spawnPos = spawnClientPos
+	lastRespawn := bs.lastRespawnAt
 	bs.mu.Unlock()
 
 	if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Health <= 0 {
 		wasDead = true
 	}
+	if !wasDead && !lastRespawn.IsZero() && now.Sub(lastRespawn) < time.Second {
+		return
+	}
+
+	bs.mu.Lock()
+	bs.health = 20
+	bs.fallDistance = 0
+	bs.lastX = feetX
+	bs.lastY = feetY
+	bs.lastZ = feetZ
+	bs.lastMovePublish = now
+	bs.lastRespawnAt = now
+	bs.spawnPos = spawnClientPos
+	bs.mu.Unlock()
 
 	if wasDead {
 		_ = s.pm.RespawnPlayer(bs.id, feetX, feetY, feetZ, spawn.Pitch, spawn.Yaw)
 		if s.wm != nil && s.wm.Hunger() != nil {
 			s.wm.Hunger().ResetPlayer(bs.id, s.cfg.World.Difficulty)
 		}
+	} else {
+		s.pm.UpdatePosition(bs.id, feetX, feetY, feetZ, spawn.Yaw, spawn.Pitch, true)
 	}
+	s.pm.SyncFallState(bs.id, true, 0)
 
 	cx, cz := int32(math.Floor(feetX))>>4, int32(math.Floor(feetZ))>>4
 	bs.setChunkCenter(cx, cz)
@@ -762,7 +800,7 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 		Pitch:           spawn.Pitch,
 		Yaw:             spawn.Yaw,
 		HeadYaw:         spawn.Yaw,
-		Mode:            packet.MoveModeTeleport,
+		Mode:            packet.MoveModeReset,
 		OnGround:        true,
 	})
 	bs.write(&packet.SetActorMotion{
@@ -787,7 +825,6 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 	}
 	s.sendBedrockGameMode(conn, bedrockLocalRuntime, mode)
 	s.sendLocalPlayerActorData(conn)
-	bs.write(&packet.PlayStatus{Status: packet.PlayStatusPlayerSpawn})
 	s.reconcileViewers(bs)
 
 	s.forEachSession(func(v *bedrockSession) {

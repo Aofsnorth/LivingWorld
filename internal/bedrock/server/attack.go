@@ -44,10 +44,7 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 				heldID = held.ID
 				base = float32(combat.SwordDamage(heldID))
 			}
-			if p.CanCrit() {
-				base *= 1.5
-				isCrit = true
-			} else if !p.OnGround && !p.Swimming && !p.Flying && p.Health > 0 {
+			if s.pm.ConsumeCrit(attacker) {
 				base *= 1.5
 				isCrit = true
 			}

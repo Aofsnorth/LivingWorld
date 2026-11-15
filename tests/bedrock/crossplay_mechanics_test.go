@@ -599,19 +599,24 @@ func TestSnowBreakTicksAndPeacefulHungerAndCritAndDeadSnapshot(t *testing.T) {
 
 	// Ascending jump: FallDistance must remain 0 and CanCrit must be false.
 	pm.UpdatePosition(id, 0.5, 64.42, 0.5, 0, 0, false)
-	if pm.GetPlayer(id).CanCrit() {
+	if pm.GetPlayer(id).CanCrit() || pm.ConsumeCrit(id) {
 		t.Fatalf("expected ascending jump not to allow critical hits")
 	}
-	// Descending from apex while airborne: FallDistance > 0 and CanCrit must be true even if Sprinting flag is latched on Bedrock.
+	// Descending while sprinting must NOT allow critical hits (vanilla 1.20 rule).
 	pm.UpdateSprinting(id, true)
 	pm.UpdatePosition(id, 0.5, 64.10, 0.5, 0, 0, false)
-	if !pm.GetPlayer(id).CanCrit() {
-		t.Fatalf("expected descending airborne Bedrock player to allow critical hits even with Sprinting flag set")
+	if pm.GetPlayer(id).CanCrit() {
+		t.Fatalf("expected sprinting player not to allow critical hits")
 	}
-	// Landing packet arriving right before attack packet within 250ms grace window: CanCrit must still succeed once, then clear after MeleeAttack.
+	// Once not sprinting while descending (FallDistance = 0.32 >= 0.08), CanCrit must be true.
+	pm.UpdateSprinting(id, false)
+	if !pm.GetPlayer(id).CanCrit() {
+		t.Fatalf("expected descending non-sprinting player to allow critical hits")
+	}
+	// Landing packet arriving right before attack packet within 150ms grace window: CanCrit must still succeed once, then clear after MeleeAttack.
 	pm.SyncFallState(id, true, 0)
 	if !pm.GetPlayer(id).CanCrit() {
-		t.Fatalf("expected Bedrock player within 250ms landing grace window to allow critical hit")
+		t.Fatalf("expected Bedrock player within 150ms landing grace window to allow critical hit")
 	}
 
 	victimID := [16]byte{88}

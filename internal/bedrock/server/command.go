@@ -85,7 +85,13 @@ func (s *bedrockSession) SetGameMode(mode int) error {
 	if pl := s.pmRef().GetPlayer(s.id); pl != nil {
 		pl.Gamemode = mode
 		pl.Creative = mode == 1
+		if mode != 1 && mode != 3 {
+			pl.Flying = false
+		}
 	}
+	s.mu.Lock()
+	s.fallDistance = 0
+	s.mu.Unlock()
 	s.write(&packet.SetPlayerGameType{GameType: javaModeToBedrock(mode)})
 	return nil
 }

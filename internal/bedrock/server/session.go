@@ -39,6 +39,7 @@ type bedrockSession struct {
 	lastMovePublish     time.Time
 	lastAuthInputAt     time.Time
 	lastBlockPlaceAt    time.Time
+	lastRespawnAt       time.Time
 	lastX, lastY, lastZ float64
 	fallDistance        float64
 	spawnPos            mgl32.Vec3

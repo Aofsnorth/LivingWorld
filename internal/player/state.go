@@ -75,34 +75,24 @@ func resolveSwimState(w *world.World, x, y, z float64, sprinting, currentlySwimm
 	return canStartSwimming(w, x, y, z)
 }
 
+const minCritFallDistance = 0.08
+
 // CanCrit reports whether the player currently satisfies Vanilla 1.20 critical
-// hit conditions: airborne descending (or within the short packet-batch grace
-// window on Bedrock where PlayerAuthInput lands in the same frame as the attack
-// transaction), not sprinting (on Java; Bedrock clients keep InputFlagSprinting
-// latched during forward jumps), not swimming, not flying, not in water/lava/
+// hit conditions: airborne descending past the jump apex (or within the short
+// packet-batch grace window where movement lands in the same frame as the
+// attack packet), not sprinting, not swimming, not flying, not in water/lava/
 // climbable, and not blinded.
 func (p *Player) CanCrit() bool {
-	if p == nil || p.Health <= 0 || p.Swimming || p.Flying || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
-		return false
-	}
-	if p.Sprinting && p.Edition != EditionBedrock {
+	if p == nil || p.Health <= 0 || p.Sprinting || p.Swimming || p.Flying || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
 		return false
 	}
 	if p.effects.has(EffectBlindness) {
 		return false
 	}
-	if p.Edition == EditionBedrock {
-		airborneCrit := !p.OnGround && (p.FallDistance > 0 || p.LastFallDistance > 0)
-		recentLandingCrit := !p.LastAirborneAt.IsZero() && time.Since(p.LastAirborneAt) <= 250*time.Millisecond && (p.FallDistance > 0 || p.LastFallDistance > 0)
-		if !airborneCrit && !recentLandingCrit {
-			return false
-		}
-	} else {
-		airborneCrit := !p.OnGround && p.FallDistance > 0
-		recentLandingCrit := !p.LastAirborneAt.IsZero() && time.Since(p.LastAirborneAt) <= 150*time.Millisecond && p.LastFallDistance > 0
-		if !airborneCrit && !recentLandingCrit {
-			return false
-		}
+	airborneCrit := !p.OnGround && p.FallDistance >= minCritFallDistance
+	recentLandingCrit := p.OnGround && !p.LastAirborneAt.IsZero() && time.Since(p.LastAirborneAt) <= 150*time.Millisecond && p.LastFallDistance >= minCritFallDistance
+	if !airborneCrit && !recentLandingCrit {
+		return false
 	}
 	if p.World != nil {
 		if isPlayerInWater(p.World, p.Position.X, p.Position.Y, p.Position.Z) {
@@ -119,6 +109,22 @@ func (p *Player) CanCrit() bool {
 			return false
 		}
 	}
+	return true
+}
+
+// ConsumeCrit checks whether the player can land a critical hit right now and,
+// if so, consumes the pending fall-crit state so the same jump cannot trigger
+// multiple critical hits without descending again.
+func (m *Manager) ConsumeCrit(id uuid.UUID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.players[id]
+	if p == nil || !p.CanCrit() {
+		return false
+	}
+	p.FallDistance = 0
+	p.LastFallDistance = 0
+	p.LastAirborneAt = time.Time{}
 	return true
 }
 
@@ -165,19 +171,25 @@ func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float
 			p.LastFallDistance = 0
 			p.LastAirborneAt = time.Time{}
 		} else if onGround {
-			if !prevOnGround && p.FallDistance > 0 {
+			if !prevOnGround && p.FallDistance >= minCritFallDistance {
 				p.LastFallDistance = p.FallDistance
 				p.LastAirborneAt = now
+			} else if prevOnGround && !p.LastAirborneAt.IsZero() && now.Sub(p.LastAirborneAt) > 150*time.Millisecond {
+				p.LastFallDistance = 0
+				p.LastAirborneAt = time.Time{}
 			}
 			p.FallDistance = 0
 		} else {
-			p.LastAirborneAt = now
-			if dy > 0.05 {
+			if dy > 0.01 {
 				p.FallDistance = 0
 				p.LastFallDistance = 0
-			} else if dy < 0 {
+				p.LastAirborneAt = time.Time{}
+			} else if dy < -0.001 {
 				p.FallDistance += -dy
-				p.LastFallDistance = p.FallDistance
+				if p.FallDistance >= minCritFallDistance {
+					p.LastFallDistance = p.FallDistance
+					p.LastAirborneAt = now
+				}
 			}
 		}
 		if p.World != nil && p.Health > 0 {
@@ -304,18 +316,25 @@ func (m *Manager) SyncFallState(id uuid.UUID, onGround bool, fallDistance float6
 			p.LastFallDistance = 0
 			p.LastAirborneAt = time.Time{}
 		} else if onGround {
-			if !prevOnGround && p.FallDistance > 0 {
+			if !prevOnGround && p.FallDistance >= minCritFallDistance {
 				p.LastFallDistance = p.FallDistance
 				p.LastAirborneAt = now
+			} else if prevOnGround && !p.LastAirborneAt.IsZero() && now.Sub(p.LastAirborneAt) > 150*time.Millisecond {
+				p.LastFallDistance = 0
+				p.LastAirborneAt = time.Time{}
 			}
 			p.FallDistance = 0
 		} else {
-			p.LastAirborneAt = now
-			if fallDistance > p.FallDistance {
+			if fallDistance <= 0 {
+				p.FallDistance = 0
+				p.LastFallDistance = 0
+				p.LastAirborneAt = time.Time{}
+			} else {
 				p.FallDistance = fallDistance
-			}
-			if p.FallDistance > 0 {
-				p.LastFallDistance = p.FallDistance
+				if fallDistance >= minCritFallDistance {
+					p.LastFallDistance = fallDistance
+					p.LastAirborneAt = now
+				}
 			}
 		}
 	}

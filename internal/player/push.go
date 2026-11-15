@@ -108,10 +108,9 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 	isCrit := attacker.CanCrit()
 	if isCrit {
 		dmg *= 1.5
-		if attacker.OnGround {
-			attacker.LastAirborneAt = time.Time{}
-			attacker.LastFallDistance = 0
-		}
+		attacker.FallDistance = 0
+		attacker.LastFallDistance = 0
+		attacker.LastAirborneAt = time.Time{}
 	}
 
 	dx := target.Position.X - attacker.Position.X
