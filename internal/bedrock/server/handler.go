@@ -97,6 +97,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		Time:             s.wm.GetDefaultWorld().GetDayTime(),
 		GameRules: []protocol.GameRule{
 			{Name: "doDaylightCycle", Value: doDaylight},
+			{Name: "doWeatherCycle", Value: s.cfg.World.WeatherCycle},
 			{Name: "showcoordinates", Value: true},
 			{Name: "locatorbar", Value: s.cfg.World.LocatorBar},
 			{Name: "locatorBar", Value: s.cfg.World.LocatorBar},
@@ -134,6 +135,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	bs := newBedrockSession(playerID, playerName, system.BedrockPlayerRuntimeIDOffset+uint64(s.pm.PlayerCount()), mcConn, s.pm)
+	bs.spawnPos = spawnClientPos
 	s.addSession(bs)
 	defer s.removeSession(playerID)
 	pl := player.NewPlayer(playerID, playerName, player.EditionBedrock)
@@ -148,6 +150,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	pl.OnGround = true
 	if hasSavedBedrock {
 		pl.ApplyPersisted(savedBedrock) // restore inventory/health/gamemode
+		if pl.Health <= 0 {
+			pl.Health = 20
+			pl.Food = 20
+			pl.Saturation = 5.0
+		}
 	} else {
 		// First-time Bedrock join: apply the configured default gamemode.
 		// ApplyPersisted would have set pl.Gamemode for returning players,
@@ -188,6 +195,9 @@ func (s *Server) handleConn(conn net.Conn) {
 			go s.uploadBedrockSkinPNGToMineSkin(playerID, playerName, pngData, model)
 		}
 	}
+	bs.mu.Lock()
+	bs.health = pl.Health
+	bs.mu.Unlock()
 	s.pm.AddPlayer(pl)
 	defer s.pm.RemovePlayer(playerID)
 
@@ -195,6 +205,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	// player (cross-edition player pushing is server-driven).
 	s.pm.SetController(playerID, bs)
 	defer s.pm.RemoveController(playerID)
+
+	if s.wm != nil && s.wm.Hunger() != nil {
+		s.wm.Hunger().RegisterPlayer(playerID, pl.Food, pl.Saturation, s.cfg.World.Difficulty)
+		defer s.wm.Hunger().RemovePlayer(playerID)
+	}
 
 	// gophertunnel's StartGame hardcodes CommandsEnabled=true (which shows the
 	// gamemode/cheat selector). Disable it for non-ops so they can't self-change
@@ -208,7 +223,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Re-assert the configured default gamemode (with abilities + movement
 	// attribute) AFTER StartGame so the client can't be stuck on a stale
 	// survival mode if DefaultGamemode is creative/adventure.
-	s.sendBedrockGameMode(mcConn, bedrockLocalRuntime, s.cfg.DefaultGamemode)
+	s.sendBedrockGameMode(mcConn, bedrockLocalRuntime, pl.Gamemode)
+	_ = mcConn.WritePacket(&packet.UpdateAttributes{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Attributes:      append([]protocol.Attribute{bedrockHealthAttribute(pl.Health)}, bedrockHungerAttributes(pl.Food, pl.Saturation, 0)...),
+	})
 	s.sendLocalPlayerActorData(mcConn)
 	sendInitialInventories(mcConn)
 	_ = bedrockworld.SendSetTime(mcConn, int32(s.wm.GetDefaultWorld().GetDayTime()))

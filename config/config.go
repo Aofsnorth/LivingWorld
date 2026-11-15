@@ -205,12 +205,12 @@ func Default() *Config {
 			AlwaysDay:       true,
 			WeatherCycle:    true,
 			WeatherDurations: WeatherDurationsConfig{
-				ClearMinSeconds:   300,  // 5 min
-				ClearMaxSeconds:   900,  // 15 min
-				RainMinSeconds:    600,  // 10 min
-				RainMaxSeconds:    1200, // 20 min
-				ThunderMinSeconds: 180,  // 3 min
-				ThunderMaxSeconds: 600,  // 10 min
+				ClearMinSeconds:   600,  // 10 min
+				ClearMaxSeconds:   1800, // 30 min
+				RainMinSeconds:    180,  // 3 min
+				RainMaxSeconds:    420,  // 7 min
+				ThunderMinSeconds: 120,  // 2 min
+				ThunderMaxSeconds: 300,  // 5 min
 			},
 			LocatorBar: true,
 		},

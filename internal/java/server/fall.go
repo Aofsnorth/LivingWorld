@@ -28,8 +28,15 @@ func isFallResetBlock(name string) bool {
 // damage the moment the player lands.
 func (s *PlayerSession) trackFall(oldY, newY float64, onGround bool) {
 	s.mu.Lock()
+	if s.Health <= 0 {
+		s.FallDistance = 0
+		s.mu.Unlock()
+		return
+	}
 	x, z := s.X, s.Z
-	if newY < oldY {
+	if newY > oldY+0.02 {
+		s.FallDistance = 0
+	} else if newY < oldY {
 		s.FallDistance += oldY - newY
 	}
 	if s.Bridge != nil && s.Bridge.wm != nil {
@@ -57,10 +64,11 @@ func (s *PlayerSession) trackFall(oldY, newY float64, onGround bool) {
 	}
 
 	if landed {
-		// Vanilla integer fall damage: floor(fallDistance) - 3.
-		// Jumping from a 2-block ledge adds ~1.2522 jump height -> 3.2522 total fall,
-		// so floor(3.2522) - 3 = 0 damage (safe), while falling 4+ blocks deals >= 1 damage.
-		if dmg := math.Floor(dist) - fallSafeBlocks; dmg > 0 {
+		// Vanilla integer fall damage: ceil(fallDistance - 3.35).
+		// Walking off 3 blocks (3.0) or jumping off 2 blocks (3.2522) deals 0 damage,
+		// while falling 4+ blocks (3.95..4.0) or jumping off 3 blocks (4.2522) deals 1+ damage.
+		if raw := dist - fallSafeBlocks; raw > 0 {
+			dmg := int(math.Ceil(raw))
 			s.mu.Lock()
 			x, y, z := s.X, s.Y, s.Z
 			s.mu.Unlock()
@@ -73,14 +81,21 @@ func (s *PlayerSession) trackFall(oldY, newY float64, onGround bool) {
 					s.Bridge.sessions.Broadcast(buildPlayerSoundPacket(fallSound, x, y, z, 1.0, 1.0))
 				}
 			}
-			s.damage(float32(int(dmg + 1.0)))
+			s.damage(float32(dmg))
 		}
 	}
 }
 
 // damage reduces health by amount (clamped at 0) and syncs it to the client.
 func (s *PlayerSession) damage(amount float32) {
+	if amount <= 0 {
+		return
+	}
 	s.mu.Lock()
+	if s.Health <= 0 {
+		s.mu.Unlock()
+		return
+	}
 	s.Health -= amount
 	if s.Health < 0 {
 		s.Health = 0
@@ -89,12 +104,9 @@ func (s *PlayerSession) damage(amount float32) {
 	x, y, z := s.X, s.Y, s.Z
 	s.mu.Unlock()
 
-	if s.Bridge != nil {
-		if s.Bridge.pm != nil {
-			if pl := s.Bridge.pm.GetPlayer(s.UUIDVal); pl != nil {
-				pl.Health = newHealth
-			}
-		}
+	if s.Bridge != nil && s.Bridge.pm != nil {
+		s.Bridge.pm.SetHealth(s.UUIDVal, newHealth)
+		s.Bridge.pm.AddExhaustion(s.UUIDVal, 0.1)
 	}
 
 	_ = s.sendHealth()

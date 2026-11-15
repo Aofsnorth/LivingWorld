@@ -116,7 +116,7 @@ func (m *Manager) StartWeatherCycle(enabled bool, d WeatherDurations) {
 	go func() {
 		ticker := time.NewTicker(time.Second) // weather is second-granular; cheap loop
 		defer ticker.Stop()
-		rng := rand.New(rand.NewSource(3)) // distinct seed (1=dropRNG, 2=mobAI)
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 		// Resume from the persisted/current phase so a restart doesn't reset weather.
 		raining, thundering := m.GetDefaultWorld().Weather()
@@ -126,28 +126,36 @@ func (m *Manager) StartWeatherCycle(enabled bool, d WeatherDurations) {
 			select {
 			case <-stop:
 				return
+			case <-m.weatherReset:
+				raining, thundering = m.GetDefaultWorld().Weather()
+				secsLeft = rollWeatherDuration(rng, raining, thundering, d)
 			case <-ticker.C:
+				if curRain, curThunder := m.GetDefaultWorld().Weather(); curRain != raining || curThunder != thundering {
+					raining, thundering = curRain, curThunder
+					secsLeft = rollWeatherDuration(rng, raining, thundering, d)
+					continue
+				}
 				secsLeft--
 				if secsLeft > 0 {
 					continue
 				}
 				raining, thundering = nextWeather(rng, raining, thundering)
-				m.SetWeather(raining, thundering) // off the m.mu critical path
+				m.setWeatherInternal(raining, thundering) // off the m.mu critical path
 				secsLeft = rollWeatherDuration(rng, raining, thundering, d)
 			}
 		}
 	}()
 }
 
-// nextWeather advances the weather state machine: clear→rain, rain→(50% thunder
+// nextWeather advances the weather state machine: clear→rain, rain→(25% thunder
 // else clear), thunder→clear.
 func nextWeather(rng *rand.Rand, raining, thundering bool) (nextRain, nextThunder bool) {
 	switch {
 	case thundering:
 		return false, false // storm passes
 	case raining:
-		if rng.Float64() < 0.5 {
-			return true, true // rain escalates to thunder
+		if rng.Float64() < 0.25 {
+			return true, true // rain occasionally escalates to thunder
 		}
 		return false, false // rain clears
 	default:
@@ -157,7 +165,7 @@ func nextWeather(rng *rand.Rand, raining, thundering bool) (nextRain, nextThunde
 
 // rollWeatherDuration returns how many seconds the given phase should last (the
 // director ticks at 1 Hz). The ranges come from the config; zero values fall
-// back to vanilla-ish defaults (clear 5-15 min, rain 10-20 min, thunder 3-10
+// back to vanilla-ish defaults (clear 10-30 min, rain 3-7 min, thunder 2-5
 // min). Min==Max pins the phase to a fixed duration; if Min>Max the function
 // returns Max so the director never gets a negative range.
 func rollWeatherDuration(rng *rand.Rand, raining, thundering bool, d WeatherDurations) int {
@@ -166,26 +174,26 @@ func rollWeatherDuration(rng *rand.Rand, raining, thundering bool, d WeatherDura
 	case thundering:
 		min, max = d.ThunderMin, d.ThunderMax
 		if min == 0 {
-			min = 180
+			min = 120
 		}
 		if max == 0 {
-			max = 600
+			max = 300
 		}
 	case raining:
 		min, max = d.RainMin, d.RainMax
 		if min == 0 {
-			min = 600
+			min = 180
 		}
 		if max == 0 {
-			max = 1200
+			max = 420
 		}
 	default:
 		min, max = d.ClearMin, d.ClearMax
 		if min == 0 {
-			min = 300
+			min = 600
 		}
 		if max == 0 {
-			max = 900
+			max = 1800
 		}
 	}
 	if min > max {

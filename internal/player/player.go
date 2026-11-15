@@ -46,6 +46,8 @@ func (p *Player) Snapshot() PlayerSnapshot {
 		Skin:              p.Skin,
 		SkinParts:         p.SkinParts,
 		Creative:          p.Creative,
+		Health:            p.Health,
+		Dead:              p.Health <= 0,
 	}
 }
 

@@ -64,9 +64,10 @@ func teleportPlayer(conn *minecraft.Conn, pos mgl32.Vec3, pitch, yaw float32) {
 func (s *Server) sendBedrockGameMode(conn *minecraft.Conn, runtimeID uint64, mode int) {
 	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: javaModeToBedrock(mode)})
 	_ = conn.WritePacket(&packet.UpdateAbilities{AbilityData: bedrockSurvivalAbilityData(runtimeID)})
+	attrs := append([]protocol.Attribute{bedrockHealthAttribute(20), bedrockMovementAttribute()}, bedrockHungerAttributes(20, 5.0, 0)...)
 	_ = conn.WritePacket(&packet.UpdateAttributes{
 		EntityRuntimeID: runtimeID,
-		Attributes:      []protocol.Attribute{bedrockMovementAttribute()},
+		Attributes:      attrs,
 	})
 }
 
@@ -77,9 +78,10 @@ func (s *Server) sendBedrockGameMode(conn *minecraft.Conn, runtimeID uint64, mod
 func (s *Server) sendBedrockSurvivalState(conn *minecraft.Conn, runtimeID uint64) {
 	_ = conn.WritePacket(&packet.SetPlayerGameType{GameType: packet.GameTypeSurvival})
 	_ = conn.WritePacket(&packet.UpdateAbilities{AbilityData: bedrockSurvivalAbilityData(runtimeID)})
+	attrs := append([]protocol.Attribute{bedrockHealthAttribute(20), bedrockMovementAttribute()}, bedrockHungerAttributes(20, 5.0, 0)...)
 	_ = conn.WritePacket(&packet.UpdateAttributes{
 		EntityRuntimeID: runtimeID,
-		Attributes:      []protocol.Attribute{bedrockMovementAttribute()},
+		Attributes:      attrs,
 	})
 }
 

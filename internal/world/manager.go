@@ -28,6 +28,7 @@ type Manager struct {
 	autosaveStop chan struct{}
 	timeStop     chan struct{}
 	weatherStop  chan struct{}
+	weatherReset chan struct{}
 
 	// tickStop / tickAutosaver / tickAdvanceTime / tickRNG are the
 	// Phase-4a unified-tick fields. The legacy StartTimeLoop /
@@ -176,6 +177,7 @@ func NewManager() *Manager {
 		spawnMobsEnabled: true,
 		hunger:           NewHungerTracker(),
 		scheduledTicks:   NewScheduledTickSystem(),
+		weatherReset:     make(chan struct{}, 1),
 	}
 	m.defaultWorld = NewWorld("world")
 	m.worlds["world"] = m.defaultWorld

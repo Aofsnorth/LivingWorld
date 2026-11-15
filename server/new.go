@@ -127,16 +127,52 @@ func New(cfg *Config) *Server {
 	// detection (skeleton/zombie/creeper skull reduces follow-range by 50%)
 	// isn't on the Player struct today, so v1 always passes false; the
 	// detection math is harmless when worn-head is a no-op.
+	// Wire hunger callbacks between world.HungerTracker and player.Manager.
+	players.SetHungerHooks(worlds.Hunger().AddExhaustion, worlds.Hunger().CanSprint)
+	worlds.Hunger().SetSyncCallback(func(id uuid.UUID, food int, saturation, exhaustion float32) {
+		players.SyncHunger(id, food, saturation, exhaustion)
+	})
+	worlds.Hunger().SetCanHealCallback(func(id uuid.UUID) bool {
+		p := players.GetPlayer(id)
+		return p != nil && p.Health > 0 && p.Health < 20 && !p.Creative && p.Gamemode != 1 && p.Gamemode != 3
+	})
+	worlds.Hunger().SetHealCallback(func(id uuid.UUID, amount float32) {
+		players.HealPlayer(id, amount)
+	})
+	worlds.Hunger().SetStarveCallback(func(id uuid.UUID, amount float32) {
+		p := players.GetPlayer(id)
+		if p == nil || p.Health <= 0 || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
+			return
+		}
+		// Vanilla starvation minimum health floor by difficulty:
+		// easy = 10 HP (5 hearts), normal = 1 HP (0.5 hearts), hard = 0 HP (lethal).
+		switch cfg.World.Difficulty {
+		case "easy":
+			if p.Health <= 10 {
+				return
+			}
+		case "normal", "":
+			if p.Health <= 1 {
+				return
+			}
+		}
+		players.DamagePlayer(id, amount)
+	})
+
 	worlds.SetMobAIPlayerList(func() []mobs.PlayerTarget {
 		all := players.GetAllPlayers()
 		out := make([]mobs.PlayerTarget, 0, len(all))
 		for _, p := range all {
+			if p.Health <= 0 {
+				continue
+			}
 			out = append(out, mobs.PlayerTarget{
 				UUID:        p.UUID,
 				X:           p.Position.X,
 				Y:           p.Position.Y,
 				Z:           p.Position.Z,
 				Sneaking:    p.Sneaking,
+				Invisible:   players.HasEffect(p.UUID, player.EffectInvisibility),
 				WearingGold: p.WearingGold(),
 				Gamemode:    p.Gamemode,
 				LookYaw:     float64(p.Rotation.Yaw),
@@ -151,9 +187,7 @@ func New(cfg *Config) *Server {
 	worlds.SetMobAICallbacks(
 		// aiMeleeAttack: apply HP loss + swing animation packet.
 		func(targetUUID [16]byte, attackerID int64, damage float32) {
-			if tgt := players.GetPlayer(targetUUID); tgt != nil {
-				tgt.Damage(damage)
-			}
+			players.DamagePlayer(uuid.UUID(targetUUID), damage)
 			// Publish a swing from the attacker's own controller so the
 			// animation plays on every nearby client. (The mob doesn't
 			// have a UUID; we use the entityID.)
@@ -172,16 +206,18 @@ func New(cfg *Config) *Server {
 			pl := players.GetAllPlayers()
 			targets := make([]mobs.PlayerTarget, 0, len(pl))
 			for _, p := range pl {
+				if p.Health <= 0 || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
+					continue
+				}
 				targets = append(targets, mobs.PlayerTarget{
 					UUID: p.UUID, X: p.Position.X, Y: p.Position.Y, Z: p.Position.Z,
 				})
 			}
 			hits := mobs.AffectedPlayers(targets, x, y, z, power)
 			for _, h := range hits {
-				if tgt := players.GetPlayer(h.UUID); tgt != nil {
-					tgt.Damage(h.Damage)
-					tgt.Push(h.KnockX, h.KnockY, h.KnockZ)
-				}
+				id := uuid.UUID(h.UUID)
+				players.DamagePlayer(id, h.Damage)
+				players.PushPlayer(id, h.KnockX, h.KnockY, h.KnockZ)
 			}
 			worlds.PublishExplosion(mobs.ExplosionResult{
 				X: x, Y: y, Z: z, Power: power, Radius: power * 2, Hits: hits,
@@ -190,9 +226,7 @@ func New(cfg *Config) *Server {
 		// aiProjectileHit: skeleton arrow landed on a player. Apply
 		// 1.5 hearts of damage (vanilla arrow damage rolls 1.5-2.5).
 		func(arrowID int64, targetUUID [16]byte) {
-			if tgt := players.GetPlayer(targetUUID); tgt != nil {
-				tgt.Damage(1.5)
-			}
+			players.DamagePlayer(uuid.UUID(targetUUID), 1.5)
 		},
 		// aiFireDamage: M0.6 — a mob in direct sunlight took fire
 		// damage. For v1 we just subtract HP from the mob. v2
@@ -217,29 +251,20 @@ func New(cfg *Config) *Server {
 		},
 		// aiHitEffect: M6 — melee swing applies a status effect
 		// (husk → hunger, cave spider → poison, wither skeleton →
-		// wither, witch → instant_damage). The effect is stored in
-		// the player's per-effect bag, which the world tick
-		// (Phase 4e) drains: poison / wither apply 0.5 HP per tick
-		// at vanilla cadence, hunger is rendered client-side
-		// (vanilla applies the food-level debuff, not direct HP).
-		// instant_damage is one-shot: 6 HP × 2^level applied here
-		// and no effect is added to the bag.
-		//
-		// The bridges see EffectStatus when a tickable effect is
-		// added, and EffectStatusRemove when it expires or is
-		// removed — AddEffect publishes both, plus the per-tick
-		// damage path goes through Manager.TickEffects.
+		// wither, witch → instant_damage).
 		func(targetUUID [16]byte, attackerID int64, effect mobs.HitEffect) {
+			id := uuid.UUID(targetUUID)
+			if tgt := players.GetPlayer(id); tgt == nil || tgt.Health <= 0 || tgt.Creative || tgt.Gamemode == 1 || tgt.Gamemode == 3 {
+				return
+			}
 			if effect.Type == "instant_damage" {
 				// Witch's harming potion: 6 HP × 2^level, applied
 				// immediately; no bag entry.
-				if tgt := players.GetPlayer(targetUUID); tgt != nil {
-					mul := 1
-					for i := 0; i < effect.Level; i++ {
-						mul *= 2
-					}
-					tgt.Damage(6 * float32(mul))
+				mul := 1
+				for i := 0; i < effect.Level; i++ {
+					mul *= 2
 				}
+				players.DamagePlayer(id, 6*float32(mul))
 				return
 			}
 			eid := player.EffectIDForHitEffectType(effect.Type)
@@ -252,17 +277,14 @@ func New(cfg *Config) *Server {
 			if ticks <= 0 {
 				ticks = 20 // safety net: never apply a 0-tick effect
 			}
-			players.AddEffect(uuid.UUID(targetUUID), eid, effect.Level, ticks)
+			players.AddEffect(id, eid, effect.Level, ticks)
 		},
 		// aiThrow: M1 — iron golem picks up a player and throws them.
 		// Vanilla: 3+ b upward velocity + 4 fall damage on landing.
 		// v1: just the upward velocity; the player takes fall
 		// damage naturally when they land.
 		func(targetUUID [16]byte, attackerID int64, damage float32) {
-			if tgt := players.GetPlayer(targetUUID); tgt != nil {
-				// 3+ b upward + slight horizontal nudge.
-				tgt.Push(0, 1.0, 0)
-			}
+			players.PushPlayer(uuid.UUID(targetUUID), 0, 1.0, 0)
 		},
 		// aiShootProjectile: M1 — unified ranged-fire hook. The
 		// projectileType string picks the kind. The default path

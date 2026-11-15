@@ -20,7 +20,11 @@ func TargetPlayer(m *mobs.Mob, ctx *context.AIContext) *context.PlayerTarget {
 	if m.Target == context.ZeroUUID() {
 		return nil
 	}
-	return context.FindPlayer(ctx.Players(), m.Target)
+	p := context.FindPlayer(ctx.Players(), m.Target)
+	if p == nil || p.Dead || p.Gamemode == 1 || p.Gamemode == 3 {
+		return nil
+	}
+	return p
 }
 
 // MeleeAttackGoal pathfinds to the target and swings on cooldown —
@@ -63,7 +67,8 @@ func (MeleeAttackGoal) Tick(body any, ctx *context.AIContext) {
 	distSq := dx*dx + dz*dz
 	movement.LookAt(m, p.X, p.Y+movement.PlayerEyeHeight, p.Z, true)
 
-	if distSq > def.AttackRange {
+	hasLOS := ctx.SolidAt == nil || context.HasLineOfSight(m.X, m.Y+1.0, m.Z, p.X, p.Y+1.0, p.Z, ctx.SolidAt)
+	if distSq > def.AttackRange || math.Abs(p.Y-m.Y) > 2.2 || !hasLOS {
 		m.State = mobs.StatePursue
 		movement.NavigateTo(m, def, ctx, p.X, p.Y, p.Z, def.ChaseSpeed)
 		return
@@ -143,7 +148,8 @@ func (RangedAttackGoal) Tick(body any, ctx *context.AIContext) {
 	yaw := math.Atan2(-dx, dz)*180/math.Pi + 180
 	movement.LookAt(m, p.X, p.Y+movement.PlayerEyeHeight, p.Z, false)
 
-	if dist > maxRange {
+	hasLOS := ctx.SolidAt == nil || context.HasLineOfSight(m.X, m.Y+1.6, m.Z, p.X, p.Y+1.0, p.Z, ctx.SolidAt)
+	if dist > maxRange || !hasLOS {
 		m.State = mobs.StatePursue
 		m.DrawTicks = 0
 		movement.NavigateTo(m, def, ctx, p.X, p.Y, p.Z, def.ChaseSpeed)
@@ -266,9 +272,11 @@ func (SwellGoal) CanUse(body any, ctx *context.AIContext) bool {
 	if p == nil {
 		return false
 	}
-	def := mobs.DefFor(m.Type)
 	dx, dz := p.X-m.X, p.Z-m.Z
-	return math.Hypot(dx, dz) < def.ExplosionRadius
+	if math.Hypot(dx, dz) > 3.0 || math.Abs(p.Y-m.Y) > 3.0 {
+		return false
+	}
+	return ctx.SolidAt == nil || context.HasLineOfSight(m.X, m.Y+1.0, m.Z, p.X, p.Y+1.0, p.Z, ctx.SolidAt)
 }
 
 func (SwellGoal) CanContinue(body any, ctx *context.AIContext) bool {
@@ -276,7 +284,23 @@ func (SwellGoal) CanContinue(body any, ctx *context.AIContext) bool {
 	if !ok {
 		return false
 	}
-	return TargetPlayer(m, ctx) != nil
+	p := TargetPlayer(m, ctx)
+	if p == nil {
+		return false
+	}
+	dx, dy, dz := p.X-m.X, p.Y-m.Y, p.Z-m.Z
+	// Vanilla SwellGoal: once armed within 3 blocks, creeper stays in SwellGoal
+	// until the target moves > 7 blocks away (3D distance > 7.0 -> 49.0 sq) or
+	// line-of-sight is broken and the fuse fully unwinds.
+	if dx*dx+dy*dy+dz*dz > 49.0 {
+		return false
+	}
+	def := mobs.DefFor(m.Type)
+	hasLOS := ctx.SolidAt == nil || context.HasLineOfSight(m.X, m.Y+1.0, m.Z, p.X, p.Y+1.0, p.Z, ctx.SolidAt)
+	if !hasLOS && m.FuseTicks >= def.FuseTicks {
+		return false
+	}
+	return true
 }
 
 func (SwellGoal) Start(body any, ctx *context.AIContext) {
@@ -287,6 +311,8 @@ func (SwellGoal) Start(body any, ctx *context.AIContext) {
 	def := mobs.DefFor(m.Type)
 	m.FuseTicks = def.FuseTicks
 	m.State = mobs.StateFuse
+	m.Path = nil
+	m.WalkTicks = 0
 }
 
 func (SwellGoal) Tick(body any, ctx *context.AIContext) {
@@ -298,8 +324,10 @@ func (SwellGoal) Tick(body any, ctx *context.AIContext) {
 	p := TargetPlayer(m, ctx)
 	inRange := false
 	if p != nil {
-		dx, dz := p.X-m.X, p.Z-m.Z
-		inRange = math.Hypot(dx, dz) < def.ExplosionRadius
+		dx, dy, dz := p.X-m.X, p.Y-m.Y, p.Z-m.Z
+		hasLOS := ctx.SolidAt == nil || context.HasLineOfSight(m.X, m.Y+1.0, m.Z, p.X, p.Y+1.0, p.Z, ctx.SolidAt)
+		// Vanilla: fuse counts down as long as the player has LOS and remains within 7 blocks (49 sq).
+		inRange = hasLOS && (dx*dx+dy*dy+dz*dz <= 49.0)
 		movement.LookAt(m, p.X, p.Y+movement.PlayerEyeHeight, p.Z, true)
 	}
 	if inRange {

@@ -91,6 +91,7 @@ func (s *Server) breakBedrockBlock(bs *bedrockSession, pos protocol.BlockPos) {
 		}
 	}
 	if !isCreative {
+		s.pm.AddExhaustion(bs.id, 0.005)
 		s.wm.DropBlockLootWithTool(current.ID(), toolName, int(pos[0]), int(pos[1]), int(pos[2]))
 	}
 
@@ -155,12 +156,40 @@ const bedrockCrackBreakSeconds = gameplay.BedrockCrackBreakSeconds
 // crack is cleared on actual break-finish (block turns to air) or on abort,
 // so a slightly off rate is harmless. -1 hardness (unbreakable) returns 0
 // which disables the overlay entirely.
+// bedrockCrackSecondsFor returns the per-block crack overlay duration in
+// seconds for the given block state with bare hands.
 func bedrockCrackSecondsFor(blockID int32) float64 {
-	h := world.Hardness(blockID)
-	if h <= 0 {
+	ticks := world.BreakTicks(blockID, "", false, true)
+	if ticks <= 0 {
 		return 0
 	}
-	return h * 1.5
+	return float64(ticks) / 20.0
+}
+
+// bedrockCrackSecondsForPlayer returns the exact server-authoritative break
+// duration in seconds for a Bedrock player, accounting for their held tool,
+// harvestability (1.5s vs 5.0s multiplier), and grounded state so the Bedrock
+// crack animation matches actual break completion 1:1.
+func (s *Server) bedrockCrackSecondsForPlayer(bs *bedrockSession, blockID int32) float64 {
+	toolName := ""
+	onGround := true
+	if bs != nil && s.pm != nil {
+		if pl := s.pm.GetPlayer(bs.id); pl != nil {
+			onGround = pl.OnGround
+			if pl.Inventory != nil {
+				if held := pl.Inventory.GetHeldItem(); held != nil && held.ID != 0 && held.Count > 0 {
+					if it, ok := item.ByID(held.ID); ok {
+						toolName = it.Name
+					}
+				}
+			}
+		}
+	}
+	ticks := world.BreakTicks(blockID, toolName, false, onGround)
+	if ticks <= 0 {
+		return 0
+	}
+	return float64(ticks) / 20.0
 }
 
 // crackSwitch updates the tracked breaking block for bs and, when the player
@@ -190,12 +219,15 @@ func (s *Server) crackSwitch(bs *bedrockSession, pos protocol.BlockPos, totalSec
 func (s *Server) broadcastBlockCracking(pos protocol.BlockPos, eventType int32, totalSeconds float64) {
 	corner := mgl32.Vec3{float32(pos[0]), float32(pos[1]), float32(pos[2])}
 	var data int32
-	if eventType == packet.LevelEventStartBlockCracking {
+	if eventType == packet.LevelEventStartBlockCracking || eventType == packet.LevelEventUpdateBlockCracking {
 		secs := totalSeconds
 		if secs <= 0 {
 			secs = bedrockCrackBreakSeconds
 		}
 		data = int32(65535 / (secs * 20))
+		if data < 1 {
+			data = 1
+		}
 	}
 	s.forEachSession(func(bs *bedrockSession) {
 		bs.write(&packet.LevelEvent{

@@ -40,6 +40,8 @@ type bedrockSession struct {
 	lastAuthInputAt     time.Time
 	lastBlockPlaceAt    time.Time
 	lastX, lastY, lastZ float64
+	fallDistance        float64
+	spawnPos            mgl32.Vec3
 
 	// chunkCache is the thread-safe Bedrock chunk cache for this connection session.
 	chunkCache *bedrockworld.ChunkCache
@@ -173,20 +175,83 @@ func (s *bedrockSession) Push(vx, vy, vz float64) {
 	})
 }
 
-// Hurt implements player.Controller: apply melee damage to this Bedrock player —
-// drop its health bar and play the hurt flash + sound on its own client.
+// Hurt implements player.Controller: apply damage to this Bedrock player —
+// drop its health bar, play the hurt flash + sound on its own client, and
+// initiate the Bedrock respawn handshake when health reaches 0.
 func (s *bedrockSession) Hurt(amount float32) {
+	if amount <= 0 {
+		return
+	}
 	s.mu.Lock()
+	if s.health <= 0 {
+		s.mu.Unlock()
+		return
+	}
+	wasAlive := s.health > 0
 	s.health -= amount
 	if s.health < 0 {
 		s.health = 0
 	}
 	hp := s.health
+	died := wasAlive && hp <= 0
+	spawnPos := s.spawnPos
+	if died {
+		s.fallDistance = 0
+	}
 	s.mu.Unlock() // write() also takes s.mu; never hold it across a write
+	if s.pm != nil {
+		s.pm.SetHealth(s.id, hp)
+	}
 	s.write(&packet.ActorEvent{EntityRuntimeID: bedrockLocalRuntime, EventType: packet.ActorEventHurt})
 	s.write(&packet.UpdateAttributes{
 		EntityRuntimeID: bedrockLocalRuntime,
 		Attributes:      []protocol.Attribute{bedrockHealthAttribute(hp)},
+	})
+	if died {
+		s.write(&packet.ActorEvent{
+			EntityRuntimeID: bedrockLocalRuntime,
+			EventType:       packet.ActorEventDeath,
+		})
+		s.write(&packet.Respawn{
+			Position:        spawnPos,
+			State:           packet.RespawnStateReadyToSpawn,
+			EntityRuntimeID: bedrockLocalRuntime,
+		})
+	}
+}
+
+// Heal implements player.Controller: restore health up to max (20) and push
+// the updated health attribute to the Bedrock client.
+func (s *bedrockSession) Heal(amount float32) {
+	if amount <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.health <= 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.health += amount
+	if s.health > 20 {
+		s.health = 20
+	}
+	hp := s.health
+	s.mu.Unlock()
+	if s.pm != nil {
+		s.pm.SetHealth(s.id, hp)
+	}
+	s.write(&packet.UpdateAttributes{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Attributes:      []protocol.Attribute{bedrockHealthAttribute(hp)},
+	})
+}
+
+// SyncHunger implements player.HungerController: push updated food, saturation,
+// and exhaustion attributes to the Bedrock client HUD.
+func (s *bedrockSession) SyncHunger(food int, saturation, exhaustion float32) {
+	s.write(&packet.UpdateAttributes{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Attributes:      bedrockHungerAttributes(food, saturation, exhaustion),
 	})
 }
 

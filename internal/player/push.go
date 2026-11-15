@@ -38,7 +38,7 @@ func (m *Manager) pushTick() {
 	for i := 0; i < len(players); i++ {
 		for j := i + 1; j < len(players); j++ {
 			a, b := players[i], players[j]
-			if a.EntityRuntimeID == 0 || b.EntityRuntimeID == 0 {
+			if a.EntityRuntimeID == 0 || b.EntityRuntimeID == 0 || a.Health <= 0 || b.Health <= 0 || a.Gamemode == 3 || b.Gamemode == 3 {
 				continue
 			}
 			if math.Abs(b.Position.Y-a.Position.Y) >= pushVertical {
@@ -89,7 +89,7 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 			break
 		}
 	}
-	if attacker == nil || target == nil || target.UUID == attackerUUID {
+	if attacker == nil || target == nil || target.UUID == attackerUUID || attacker.Health <= 0 || target.Health <= 0 || attacker.Gamemode == 3 || target.Creative || target.Gamemode == 1 || target.Gamemode == 3 {
 		m.mu.Unlock()
 		return
 	}
@@ -105,7 +105,8 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 			dmg = float32(combat.SwordDamage(held.ID))
 		}
 	}
-	if !attacker.OnGround && !attacker.Sprinting && !attacker.Swimming {
+	isCrit := attacker.CanCrit()
+	if isCrit {
 		dmg *= 1.5
 	}
 
@@ -127,14 +128,21 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 	}
 	targetUUID := target.UUID
 	targetSnap := target.Snapshot()
+	exhaustionFn := m.exhaustionFn
 	m.mu.Unlock()
 
+	if exhaustionFn != nil {
+		exhaustionFn(attackerUUID, 0.1) // vanilla melee attack exhaustion
+	}
 	if wasSprinting {
 		m.UpdateSprinting(attackerUUID, false)
 	}
 	m.push(targetUUID, dx/d*kb, vy, dz/d*kb)
 	m.hurt(targetUUID, dmg)                                // target's own health + red flash
 	m.publish(Event{Type: EventHurt, Player: targetSnap}) // hurt flash on all viewers
+	if isCrit {
+		m.publish(Event{Type: EventCrit, Player: targetSnap})
+	}
 }
 
 // meleeDamage is the bare-hand attack damage (vanilla: 1 point = half a heart).

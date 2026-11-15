@@ -98,13 +98,16 @@ func (s *PlayerSession) reconcileViewerFor(p player.PlayerSnapshot) {
 	if !s.Ready || p.UUID == s.UUID() {
 		return
 	}
-	if s.inViewRange(p) {
+	if !p.Dead && s.inViewRange(p) {
 		if s.viewers.markSpawnedIfAbsent(p.UUID, p) {
 			s.spawnForeignAvatar(p)
 		} else {
 			s.moveForeignAvatar(p)
 		}
 	} else if snap, ok := s.viewers.markDespawnedIfPresent(p.UUID); ok {
+		if p.Dead {
+			s.updateForeignMetadata(p)
+		}
 		s.removeForeignAvatar(snap)
 		s.mu.Lock()
 		delete(s.lastSentPos, p.UUID) // re-spawn must re-send an absolute position
@@ -151,7 +154,7 @@ func (s *PlayerSession) reconcileViewers() {
 			continue
 		}
 		snap := p.Snapshot()
-		if !s.inViewRange(snap) {
+		if snap.Dead || !s.inViewRange(snap) {
 			continue
 		}
 		inRange[p.UUID] = struct{}{}

@@ -69,6 +69,7 @@ type Session interface {
 	HandleMoveStatusOnly(p pk.Packet)
 	HandlePlayerAction(p pk.Packet)
 	HandleUseItemOn(p pk.Packet)
+	HandleUseItem(p pk.Packet)
 	HandleChat(p pk.Packet)
 	HandleCreativeSlot(p pk.Packet)
 	HandleSetCarriedItem(p pk.Packet)

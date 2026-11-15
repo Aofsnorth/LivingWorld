@@ -36,15 +36,6 @@ func bedrockPosFromJavaFeet(x, y, z float64) mgl32.Vec3 {
 }
 
 func (s *bedrockSession) movementUpdate(now time.Time, x, y, z float64) (publish bool, correct bool) {
-	if s.lastMovePublish.IsZero() {
-		s.lastMovePublish = now
-		s.lastX, s.lastY, s.lastZ = x, y, z
-		return true, false
-	}
-	dt := now.Sub(s.lastMovePublish).Seconds()
-	if dt <= 0 {
-		return false, false
-	}
 	s.lastMovePublish = now
 	s.lastX, s.lastY, s.lastZ = x, y, z
 	return true, false

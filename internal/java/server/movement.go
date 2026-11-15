@@ -49,8 +49,13 @@ func (s *PlayerSession) HandleMovePosRot(p pk.Packet) {
 // reloads chunks when the player crosses a chunk boundary.
 func (s *PlayerSession) applyMove(x, y, z float64, onGround bool) {
 	s.mu.Lock()
+	if s.Health <= 0 {
+		s.mu.Unlock()
+		return
+	}
 	oldCX, oldCZ := s.ChunkX(), s.ChunkZ()
 	oldY := s.Y
+	wasOnGround := s.OnGround
 	s.X, s.Y, s.Z = x, y, z
 	s.OnGround = onGround
 	newCX, newCZ := s.ChunkX(), s.ChunkZ()
@@ -59,6 +64,9 @@ func (s *PlayerSession) applyMove(x, y, z float64, onGround bool) {
 	// Publish Java movement to the shared player manager so Bedrock viewers
 	// can see Java players move.
 	if s.Bridge != nil && s.Bridge.pm != nil {
+		if wasOnGround && !onGround && y-oldY > 0.05 {
+			s.Bridge.pm.AddJumpExhaustion(s.UUID())
+		}
 		s.Bridge.pm.UpdatePosition(s.UUID(), x, y, z, s.Pitch, s.Yaw, onGround)
 	}
 

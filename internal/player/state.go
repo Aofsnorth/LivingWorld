@@ -9,15 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// isPlayerInWater checks whether any part of a player's bounding box (width 0.6,
-// height 1.8 / swimming height 0.6) intersects a water block. Checking the AABB
-// corners in addition to the center prevents false "left water" transitions when
-// swimming along block edges or near the water surface.
-func isPlayerInWater(w *world.World, x, y, z float64) bool {
+// isWaterAtOffset checks whether the player's horizontal footprint (width 0.6)
+// intersects a water block at y + yOffset.
+func isWaterAtOffset(w *world.World, x, y, z, yOffset float64) bool {
 	if w == nil {
 		return false
 	}
-	yOffsets := [4]float64{0.0, 0.4, 1.2, 1.62}
 	xzOffsets := [5][2]float64{
 		{0, 0},
 		{-0.29, -0.29},
@@ -25,17 +22,91 @@ func isPlayerInWater(w *world.World, x, y, z float64) bool {
 		{0.29, -0.29},
 		{0.29, 0.29},
 	}
-	for _, yo := range yOffsets {
-		by := int(math.Floor(y + yo))
-		for _, xzo := range xzOffsets {
-			bx := int(math.Floor(x + xzo[0]))
-			bz := int(math.Floor(z + xzo[1]))
-			if world.IsWaterBlockID(w.GetBlock(bx, by, bz).ID()) {
-				return true
-			}
+	by := int(math.Floor(y + yOffset))
+	for _, xzo := range xzOffsets {
+		bx := int(math.Floor(x + xzo[0]))
+		bz := int(math.Floor(z + xzo[1]))
+		if world.IsWaterBlockID(w.GetBlock(bx, by, bz).ID()) {
+			return true
 		}
 	}
 	return false
+}
+
+// isPlayerInWater checks whether any part of a player's bounding box (width 0.6,
+// height 1.8 / swimming height 0.6) intersects a water block.
+func isPlayerInWater(w *world.World, x, y, z float64) bool {
+	if w == nil {
+		return false
+	}
+	for _, yo := range [4]float64{0.0, 0.4, 1.2, 1.62} {
+		if isWaterAtOffset(w, x, y, z, yo) {
+			return true
+		}
+	}
+	return false
+}
+
+// canStartSwimming reports whether a non-swimming player is submerged deeply
+// enough to enter horizontal swim mode when sprinting. Both lower body (y+0.4)
+// and standing eye level (y+1.62) must be in water; floating on the water
+// surface or wading in 1-block shallow water must NOT enter swim mode.
+func canStartSwimming(w *world.World, x, y, z float64) bool {
+	return isWaterAtOffset(w, x, y, z, 0.4) && isWaterAtOffset(w, x, y, z, 1.62)
+}
+
+// canKeepSwimming reports whether an already-swimming player (height 0.6,
+// swimming eye/body level at y+0.4) remains submerged enough to stay in swim
+// mode. Once the player floats onto the top of the water surface so y+0.4 is in
+// air (even if feet y+0.0 still touch water), swimming ends.
+func canKeepSwimming(w *world.World, x, y, z float64) bool {
+	return isWaterAtOffset(w, x, y, z, 0.4)
+}
+
+// resolveSwimState computes the authoritative swimming state for a player.
+func resolveSwimState(w *world.World, x, y, z float64, sprinting, currentlySwimming bool) bool {
+	if !sprinting || w == nil {
+		return false
+	}
+	if currentlySwimming {
+		return canKeepSwimming(w, x, y, z)
+	}
+	return canStartSwimming(w, x, y, z)
+}
+
+// CanCrit reports whether the player currently satisfies Vanilla 1.20 critical
+// hit conditions: airborne, falling downward (FallDistance > 0), not sprinting
+// (on Java; Bedrock clients keep InputFlagSprinting latched during forward jumps),
+// not swimming, not flying, not in water/lava/climbable, and not blinded.
+func (p *Player) CanCrit() bool {
+	if p == nil || p.Health <= 0 || p.OnGround || p.FallDistance <= 0 || p.Swimming || p.Flying {
+		return false
+	}
+	if p.Sprinting && p.Edition != EditionBedrock {
+		return false
+	}
+	if p.Sprinting && p.Edition != EditionBedrock {
+		return false
+	}
+	if p.effects.has(EffectBlindness) {
+		return false
+	}
+	if p.World != nil {
+		if isPlayerInWater(p.World, p.Position.X, p.Position.Y, p.Position.Z) {
+			return false
+		}
+		bx, by, bz := int(math.Floor(p.Position.X)), int(math.Floor(p.Position.Y)), int(math.Floor(p.Position.Z))
+		name := world.StateName(p.World.GetBlock(bx, by, bz).ID())
+		switch name {
+		case "minecraft:lava", "minecraft:ladder", "minecraft:vine", "minecraft:scaffolding",
+			"minecraft:cobweb", "minecraft:powder_snow", "minecraft:sweet_berry_bush",
+			"minecraft:weeping_vines", "minecraft:weeping_vines_plant",
+			"minecraft:twisting_vines", "minecraft:twisting_vines_plant",
+			"minecraft:cave_vines", "minecraft:cave_vines_plant":
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float32, onGround bool) {
@@ -43,6 +114,8 @@ func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float
 	p := m.players[id]
 	isTeleport := false
 	swimChanged := false
+	var exhaustionDelta float32
+	var exhaustionFn func(uuid.UUID, float32)
 	var snap PlayerSnapshot
 	if p != nil {
 		dx := x - p.Position.X
@@ -53,22 +126,48 @@ func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float
 		if distSq > gameplay.TeleportDistanceSquared {
 			isTeleport = true
 		}
+		if !isTeleport && p.Health > 0 && !p.Creative && p.Gamemode != 1 && p.Gamemode != 3 {
+			if p.Sprinting && p.Food <= 6 && (m.canSprintFn == nil || !m.canSprintFn(id)) {
+				p.Sprinting = false
+				swimChanged = true
+			}
+			horizDist := math.Sqrt(dx*dx + dz*dz)
+			if p.Swimming {
+				dist3D := math.Sqrt(distSq)
+				if dist3D > 0.001 {
+					exhaustionDelta = 0.01 * float32(dist3D)
+				}
+			} else if p.Sprinting && horizDist > 0.001 {
+				exhaustionDelta = 0.1 * float32(horizDist)
+			}
+			exhaustionFn = m.exhaustionFn
+		}
 		p.Position = world.Position{X: x, Y: y, Z: z}
 		p.Rotation = world.Rotation{Pitch: pitch, Yaw: yaw}
 		p.OnGround = onGround
-		if p.World != nil {
-			inWater := isPlayerInWater(p.World, x, y, z)
-			if !inWater && p.Swimming {
-				p.Swimming = false
-				swimChanged = true
-			} else if inWater && p.Sprinting && !p.Swimming {
-				p.Swimming = true
+		if isTeleport || onGround || p.Swimming || p.Flying || p.Health <= 0 {
+			p.FallDistance = 0
+		} else if dy > 0.02 {
+			p.FallDistance = 0
+		} else if dy < 0 {
+			p.FallDistance += -dy
+		}
+		if p.World != nil && p.Health > 0 {
+			if isPlayerInWater(p.World, x, y, z) {
+				p.FallDistance = 0
+			}
+			wantSwim := resolveSwimState(p.World, x, y, z, p.Sprinting, p.Swimming)
+			if p.Swimming != wantSwim {
+				p.Swimming = wantSwim
 				swimChanged = true
 			}
 		}
 		snap = p.Snapshot()
 	}
 	m.mu.Unlock()
+	if exhaustionDelta > 0 && exhaustionFn != nil {
+		exhaustionFn(id, exhaustionDelta)
+	}
 	if p != nil {
 		m.publish(Event{Type: EventMove, Player: snap, Teleport: isTeleport})
 		if swimChanged {
@@ -102,18 +201,33 @@ func (m *Manager) UpdateSprinting(id uuid.UUID, sprinting bool) {
 	p := m.players[id]
 	var snap PlayerSnapshot
 	changed := false
+	resyncClient := false
 	if p != nil {
-		inWater := isPlayerInWater(p.World, p.Position.X, p.Position.Y, p.Position.Z)
+		if sprinting {
+			if p.Health <= 0 {
+				sprinting = false
+				resyncClient = true
+			} else if !p.Creative && p.Gamemode != 1 && p.Gamemode != 3 {
+				canSprint := p.Food > 6
+				if m.canSprintFn != nil {
+					canSprint = m.canSprintFn(id)
+				}
+				if !canSprint {
+					sprinting = false
+					resyncClient = true
+				}
+			}
+		}
 		if p.Sprinting != sprinting {
 			p.Sprinting = sprinting
 			changed = true
 		}
-		wantSwim := sprinting && inWater
+		wantSwim := resolveSwimState(p.World, p.Position.X, p.Position.Y, p.Position.Z, sprinting, p.Swimming)
 		if p.Swimming != wantSwim {
 			p.Swimming = wantSwim
 			changed = true
 		}
-		if changed {
+		if changed || resyncClient {
 			snap = p.Snapshot()
 		}
 	}
@@ -121,7 +235,45 @@ func (m *Manager) UpdateSprinting(id uuid.UUID, sprinting bool) {
 	if changed {
 		m.publish(Event{Type: EventSneak, Player: snap})
 		m.syncEnvironment(snap)
+	} else if resyncClient {
+		m.syncEnvironment(snap)
 	}
+}
+
+// AddJumpExhaustion applies vanilla jump exhaustion (0.2 when sprint-jumping,
+// 0.05 for a regular jump).
+func (m *Manager) AddJumpExhaustion(id uuid.UUID) {
+	m.mu.RLock()
+	p := m.players[id]
+	fn := m.exhaustionFn
+	var amount float32
+	if p != nil && p.Health > 0 && !p.Creative && p.Gamemode != 1 && p.Gamemode != 3 {
+		if p.Sprinting {
+			amount = 0.2
+		} else {
+			amount = 0.05
+		}
+	}
+	m.mu.RUnlock()
+	if amount > 0 && fn != nil {
+		fn(id, amount)
+	}
+}
+
+// SyncFallState updates a player's authoritative OnGround and FallDistance
+// immediately (even on movement frames whose position broadcast is rate-limited)
+// so combat critical-hit checks always see the latest airborne descent state.
+func (m *Manager) SyncFallState(id uuid.UUID, onGround bool, fallDistance float64) {
+	m.mu.Lock()
+	if p := m.players[id]; p != nil && p.Health > 0 {
+		p.OnGround = onGround
+		if onGround || p.Swimming || p.Flying {
+			p.FallDistance = 0
+		} else if fallDistance > p.FallDistance {
+			p.FallDistance = fallDistance
+		}
+	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) UpdateSwimming(id uuid.UUID, swimming bool) {
@@ -129,21 +281,30 @@ func (m *Manager) UpdateSwimming(id uuid.UUID, swimming bool) {
 	p := m.players[id]
 	var snap PlayerSnapshot
 	changed := false
+	resyncClient := false
 	if p != nil {
 		if swimming && p.World != nil {
-			if !isPlayerInWater(p.World, p.Position.X, p.Position.Y, p.Position.Z) {
+			if !resolveSwimState(p.World, p.Position.X, p.Position.Y, p.Position.Z, true, p.Swimming) {
 				swimming = false
+				// Client tried to start swimming while at the water surface or out
+				// of deep water; force a metadata resync so Bedrock clears its
+				// local swimming flag and restores normal 1.8m hitbox height.
+				resyncClient = true
 			}
 		}
 		if p.Swimming != swimming {
 			p.Swimming = swimming
 			changed = true
+		}
+		if changed || resyncClient {
 			snap = p.Snapshot()
 		}
 	}
 	m.mu.Unlock()
 	if changed {
 		m.publish(Event{Type: EventSneak, Player: snap})
+		m.syncEnvironment(snap)
+	} else if resyncClient {
 		m.syncEnvironment(snap)
 	}
 }

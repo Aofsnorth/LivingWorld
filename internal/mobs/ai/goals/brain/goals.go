@@ -39,7 +39,7 @@ func (EndermanGazeGoal) CanUse(body any, ctx *context.AIContext) bool {
 		return false
 	}
 	if u, ok := m.Brain.GetUUID(brain.MemAngerTarget, m.AITick); ok {
-		if context.FindPlayer(ctx.Players(), u) != nil {
+		if p := context.FindPlayer(ctx.Players(), u); p != nil && !p.Dead && p.Gamemode != 1 && p.Gamemode != 3 {
 			m.Target = u
 			return true
 		}
@@ -62,7 +62,7 @@ func (EndermanGazeGoal) CanContinue(body any, ctx *context.AIContext) bool {
 		return false
 	}
 	p := context.FindPlayer(ctx.Players(), m.Target)
-	if p == nil || p.Gamemode == 1 || p.Gamemode == 3 {
+	if p == nil || p.Dead || p.Gamemode == 1 || p.Gamemode == 3 {
 		return false
 	}
 	if m.Brain.Has(brain.MemAngerTarget, m.AITick) {

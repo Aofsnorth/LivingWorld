@@ -25,6 +25,9 @@ import (
 //
 // M7: sword damage, I-frames stamp, knockback velocity, sweep.
 func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID int64) {
+	if p := s.pm.GetPlayer(attacker); p == nil || p.Health <= 0 || p.Gamemode == 3 {
+		return
+	}
 	// Mob routing: probe the world manager's mob store.
 	if m := s.wm.Mobs().Get(targetEntityRuntimeID); m.EntityID != 0 {
 		var attackerBytes [16]byte
@@ -34,14 +37,26 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 		var heldID int32
 		kbStrength := 0.4
 		dx, dz := 0.0, 0.0
+		isCrit := false
 		if p := s.pm.GetPlayer(attacker); p != nil {
 			held := p.Inventory.GetHeldItem()
 			if held != nil {
 				heldID = held.ID
 				base = float32(combat.SwordDamage(heldID))
 			}
-			if !p.OnGround && !p.Sprinting && !p.Swimming {
+			if p.CanCrit() {
 				base *= 1.5
+				isCrit = true
+			} else if !p.OnGround && !p.Swimming && !p.Flying && p.Health > 0 {
+				if bs, ok := s.getSession(attacker); ok {
+					bs.mu.Lock()
+					fd := bs.fallDistance
+					bs.mu.Unlock()
+					if fd > 0 {
+						base *= 1.5
+						isCrit = true
+					}
+				}
 			}
 			// combat.Knockback negates (dirX, dirZ): out.X = vel.X/2 - px.
 			// Pass (attacker - victim) so the mob is knocked away from the attacker.
@@ -57,6 +72,7 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 				s.pm.UpdateSprinting(attacker, false)
 			}
 		}
+		s.pm.AddExhaustion(attacker, 0.1)
 		s.wm.Mobs().HurtDirectWithKnockback(m.EntityID, attackerBytes, base, dx, dz, kbStrength)
 		// Hurt flash on every Bedrock viewer. ActorEvent(2) =
 		// Hurt. Sends a red flash on the mob for the local
@@ -66,6 +82,12 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 				EntityRuntimeID: uint64(targetEntityRuntimeID),
 				EventType:       packet.ActorEventHurt,
 			})
+			if isCrit {
+				v.write(&packet.Animate{
+					ActionType:      packet.AnimateActionCriticalHit,
+					EntityRuntimeID: uint64(targetEntityRuntimeID),
+				})
+			}
 		})
 		// Sweep fan-out (swords only).
 		if combat.IsSwordItem(heldID) {

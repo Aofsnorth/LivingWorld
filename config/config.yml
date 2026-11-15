@@ -41,12 +41,12 @@ world:
   # that range. Defaults below match vanilla-ish:
   #   clear   5-15 min, rain 10-20 min, thunder 3-10 min
   weatherDurations:
-    clearMinSeconds: 300
-    clearMaxSeconds: 900
-    rainMinSeconds: 600
-    rainMaxSeconds: 1200
-    thunderMinSeconds: 180
-    thunderMaxSeconds: 600
+    clearMinSeconds: 600
+    clearMaxSeconds: 1800
+    rainMinSeconds: 180
+    rainMaxSeconds: 420
+    thunderMinSeconds: 120
+    thunderMaxSeconds: 300
 
 java:
   bind: 0.0.0.0

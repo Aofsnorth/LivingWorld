@@ -37,14 +37,19 @@ func (w *World) Weather() (raining, thundering bool) {
 	return w.raining, w.thundering
 }
 
-// SetWeather sets the world's weather state (thundering implies raining).
+// SetWeather sets the world's weather state (thundering implies raining)
+// and immediately persists the updated level metadata when changed.
 func (w *World) SetWeather(raining, thundering bool) {
 	if thundering {
 		raining = true
 	}
 	w.mu.Lock()
+	changed := w.raining != raining || w.thundering != thundering
 	w.raining, w.thundering = raining, thundering
 	w.mu.Unlock()
+	if changed {
+		w.saveLevel()
+	}
 }
 
 func (w *World) loadLevel() {
@@ -86,9 +91,26 @@ func (w *World) saveLevel() {
 	}
 }
 
-// SetWeather sets the default world's weather and notifies any registered
-// change listener (the protocol bridges use it to push weather to clients).
+// SetWeather sets the default world's weather, resets the active weather cycle
+// timer for the new phase, and notifies any registered change listener (the
+// protocol bridges use it to push weather to clients).
 func (m *Manager) SetWeather(raining, thundering bool) {
+	if thundering {
+		raining = true
+	}
+	m.setWeatherInternal(raining, thundering)
+	if m.weatherReset != nil {
+		select {
+		case m.weatherReset <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (m *Manager) setWeatherInternal(raining, thundering bool) {
+	if thundering {
+		raining = true
+	}
 	m.GetDefaultWorld().SetWeather(raining, thundering)
 	m.weatherMu.RLock()
 	cbs := append([]func(bool, bool){}, m.weatherCallbacks...)

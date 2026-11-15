@@ -24,7 +24,6 @@ package mobs
 
 import (
 	"math"
-	"sort"
 )
 
 // PathNode is one cell on a found path. y is the *feet* coordinate
@@ -100,17 +99,84 @@ const MalusBlocked = 1e6
 // a cell whose cost ≥ MalusBlocked is treated as impassable even if walkable,
 // and a positive cost makes the cell expensive but usable (Strider lava = 0,
 // Blaze lava = 8, water = blocked for land mobs).
+type aNode struct {
+	pos     PathNode
+	g       float64
+	f       float64
+	open    bool
+	heapIdx int
+	prev    *aNode
+}
+
+func aNodeLess(a, b *aNode) bool {
+	if a.f != b.f {
+		return a.f < b.f
+	}
+	return a.g > b.g // tie-break: prefer deeper (closer to goal)
+}
+
+type aNodeHeap []*aNode
+
+func (h *aNodeHeap) push(n *aNode) {
+	n.heapIdx = len(*h)
+	*h = append(*h, n)
+	h.up(n.heapIdx)
+}
+
+func (h *aNodeHeap) pop() *aNode {
+	old := *h
+	last := len(old) - 1
+	top := old[0]
+	old[0] = old[last]
+	old[0].heapIdx = 0
+	old[last] = nil
+	*h = old[:last]
+	if last > 0 {
+		h.down(0)
+	}
+	top.heapIdx = -1
+	return top
+}
+
+func (h *aNodeHeap) up(i int) {
+	s := *h
+	for i > 0 {
+		parent := (i - 1) >> 1
+		if !aNodeLess(s[i], s[parent]) {
+			break
+		}
+		s[i], s[parent] = s[parent], s[i]
+		s[i].heapIdx = i
+		s[parent].heapIdx = parent
+		i = parent
+	}
+}
+
+func (h *aNodeHeap) down(i int) {
+	s := *h
+	n := len(s)
+	for {
+		left := (i << 1) + 1
+		if left >= n {
+			break
+		}
+		smallest := left
+		if right := left + 1; right < n && aNodeLess(s[right], s[left]) {
+			smallest = right
+		}
+		if !aNodeLess(s[smallest], s[i]) {
+			break
+		}
+		s[i], s[smallest] = s[smallest], s[i]
+		s[i].heapIdx = i
+		s[smallest].heapIdx = smallest
+		i = smallest
+	}
+}
+
 func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindResult {
 	if from == to {
 		return PathFindResult{Found: true, Nodes: Path{from}, Expansions: 0}
-	}
-
-	type aNode struct {
-		pos  PathNode
-		g    float64
-		f    float64
-		open bool
-		prev *aNode
 	}
 
 	// Index the open/closed sets by PathNode directly. PathNode is a
@@ -122,7 +188,7 @@ func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindRe
 		if n, ok := all[p]; ok {
 			return n
 		}
-		n := &aNode{pos: p, g: math.Inf(1), f: math.Inf(1)}
+		n := &aNode{pos: p, g: math.Inf(1), f: math.Inf(1), heapIdx: -1}
 		all[p] = n
 		return n
 	}
@@ -132,24 +198,27 @@ func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindRe
 	start.g = 0
 	start.f = manhattan(start.pos, goal.pos)
 	start.open = true
-	openList := []*aNode{start}
+	openHeap := make(aNodeHeap, 0, 64)
+	openHeap.push(start)
 
-	neighbors := func(p PathNode) []PathNode {
+	neighbors := func(p PathNode, buf *[4]PathNode) []PathNode {
 		// 4 horizontal neighbors at the same Y, plus optional
-		// step-up / step-down neighbors.
-		out := make([]PathNode, 0, 4)
+		// step-up / step-down neighbors, written into stack-allocated buf.
+		count := 0
 		for _, d := range [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
 			nx, nz := p.X+d[0], p.Z+d[1]
 			// 1) same level
 			if walkable(nx, p.Y, nz) {
-				out = append(out, PathNode{X: nx, Y: p.Y, Z: nz})
+				buf[count] = PathNode{X: nx, Y: p.Y, Z: nz}
+				count++
 				continue
 			}
 			// 2) step up maxStepUp blocks
 			climbed := false
 			for up := 1; up <= maxStepUp; up++ {
 				if walkable(nx, p.Y+up, nz) && !walkable(nx, p.Y+up+1, nz) {
-					out = append(out, PathNode{X: nx, Y: p.Y + up, Z: nz})
+					buf[count] = PathNode{X: nx, Y: p.Y + up, Z: nz}
+					count++
 					climbed = true
 					break
 				}
@@ -160,25 +229,20 @@ func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindRe
 			// 3) step down up to maxStepDown blocks
 			for dn := 1; dn <= maxStepDown; dn++ {
 				if walkable(nx, p.Y-dn, nz) && !walkable(nx, p.Y-dn-1, nz) {
-					out = append(out, PathNode{X: nx, Y: p.Y - dn, Z: nz})
+					buf[count] = PathNode{X: nx, Y: p.Y - dn, Z: nz}
+					count++
 					break
 				}
 			}
 		}
-		return out
+		return buf[:count]
 	}
 
+	var nbBuf [4]PathNode
 	expansions := 0
-	for len(openList) > 0 {
-		// Pop the lowest-f node.
-		sort.Slice(openList, func(i, j int) bool {
-			if openList[i].f != openList[j].f {
-				return openList[i].f < openList[j].f
-			}
-			return openList[i].g > openList[j].g // tie-break: prefer deeper (closer to goal)
-		})
-		cur := openList[0]
-		openList = openList[1:]
+	for len(openHeap) > 0 {
+		// Pop the lowest-f node in O(log N) via binary min-heap.
+		cur := openHeap.pop()
 		cur.open = false
 		expansions++
 
@@ -201,7 +265,7 @@ func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindRe
 			return PathFindResult{Found: false, BudgetHit: true, Expansions: expansions}
 		}
 
-		for _, nb := range neighbors(cur.pos) {
+		for _, nb := range neighbors(cur.pos, &nbBuf) {
 			stepCost := 1.0
 			if nb.Y != cur.pos.Y {
 				stepCost += 0.5 // climbing or falling costs a little more
@@ -224,7 +288,9 @@ func PathFind(from, to PathNode, walkable walkableQuery, cost costFn) PathFindRe
 				n.prev = cur
 				if !n.open {
 					n.open = true
-					openList = append(openList, n)
+					openHeap.push(n)
+				} else if n.heapIdx >= 0 {
+					openHeap.up(n.heapIdx)
 				}
 			}
 		}

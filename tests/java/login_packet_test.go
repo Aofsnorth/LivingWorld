@@ -42,6 +42,7 @@ func (m *mockSession) HandleMoveRot(p pk.Packet)        {}
 func (m *mockSession) HandleMoveStatusOnly(p pk.Packet) {}
 func (m *mockSession) HandlePlayerAction(p pk.Packet)   {}
 func (m *mockSession) HandleUseItemOn(p pk.Packet)      {}
+func (m *mockSession) HandleUseItem(p pk.Packet)        {}
 func (m *mockSession) HandleChat(p pk.Packet)           {}
 func (m *mockSession) HandleCreativeSlot(p pk.Packet)   {}
 func (m *mockSession) HandleSetCarriedItem(p pk.Packet) {}

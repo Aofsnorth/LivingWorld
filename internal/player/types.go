@@ -17,6 +17,7 @@ const (
 	EventSkin      EventType = "skin"
 	EventEquipment EventType = "equipment"
 	EventHurt      EventType = "hurt"
+	EventCrit      EventType = "crit"
 )
 
 type Event struct {
@@ -57,6 +58,8 @@ type PlayerSnapshot struct {
 	Skin              *SkinData
 	SkinParts         byte
 	Creative          bool
+	Dead              bool
+	Health            float32
 }
 
 type Player struct {
@@ -77,6 +80,7 @@ type Player struct {
 	AirSupply         int16
 	FireTicks         int
 	LavaTickCooldown  int
+	FallDistance      float64
 	Health            float32
 	Food              int
 	Saturation        float32

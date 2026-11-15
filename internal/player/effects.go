@@ -12,6 +12,7 @@ package player
 import (
 	"math"
 
+	"livingworld/internal/shared/constants/gameplay"
 	"livingworld/internal/world"
 
 	"github.com/google/uuid"
@@ -161,6 +162,21 @@ func (b *effectBag) remove(typeID int32) {
 	b.recomputeActive()
 }
 
+func (b *effectBag) clear() []int32 {
+	if b.active == 0 {
+		return nil
+	}
+	var removed []int32
+	for i, e := range b.effects {
+		if e.Type != 0 && e.TicksLeft > 0 {
+			removed = append(removed, e.Type)
+		}
+		b.effects[i] = Effect{}
+	}
+	b.active = 0
+	return removed
+}
+
 func (b *effectBag) recomputeActive() {
 	n := 0
 	for _, e := range b.effects {
@@ -187,7 +203,13 @@ func (b *effectBag) tick() (damages []effectTickDamage, expired []int32) {
 			continue
 		}
 		e.TicksLeft--
-		if e.TickInterval > 0 {
+		if e.Type == EffectHunger {
+			lvl := e.Level + 1
+			if lvl < 1 {
+				lvl = 1
+			}
+			damages = append(damages, effectTickDamage{Type: EffectHunger, Damage: 0.005 * float32(lvl)})
+		} else if e.TickInterval > 0 {
 			e.NextTickIn--
 			if e.NextTickIn <= 0 {
 				_, dmg := effectConfig(e.Type)
@@ -283,6 +305,46 @@ func (m *Manager) RemoveEffect(id uuid.UUID, effectType int32) {
 	}
 }
 
+// HasEffect reports whether the given status effect is currently active on the player.
+func (m *Manager) HasEffect(id uuid.UUID, effectType int32) bool {
+	m.mu.RLock()
+	p := m.players[id]
+	var ok bool
+	if p != nil {
+		ok = p.effects.has(effectType)
+	}
+	m.mu.RUnlock()
+	return ok
+}
+
+// ClearEffects forcibly clears all active status effects on a player (e.g. on
+// death or respawn) and publishes EffectStatusRemove for each.
+func (m *Manager) ClearEffects(id uuid.UUID) {
+	m.mu.Lock()
+	p := m.players[id]
+	var removed []int32
+	if p != nil {
+		removed = p.effects.clear()
+	}
+	m.mu.Unlock()
+	if len(removed) == 0 {
+		return
+	}
+	m.busMu.RLock()
+	bus := m.effectBus
+	m.busMu.RUnlock()
+	if bus != nil {
+		for _, eid := range removed {
+			bus.PublishWorldEffect(world.WorldEffectEvent{
+				Kind:     world.EffectStatusRemove,
+				Source:   world.BlockUpdateSourceServer,
+				Target:   id,
+				EffectID: eid,
+			})
+		}
+	}
+}
+
 // TickEffects is called once per 20 Hz tick by the world tick. It
 // iterates every connected player's effect bag, applies per-tick damage
 // via the controller, and publishes EffectStatusRemove for any effect
@@ -296,7 +358,9 @@ func (m *Manager) TickEffects() {
 	m.mu.RLock()
 	players := make([]*Player, 0, len(m.players))
 	for _, p := range m.players {
-		players = append(players, p)
+		if p.Health > 0 {
+			players = append(players, p)
+		}
 	}
 	m.mu.RUnlock()
 
@@ -306,7 +370,20 @@ func (m *Manager) TickEffects() {
 			continue
 		}
 		for _, d := range damages {
-			if d.Damage > 0 {
+			if d.Type == EffectHunger {
+				m.AddExhaustion(p.UUID, d.Damage)
+			} else if d.Type == EffectPoison {
+				m.mu.RLock()
+				hp := p.Health
+				m.mu.RUnlock()
+				if hp > 1 && d.Damage > 0 {
+					dmg := d.Damage
+					if hp-dmg < 1 {
+						dmg = hp - 1
+					}
+					m.applyDamage(p.UUID, dmg)
+				}
+			} else if d.Damage > 0 {
 				m.applyDamage(p.UUID, d.Damage)
 			}
 		}
@@ -331,13 +408,110 @@ func (m *Manager) TickEffects() {
 // the in-memory player model for offline-safe damage accrual — but in
 // v1 the player model has no effect tick; controllers are required.
 func (m *Manager) applyDamage(id uuid.UUID, amount float32) {
+	if amount <= 0 {
+		return
+	}
+	m.mu.Lock()
+	p := m.players[id]
+	if p == nil || p.Health <= 0 || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
+		m.mu.Unlock()
+		return
+	}
+	p.Health -= amount
+	if p.Health < 0 {
+		p.Health = 0
+	}
+	died := p.Health <= 0
+	if died {
+		p.OnFire = false
+		p.FireTicks = 0
+		p.LavaTickCooldown = 0
+		p.Sprinting = false
+		p.Swimming = false
+		p.Sneaking = false
+	}
+	snap := p.Snapshot()
+	exhaustionFn := m.exhaustionFn
+	m.mu.Unlock()
+
+	if exhaustionFn != nil {
+		exhaustionFn(id, 0.1) // vanilla damage exhaustion
+	}
+
 	m.ctrlMu.RLock()
 	c := m.controllers[id]
 	m.ctrlMu.RUnlock()
-	if c == nil {
+	if c != nil {
+		c.Hurt(amount)
+	}
+	m.publish(Event{Type: EventHurt, Player: snap})
+	if died {
+		m.publish(Event{Type: EventSneak, Player: snap})
+		m.syncEnvironment(snap)
+	}
+}
+
+// DamagePlayer applies damage to a player (scaling by Resistance if active)
+// and synchronizes both the authoritative Player.Health and the session HUD.
+func (m *Manager) DamagePlayer(id uuid.UUID, amount float32) {
+	if amount <= 0 {
 		return
 	}
-	c.Hurt(amount)
+	m.mu.RLock()
+	p := m.players[id]
+	var resLvl int
+	var hasRes bool
+	if p != nil && p.effects.has(EffectResistance) {
+		resLvl = p.effects.effects[EffectResistance-1].Level
+		hasRes = true
+	}
+	m.mu.RUnlock()
+	if hasRes {
+		factor := 1.0 - 0.2*float32(resLvl+1)
+		if factor <= 0 {
+			return
+		}
+		amount *= factor
+	}
+	m.applyDamage(id, amount)
+}
+
+// HealPlayer restores `amount` HP on a living player (clamped to MaxHealth)
+// and notifies the session controller if it supports Heal(float32).
+func (m *Manager) HealPlayer(id uuid.UUID, amount float32) {
+	if amount <= 0 {
+		return
+	}
+	m.mu.Lock()
+	p := m.players[id]
+	if p == nil || p.Health <= 0 || p.Health >= gameplay.MaxHealth {
+		m.mu.Unlock()
+		return
+	}
+	p.Health += amount
+	if p.Health > gameplay.MaxHealth {
+		p.Health = gameplay.MaxHealth
+	}
+	m.mu.Unlock()
+
+	m.ctrlMu.RLock()
+	c := m.controllers[id]
+	m.ctrlMu.RUnlock()
+	if hc, ok := c.(interface{ Heal(float32) }); ok {
+		hc.Heal(amount)
+	}
+}
+
+// PushPlayer applies a velocity impulse to a living player via their session controller.
+func (m *Manager) PushPlayer(id uuid.UUID, vx, vy, vz float64) {
+	m.mu.RLock()
+	p := m.players[id]
+	alive := p != nil && p.Health > 0 && p.Gamemode != 3
+	m.mu.RUnlock()
+	if !alive {
+		return
+	}
+	m.push(id, vx, vy, vz)
 }
 
 // HitIFrames stamps a fresh invulnerability window on the player.
@@ -406,6 +580,11 @@ func (m *Manager) TickEnvironment(defaultWorld *world.World) {
 	}
 	outcomes := make([]envTickOutcome, 0, len(m.players))
 	for _, p := range m.players {
+		// Dead players on the respawn screen must NOT drown, lose air, burn,
+		// or take any environmental damage while waiting to respawn.
+		if p.Health <= 0 {
+			continue
+		}
 		w := p.World
 		if w == nil {
 			w = defaultWorld
@@ -427,12 +606,9 @@ func (m *Manager) TickEnvironment(defaultWorld *world.World) {
 				p.LavaTickCooldown = 0
 				metaChanged = true
 			}
-			inWater := isPlayerInWater(w, p.Position.X, p.Position.Y, p.Position.Z)
-			if !inWater && p.Swimming {
-				p.Swimming = false
-				metaChanged = true
-			} else if inWater && p.Sprinting && !p.Swimming {
-				p.Swimming = true
+			wantSwim := resolveSwimState(w, p.Position.X, p.Position.Y, p.Position.Z, p.Sprinting, p.Swimming)
+			if p.Swimming != wantSwim {
+				p.Swimming = wantSwim
 				metaChanged = true
 			}
 			if metaChanged {
@@ -470,13 +646,9 @@ func (m *Manager) TickEnvironment(defaultWorld *world.World) {
 		inLava := world.IsLavaBlockID(feetID) || world.IsLavaBlockID(bodyID) || world.IsLavaBlockID(eyeID)
 
 		// 1. Water swimming state transition
-		if !inWater && !eyeInWater {
-			if p.Swimming {
-				p.Swimming = false
-				metaChanged = true
-			}
-		} else if p.Sprinting && !p.Swimming {
-			p.Swimming = true
+		wantSwim := resolveSwimState(w, p.Position.X, p.Position.Y, p.Position.Z, p.Sprinting, p.Swimming)
+		if p.Swimming != wantSwim {
+			p.Swimming = wantSwim
 			metaChanged = true
 		}
 
@@ -568,13 +740,7 @@ func (m *Manager) TickEnvironment(defaultWorld *world.World) {
 			m.syncEnvironment(o.snap)
 		}
 		if o.damage > 0 {
-			m.ctrlMu.RLock()
-			c := m.controllers[o.id]
-			m.ctrlMu.RUnlock()
-			if c != nil {
-				c.Hurt(o.damage)
-			}
-			m.publish(Event{Type: EventHurt, Player: o.snap})
+			m.applyDamage(o.id, o.damage)
 		}
 	}
 }

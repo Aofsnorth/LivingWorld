@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -16,13 +17,114 @@ import (
 	"livingworld/plugin"
 
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
+func isBedrockFallResetBlock(name string) bool {
+	switch name {
+	case "minecraft:water", "minecraft:lava", "minecraft:bubble_column",
+		"minecraft:cobweb", "minecraft:powder_snow", "minecraft:sweet_berry_bush",
+		"minecraft:ladder", "minecraft:vine", "minecraft:scaffolding",
+		"minecraft:weeping_vines", "minecraft:weeping_vines_plant",
+		"minecraft:twisting_vines", "minecraft:twisting_vines_plant",
+		"minecraft:cave_vines", "minecraft:cave_vines_plant",
+		"minecraft:slime_block", "minecraft:honey_block":
+		return true
+	}
+	return false
+}
+
+func (s *Server) isSolidGroundAt(x, feetY, z float64) bool {
+	if s.wm == nil {
+		return false
+	}
+	dw := s.wm.GetDefaultWorld()
+	if dw == nil {
+		return false
+	}
+	bx := int(math.Floor(x))
+	by := int(math.Floor(feetY - 0.06))
+	bz := int(math.Floor(z))
+	blockID := dw.GetBlock(bx, by, bz).ID()
+	if blockID == 0 || world.IsReplaceableBlock(blockID) || world.IsWaterBlockID(blockID) || world.IsLavaBlockID(blockID) {
+		return false
+	}
+	name := world.StateName(blockID)
+	return name != "minecraft:air" && !isBedrockFallResetBlock(name)
+}
+
+func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, onGround bool) {
+	if bs == nil || s.pm == nil {
+		return
+	}
+	pl := s.pm.GetPlayer(bs.id)
+	if pl == nil || pl.Creative || pl.Gamemode == 1 || pl.Gamemode == 3 || pl.Flying || pl.Health <= 0 {
+		bs.mu.Lock()
+		bs.fallDistance = 0
+		bs.mu.Unlock()
+		return
+	}
+
+	if s.wm != nil {
+		if dw := s.wm.GetDefaultWorld(); dw != nil {
+			bx := int(math.Floor(x))
+			by := int(math.Floor(newY))
+			bz := int(math.Floor(z))
+			feetBlock := dw.GetBlock(bx, by, bz).ID()
+			if world.IsWaterBlockID(feetBlock) || world.IsLavaBlockID(feetBlock) || isBedrockFallResetBlock(world.StateName(feetBlock)) {
+				bs.mu.Lock()
+				bs.fallDistance = 0
+				bs.mu.Unlock()
+				return
+			}
+			belowBlock := dw.GetBlock(bx, int(math.Floor(newY-0.2)), bz).ID()
+			if world.IsWaterBlockID(belowBlock) || world.IsLavaBlockID(belowBlock) || isBedrockFallResetBlock(world.StateName(belowBlock)) {
+				bs.mu.Lock()
+				bs.fallDistance = 0
+				bs.mu.Unlock()
+				return
+			}
+		}
+	}
+
+	bs.mu.Lock()
+	if newY < oldY {
+		bs.fallDistance += oldY - newY
+	} else if newY > oldY+0.02 {
+		bs.fallDistance = 0
+	}
+	curFall := bs.fallDistance
+	if !onGround {
+		bs.mu.Unlock()
+		s.pm.SyncFallState(bs.id, false, curFall)
+		return
+	}
+	dist := bs.fallDistance
+	bs.fallDistance = 0
+	bs.mu.Unlock()
+	s.pm.SyncFallState(bs.id, true, 0)
+	s.pm.SyncFallState(bs.id, true, 0)
+
+	const fallSafeBlocks = 3.35
+	if dist <= fallSafeBlocks {
+		return
+	}
+	dmg := int(math.Ceil(dist - fallSafeBlocks))
+	if dmg <= 0 {
+		return
+	}
+	bs.Hurt(float32(dmg))
+}
+
 func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pitch, yaw float32, onGround bool) {
 	now := time.Now()
 	x, y, z := bedrockSharedFeetFromLocalClient(clientPos)
+	bs.mu.Lock()
+	oldY := bs.lastY
+	hasPrev := !bs.lastMovePublish.IsZero()
+	bs.mu.Unlock()
 	publish, correct := bs.movementUpdate(now, x, y, z)
 	if correct {
 		// Do not hard-freeze the local Bedrock player for now; just ignore the
@@ -30,6 +132,9 @@ func (s *Server) publishBedrockMove(bs *bedrockSession, clientPos mgl32.Vec3, pi
 		// previously made movement feel broken/floaty.
 		s.sendBedrockSurvivalState(bs.conn, bedrockLocalRuntime)
 		return
+	}
+	if hasPrev {
+		s.trackBedrockFall(bs, x, oldY, y, z, onGround)
 	}
 	if publish {
 		s.pm.UpdatePosition(bs.id, x, y, z, pitch, yaw, onGround)
@@ -66,27 +171,45 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		s.converter.HandleSubChunkRequest(conn, p, s.wm.GetDefaultWorld(), chunkCache)
 
 	case *packet.MovePlayer:
-		// If PlayerAuthInput is active, don't process a second movement source in
-		// the same tick. Double-processing was one source of ultra-fast movement.
+		if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Health <= 0 {
+			return
+		}
+		// If PlayerAuthInput is active, ignore legacy MovePlayer packets so we
+		// don't process two movement streams for the same player in the same tick.
+		// Double-processing was one source of ultra-fast movement.
 		if time.Since(bs.lastAuthInputAt) > 100*time.Millisecond {
 			s.publishBedrockMove(bs, p.Position, p.Pitch, p.Yaw, p.OnGround)
 		}
 
 	case *packet.PlayerAuthInput:
+		if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Health <= 0 {
+			return
+		}
 		// Modern Bedrock clients commonly use PlayerAuthInput for movement. Use
 		// it as the primary movement source and ignore duplicate MovePlayer bursts.
 		bs.lastAuthInputAt = time.Now()
-		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, p.InputData.Load(packet.InputFlagVerticalCollision))
+		fx, fy, fz := bedrockSharedFeetFromLocalClient(p.Position)
+		onGround := p.Delta[1] <= 0.02 && (p.InputData.Load(packet.InputFlagVerticalCollision) || (math.Abs(float64(p.Delta[1])) < 0.001 && s.isSolidGroundAt(fx, fy, fz)))
+		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, onGround)
+		if !onGround && p.Delta[1] < -0.005 {
+			s.pm.SyncFallState(bs.id, false, float64(-p.Delta[1]))
+		}
+		if !onGround && p.Delta[1] < -0.005 {
+			s.pm.SyncFallState(bs.id, false, float64(-p.Delta[1]))
+		}
 
-		// Update sneaking, sprinting, and swimming state
+		// Update sneaking, sprinting, jumping, and swimming state
 		sneaking := p.InputData.Load(packet.InputFlagSneaking)
 		s.pm.UpdateSneak(bs.id, sneaking)
-		if p.InputData.Load(packet.InputFlagStartSprinting) {
-			s.pm.UpdateSprinting(bs.id, true)
-		} else if p.InputData.Load(packet.InputFlagStopSprinting) {
+		if p.InputData.Load(packet.InputFlagStopSprinting) {
 			s.pm.UpdateSprinting(bs.id, false)
-		} else if p.InputData.Load(packet.InputFlagSprinting) {
+		} else if p.InputData.Load(packet.InputFlagStartSprinting) || p.InputData.Load(packet.InputFlagSprinting) {
 			s.pm.UpdateSprinting(bs.id, true)
+		} else {
+			s.pm.UpdateSprinting(bs.id, false)
+		}
+		if p.InputData.Load(packet.InputFlagStartJumping) {
+			s.pm.AddJumpExhaustion(bs.id)
 		}
 		if p.InputData.Load(packet.InputFlagStartSwimming) {
 			s.pm.UpdateSwimming(bs.id, true)
@@ -113,7 +236,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.breakBedrockBlock(bs, action.BlockPos)
 					continue
 				}
-				breakSecs := bedrockCrackSecondsFor(blockID)
+				breakSecs := s.bedrockCrackSecondsForPlayer(bs, blockID)
 				s.crackSwitch(bs, action.BlockPos, breakSecs) // clears crack on a previously-targeted block
 				s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking, breakSecs)
 				s.publishCrack(bs, action.BlockPos, 0) // start the overlay on Java viewers too
@@ -122,12 +245,13 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 				// Holding break while the crosshair moves to a new block sends a
 				// continue (not a fresh start); detect that switch and move the
 				// crack overlay so it doesn't stick on the old block.
-				if s.crackSwitch(bs, action.BlockPos, 0) {
-					breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID())
+				curBlockID := s.wm.GetDefaultWorld().GetBlock(int(action.BlockPos[0]), int(action.BlockPos[1]), int(action.BlockPos[2])).ID()
+				breakSecs := s.bedrockCrackSecondsForPlayer(bs, curBlockID)
+				if s.crackSwitch(bs, action.BlockPos, breakSecs) {
 					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventStartBlockCracking, breakSecs)
 					s.publishCrack(bs, action.BlockPos, 0) // overlay moved to the new block on Java
 				} else {
-					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking, 0)
+					s.broadcastBlockCracking(action.BlockPos, packet.LevelEventUpdateBlockCracking, breakSecs)
 					// Progressive overlay update for Java viewers: Bedrock self-animates
 					// from LevelEventStartBlockCracking, but Java needs explicit stage
 					// transitions or the overlay freezes at stage 0. Pass 0 here so
@@ -165,10 +289,15 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		}
 
 		if p.InputData.Load(packet.InputFlagPerformItemInteraction) {
-			if data, ok := p.ItemInteractionData.Value(); ok && data.ActionType == protocol.UseItemActionBreakBlock {
-				s.pm.PublishSwing(bs.id)
-				s.wm.CrackManager().StopBreaking(bs.id)
-				s.breakBedrockBlock(bs, data.BlockPosition)
+			if data, ok := p.ItemInteractionData.Value(); ok {
+				switch data.ActionType {
+				case protocol.UseItemActionBreakBlock:
+					s.pm.PublishSwing(bs.id)
+					s.wm.CrackManager().StopBreaking(bs.id)
+					s.breakBedrockBlock(bs, data.BlockPosition)
+				case protocol.UseItemActionClickAir, protocol.UseItemActionClickBlock:
+					s.tryEatBedrockFood(bs)
+				}
 			}
 		}
 		if p.InputData.Load(packet.InputFlagPerformItemStackRequest) {
@@ -336,7 +465,8 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 						s.pm.PublishSwing(bs.id)
 						return
 					}
-					// Fallback: resync jika item tidak placeable atau tidak ditemukan
+					// Fallback: try eating if holding food, then resync if not placeable
+					_ = s.tryEatBedrockFood(bs)
 					s.resyncBedrockBlock(conn, data.BlockPosition)
 					s.resyncBedrockBlock(conn, adjacentBlockPos(data.BlockPosition, data.BlockFace))
 				case protocol.UseItemActionBreakBlock:
@@ -344,6 +474,7 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 					s.breakBedrockBlock(bs, data.BlockPosition)
 				case protocol.UseItemActionClickAir:
 					s.pm.PublishSwing(bs.id)
+					s.tryEatBedrockFood(bs)
 				}
 			case *protocol.UseItemOnEntityTransactionData:
 				// M5: player attacks on Bedrock arrive as
@@ -366,6 +497,10 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 
 	case *packet.PlayerAction:
 		switch p.ActionType {
+		case protocol.PlayerActionRespawn:
+			s.handleBedrockRespawn(bs, conn)
+		case protocol.PlayerActionJump:
+			s.pm.AddJumpExhaustion(bs.id)
 		case protocol.PlayerActionStartSneak:
 			s.pm.UpdateSneak(bs.id, true)
 		case protocol.PlayerActionStopSneak:
@@ -390,18 +525,19 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 				s.breakBedrockBlock(bs, p.BlockPosition)
 				break
 			}
-			breakSecs := bedrockCrackSecondsFor(blockID)
+			breakSecs := s.bedrockCrackSecondsForPlayer(bs, blockID)
 			s.crackSwitch(bs, p.BlockPosition, breakSecs)
 			s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking, breakSecs)
 			s.publishCrack(bs, p.BlockPosition, 0)
 		case protocol.PlayerActionContinueDestroyBlock:
 			s.pm.PublishSwing(bs.id)
-			if s.crackSwitch(bs, p.BlockPosition, 0) {
-				breakSecs := bedrockCrackSecondsFor(s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID())
+			curBlockID := s.wm.GetDefaultWorld().GetBlock(int(p.BlockPosition[0]), int(p.BlockPosition[1]), int(p.BlockPosition[2])).ID()
+			breakSecs := s.bedrockCrackSecondsForPlayer(bs, curBlockID)
+			if s.crackSwitch(bs, p.BlockPosition, breakSecs) {
 				s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventStartBlockCracking, breakSecs)
 				s.publishCrack(bs, p.BlockPosition, 0)
 			} else {
-				s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventUpdateBlockCracking, 0)
+				s.broadcastBlockCracking(p.BlockPosition, packet.LevelEventUpdateBlockCracking, breakSecs)
 				if stage, changed := s.wm.CrackManager().AdvanceStage(bs.id, 0); changed {
 					s.publishCrack(bs, p.BlockPosition, stage)
 				}
@@ -531,10 +667,164 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 			}
 		}
 
+	case *packet.Respawn:
+		switch p.State {
+		case packet.RespawnStateSearchingForSpawn, packet.RespawnStateClientReadyToSpawn:
+			s.handleBedrockRespawn(bs, conn)
+		}
+
 	case *packet.ResourcePackClientResponse:
 		log.Printf("[Bedrock] Resource pack response: %d", p.Response)
 
 	case *packet.PacketViolationWarning:
 		log.Printf("[Bedrock] Packet violation: %v", p)
 	}
+}
+
+func (s *Server) safeSpawnFeet() (float64, float64, float64) {
+	spawn := s.cfg.World.Spawn
+	feetX, feetY, feetZ := spawn.X, spawn.Y, spawn.Z
+	if dw := s.wm.GetDefaultWorld(); dw != nil {
+		feetX, feetY, feetZ = safeRestoredFeet(dw, feetX, feetY, feetZ)
+	}
+	return feetX, feetY, feetZ
+}
+
+func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) {
+	feetX, feetY, feetZ := s.safeSpawnFeet()
+	spawn := s.cfg.World.Spawn
+	spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)
+
+	bs.mu.Lock()
+	bs.health = 20
+	bs.fallDistance = 0
+	bs.lastX = feetX
+	bs.lastY = feetY
+	bs.lastZ = feetZ
+	bs.lastMovePublish = time.Now()
+	bs.spawnPos = spawnClientPos
+	bs.mu.Unlock()
+
+	_ = s.pm.RespawnPlayer(bs.id, feetX, feetY, feetZ, spawn.Pitch, spawn.Yaw)
+	if s.wm != nil && s.wm.Hunger() != nil {
+		s.wm.Hunger().ResetPlayer(bs.id, s.cfg.World.Difficulty)
+	}
+
+	s.updateBedrockChunks(bs, int32(math.Floor(feetX))>>4, int32(math.Floor(feetZ))>>4)
+
+	bs.write(&packet.Respawn{
+		Position:        spawnClientPos,
+		State:           packet.RespawnStateReadyToSpawn,
+		EntityRuntimeID: bedrockLocalRuntime,
+	})
+	bs.write(&packet.MovePlayer{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Position:        spawnClientPos,
+		Pitch:           spawn.Pitch,
+		Yaw:             spawn.Yaw,
+		HeadYaw:         spawn.Yaw,
+		Mode:            packet.MoveModeReset,
+		OnGround:        true,
+	})
+	bs.write(&packet.PlayStatus{Status: packet.PlayStatusPlayerSpawn})
+	bs.write(&packet.UpdateAttributes{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Attributes: []protocol.Attribute{
+			{
+				AttributeValue: protocol.AttributeValue{
+					Name:  "minecraft:health",
+					Value: 20,
+					Min:   0,
+					Max:   20,
+				},
+				Default:    20,
+				DefaultMin: 0,
+				DefaultMax: 20,
+			},
+			{
+				AttributeValue: protocol.AttributeValue{
+					Name:  "minecraft:player.hunger",
+					Value: 20,
+					Min:   0,
+					Max:   20,
+				},
+				Default:    20,
+				DefaultMin: 0,
+				DefaultMax: 20,
+			},
+			{
+				AttributeValue: protocol.AttributeValue{
+					Name:  "minecraft:movement",
+					Value: 0.10,
+					Min:   0,
+					Max:   math.MaxFloat32,
+				},
+				Default:    0.10,
+				DefaultMin: 0,
+				DefaultMax: math.MaxFloat32,
+			},
+		},
+	})
+
+	mode := s.cfg.DefaultGamemode
+	if pl := s.pm.GetPlayer(bs.id); pl != nil {
+		mode = pl.Gamemode
+		s.syncBedrockInventory(bs, pl)
+	}
+	s.sendBedrockGameMode(conn, bedrockLocalRuntime, mode)
+	s.sendLocalPlayerActorData(conn)
+	s.reconcileViewers(bs)
+
+	s.forEachSession(func(v *bedrockSession) {
+		if v.id == bs.id {
+			return
+		}
+		s.reconcileViewers(v)
+	})
+}
+
+func (s *Server) tryEatBedrockFood(bs *bedrockSession) bool {
+if s.wm == nil || s.wm.Hunger() == nil {
+	return false
+}
+pl := s.pm.GetPlayer(bs.id)
+if pl == nil || pl.Health <= 0 || pl.Inventory == nil {
+	return false
+}
+held := pl.Inventory.GetHeldItem()
+if held == nil || held.ID == 0 || held.Count <= 0 {
+	return false
+}
+it, ok := item.ByID(held.ID)
+if !ok {
+	return false
+}
+foodDef, isFood := world.LookupFood(it.Name)
+if !isFood {
+	return false
+}
+isCreative := pl.Gamemode == 1 || pl.Creative
+if !isCreative && !s.wm.Hunger().CanEat(bs.id, foodDef.AlwaysEdible) {
+	return false
+}
+s.wm.Hunger().Feed(bs.id, foodDef.FoodPoints, foodDef.Saturation)
+if it.Name == "minecraft:golden_apple" || it.Name == "minecraft:enchanted_golden_apple" {
+	s.pm.AddEffect(bs.id, player.EffectRegeneration, 2, 100)
+}
+if !isCreative {
+	slot := pl.Inventory.HeldSlot
+	newCount := held.Count - 1
+	if newCount <= 0 {
+		pl.Inventory.SetItem(slot, player.ItemStack{})
+	} else {
+		pl.Inventory.SetItem(slot, player.ItemStack{ID: held.ID, Count: newCount, Meta: held.Meta})
+	}
+	s.syncBedrockInventory(bs, pl)
+	s.pm.PublishEquipmentChange(bs.id)
+}
+bs.write(&packet.ActorEvent{
+	EntityRuntimeID: bedrockLocalRuntime,
+	EventType:       57,
+})
+return true
 }

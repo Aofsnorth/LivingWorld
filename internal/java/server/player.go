@@ -157,6 +157,24 @@ func (j *javaBridge) AcceptPlayer(name string, id uuid.UUID, _ *user.PublicKey, 
 	j.pm.SetController(id, session)
 	defer j.pm.RemoveController(id)
 
+	if j.wm != nil && j.wm.Hunger() != nil {
+		j.wm.Hunger().RegisterPlayer(id, pl.Food, pl.Saturation, j.cfg.World.Difficulty)
+		defer j.wm.Hunger().RemovePlayer(id)
+	}
+	if hasSaved {
+		if pl.Health <= 0 {
+			pl.Health = 20
+			pl.Food = 20
+			pl.Saturation = 5.0
+		}
+		session.mu.Lock()
+		session.Health = pl.Health
+		session.Food = int32(pl.Food)
+		session.Saturation = pl.Saturation
+		session.mu.Unlock()
+		_ = session.sendHealth()
+	}
+
 	// Send the player info to themselves so they see their own skin in inventory/third-person.
 	_ = session.sendPlayerInfoAdd(pl.Snapshot())
 

@@ -211,6 +211,11 @@ func mobEntityProperties(m mobs.Mob) protocol.EntityProperties {
 // "use the entity-type default look".
 func mobEntityMetadata(m mobs.Mob) protocol.EntityMetadata {
 	md := protocol.NewEntityMetadata()
+	md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasGravity)
+	md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagHasCollision)
+	if m.Baby {
+		md.SetFlag(protocol.EntityDataKeyFlags, protocol.EntityDataFlagBaby)
+	}
 	switch m.Type {
 	case "minecraft:slime", "minecraft:magma_cube":
 		// Variant = size - 1 (0-based). Clamp to 0..3 (Bedrock

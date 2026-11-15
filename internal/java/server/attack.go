@@ -34,6 +34,9 @@ import (
 // the mob store; with the M1 cap (≤50 hostiles) that's a
 // trivial loop.
 func (j *javaBridge) routeAttack(attacker uuid.UUID, targetEntityID int32) {
+	if p := j.pm.GetPlayer(attacker); p == nil || p.Health <= 0 || p.Gamemode == 3 {
+		return
+	}
 	// Mob routing: probe the world manager's mob store first.
 	if m := j.wm.Mobs().Get(int64(targetEntityID)); m.EntityID != 0 {
 		var attackerBytes [16]byte
@@ -46,14 +49,16 @@ func (j *javaBridge) routeAttack(attacker uuid.UUID, targetEntityID int32) {
 		kbStrength := 0.4 // vanilla base knockback
 		dx := 0.0
 		dz := 0.0
+		isCrit := false
 		if p := j.pm.GetPlayer(attacker); p != nil {
 			held := p.Inventory.GetHeldItem()
 			if held != nil {
 				heldID = held.ID
 				base = float32(combat.SwordDamage(heldID))
 			}
-			if !p.OnGround && !p.Sprinting && !p.Swimming {
+			if p.CanCrit() {
 				base *= 1.5 // vanilla critical hit multiplier
+				isCrit = true
 			}
 			// combat.Knockback negates (dirX, dirZ): out.X = vel.X/2 - px.
 			// Therefore dirX, dirZ MUST be (attacker - victim) so -px points
@@ -70,11 +75,15 @@ func (j *javaBridge) routeAttack(attacker uuid.UUID, targetEntityID int32) {
 				j.pm.UpdateSprinting(attacker, false)
 			}
 		}
+		j.pm.AddExhaustion(attacker, 0.1)
 		j.wm.Mobs().HurtDirectWithKnockback(m.EntityID, attackerBytes, base, dx, dz, kbStrength)
 		// Hurt flash: ClientboundGameHurtAnimation (id 0x1C)
 		// with the mob's entity id, plays the red flash on the
 		// mob for every viewer.
 		j.sessions.Broadcast(hurtAnimationPacket(targetEntityID))
+		if isCrit {
+			j.sessions.Broadcast(critAnimationPacket(targetEntityID))
+		}
 		// Sweep: if the held item is a sword, fan a 50% damage
 		// hit out to every other mob within a 1-block
 		// horizontal radius. Sweep does NOT trigger knockback

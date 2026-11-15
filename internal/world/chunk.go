@@ -233,8 +233,47 @@ func (s *ChunkSection) SetBlock(x, y, z int, block Block) {
 		s.nonAirBlocks++
 	} else if oldID != 0 && newID == 0 {
 		s.nonAirBlocks--
+		if s.nonAirBlocks <= 0 {
+			s.nonAirBlocks = 0
+			s.blocks = nil
+			return
+		}
 	}
 	s.blocks[idx] = newID
+}
+
+// Compact scans the section and releases the 16 KiB backing block slice if all
+// 4096 entries are air (ID == 0). Returns true if the section is now unallocated.
+func (s *ChunkSection) Compact() bool {
+	if s.blocks == nil {
+		s.nonAirBlocks = 0
+		return true
+	}
+	var nonAir int32
+	for _, id := range s.blocks {
+		if id != 0 {
+			nonAir++
+		}
+	}
+	s.nonAirBlocks = nonAir
+	if nonAir == 0 {
+		s.blocks = nil
+		return true
+	}
+	return false
+}
+
+// CompactAirSections scans all sections in the chunk and frees the backing
+// block slice of any section that contains only air, returning the number of
+// empty sections whose backing arrays are unallocated.
+func (c *Chunk) CompactAirSections() int {
+	reclaimed := 0
+	for i := range c.sections {
+		if c.sections[i].Compact() {
+			reclaimed++
+		}
+	}
+	return reclaimed
 }
 
 // GetSkyLight returns the sky light level (0-15) at the given section-local coordinates.

@@ -140,6 +140,7 @@ func (s *PlayerSession) finishBlockBreak(pos pk.Position, current world.Block) {
 	// Roll vanilla loot for the broken block and spawn item entities BEFORE the
 	// block becomes air (the loot lookup needs the block's id).
 	if s.GameMode() != 1 {
+		s.Bridge.pm.AddExhaustion(s.UUID(), 0.005)
 		toolName := ""
 		if pl := s.Bridge.pm.GetPlayer(s.UUID()); pl != nil && pl.Inventory != nil {
 			slot := int(s.SelectedSlot)
@@ -242,6 +243,64 @@ func (s *PlayerSession) handlePlayerDropItem(dropAll bool) {
 	s.Bridge.pm.PublishEquipmentChange(s.UUID())
 }
 
+// HandleUseItem processes ServerboundGameUseItem (right-clicking air with a
+// held item, e.g. eating food).
+func (s *PlayerSession) HandleUseItem(p pk.Packet) {
+	var hand pk.VarInt
+	var sequence pk.VarInt
+	if err := p.Scan(&hand, &sequence); err != nil {
+		return
+	}
+	defer s.ackBlockChange(sequence)
+	_ = s.tryEatJavaFood()
+}
+
+// tryEatJavaFood consumes 1 edible item from the player's selected hotbar slot
+// if they are holding food and able to eat, updating hunger and inventory.
+func (s *PlayerSession) tryEatJavaFood() bool {
+	if s.GameMode() == 3 || s.Bridge == nil || s.Bridge.pm == nil || s.Bridge.wm == nil {
+		return false
+	}
+	pl := s.Bridge.pm.GetPlayer(s.UUID())
+	if pl == nil || pl.Health <= 0 || pl.Inventory == nil {
+		return false
+	}
+	slot := int(s.SelectedSlot)
+	if slot < 0 || slot >= 9 || slot >= len(pl.Inventory.Items) {
+		return false
+	}
+	held := pl.Inventory.Items[slot]
+	if held.ID == 0 || held.Count <= 0 {
+		return false
+	}
+	it, ok := item.ByID(held.ID)
+	if !ok {
+		return false
+	}
+	food, ok := world.LookupFood(it.Name)
+	if !ok {
+		return false
+	}
+	if !s.Bridge.wm.Hunger().CanEat(s.UUID(), food.AlwaysEdible) {
+		return false
+	}
+	if !s.Bridge.wm.Hunger().Feed(s.UUID(), food.FoodPoints, food.Saturation) {
+		return false
+	}
+	if s.GameMode() != 1 {
+		held.Count--
+		if held.Count <= 0 {
+			pl.Inventory.SetItem(slot, player.ItemStack{})
+		} else {
+			pl.Inventory.SetItem(slot, held)
+		}
+		s.syncInventory()
+		s.Bridge.pm.PublishEquipmentChange(s.UUID())
+	}
+	s.broadcastSwing(false)
+	return true
+}
+
 func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 	var hand pk.VarInt
 	var pos pk.Position
@@ -272,6 +331,9 @@ func (s *PlayerSession) HandleUseItemOn(p pk.Packet) {
 
 	stateID := s.getBlockStateForPlacement()
 	if stateID == 0 {
+		if s.tryEatJavaFood() {
+			return
+		}
 		// No held block (hand empty, or held item is not placeable). Re-sync the
 		// clicked and target blocks to roll back the client's place prediction,
 		// otherwise the held stack gets visually decremented with nothing to show

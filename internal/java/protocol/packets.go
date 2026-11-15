@@ -25,6 +25,8 @@ func (h *Handler777) HandlePacket(s Session, p pk.Packet) {
 		s.HandleInteract(p)
 	case packetid.ServerboundGameUseItemOn:
 		s.HandleUseItemOn(p)
+	case packetid.ServerboundGameUseItem:
+		s.HandleUseItem(p)
 	case packetid.ServerboundGameChat:
 		s.HandleChat(p)
 	case packetid.ServerboundGameChatCommand:

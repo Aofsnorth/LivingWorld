@@ -3,6 +3,9 @@ package server
 import (
 	"livingworld/internal/java/protocol"
 	"livingworld/internal/player"
+
+	"github.com/Tnze/go-mc/data/packetid"
+	pk "github.com/Tnze/go-mc/net/packet"
 )
 
 func (j *javaBridge) startPlayerEventLoop() {
@@ -31,6 +34,8 @@ func (j *javaBridge) startPlayerEventLoop() {
 				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.updateForeignEquipment(p) }) })
 			case player.EventHurt:
 				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.hurtForeignAvatar(p) }) })
+			case player.EventCrit:
+				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.critForeignAvatar(p) }) })
 			case player.EventSkin:
 				j.sessions.ForEach(func(s *PlayerSession) { s.enqueue(func() { s.refreshViewer(p) }) })
 			}
@@ -99,11 +104,35 @@ func (s *PlayerSession) hurtForeignAvatar(p player.PlayerSnapshot) {
 	_ = s.SendPacket(hurtAnimationPacket(int32(p.EntityRuntimeID)))
 }
 
+// critForeignAvatar plays critical hit particles on a player's avatar.
+func (s *PlayerSession) critForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready {
+		return
+	}
+	_ = s.SendPacket(critAnimationPacket(int32(p.EntityRuntimeID)))
+}
+
+func critAnimationPacket(entityID int32) pk.Packet {
+	return pk.Marshal(
+		packetid.ClientboundGameAnimate,
+		pk.VarInt(entityID),
+		pk.UnsignedByte(4), // 4 = critical effect particles
+	)
+}
+
 func (s *PlayerSession) updateForeignMetadata(p player.PlayerSnapshot) {
 	if !s.Ready || p.UUID == s.UUID() {
 		return
 	}
 	_ = s.version.UpdateForeignMetadata(s, p)
+	if p.Dead {
+		if snap, ok := s.viewers.markDespawnedIfPresent(p.UUID); ok {
+			s.removeForeignAvatar(snap)
+			s.mu.Lock()
+			delete(s.lastSentPos, p.UUID)
+			s.mu.Unlock()
+		}
+	}
 }
 
 func (s *PlayerSession) updateForeignEquipment(p player.PlayerSnapshot) {

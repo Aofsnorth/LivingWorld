@@ -3,6 +3,8 @@ package player
 import (
 	"sync"
 
+	"livingworld/internal/shared/constants/gameplay"
+
 	"github.com/google/uuid"
 )
 
@@ -28,6 +30,12 @@ type EnvironmentController interface {
 	SyncEnvironment(snap PlayerSnapshot)
 }
 
+// HungerController is an optional extension implemented by protocol sessions
+// that push food, saturation, and exhaustion updates to the client HUD.
+type HungerController interface {
+	SyncHunger(food int, saturation, exhaustion float32)
+}
+
 type Manager struct {
 	mu      sync.RWMutex
 	players map[uuid.UUID]*Player
@@ -47,6 +55,11 @@ type Manager struct {
 
 	dataMu  sync.RWMutex
 	dataDir string // player-data directory; empty disables persistence
+
+	// Hunger hooks wired by the server so movement, jumping, combat, and
+	// status effects feed into the world's HungerTracker.
+	exhaustionFn func(id uuid.UUID, amount float32)
+	canSprintFn  func(id uuid.UUID) bool
 }
 
 func NewManager() *Manager {
@@ -120,4 +133,146 @@ func (m *Manager) syncEnvironment(snap PlayerSnapshot) {
 	if ec, ok := c.(EnvironmentController); ok {
 		ec.SyncEnvironment(snap)
 	}
+}
+
+// SetHungerHooks wires callbacks into the world's HungerTracker so movement,
+// jumping, combat, damage, and EffectHunger can add exhaustion and enforce the
+// food > 6 sprint gate.
+func (m *Manager) SetHungerHooks(addExhaustion func(uuid.UUID, float32), canSprint func(uuid.UUID) bool) {
+	m.mu.Lock()
+	m.exhaustionFn = addExhaustion
+	m.canSprintFn = canSprint
+	m.mu.Unlock()
+}
+
+// AddExhaustion forwards an exhaustion increment to the registered hunger hook
+// if the player is in survival/adventure mode and alive.
+func (m *Manager) AddExhaustion(id uuid.UUID, amount float32) {
+	if amount <= 0 {
+		return
+	}
+	m.mu.RLock()
+	p := m.players[id]
+	fn := m.exhaustionFn
+	canApply := p != nil && p.Health > 0 && !p.Creative && p.Gamemode != 1 && p.Gamemode != 3
+	m.mu.RUnlock()
+	if canApply && fn != nil {
+		fn(id, amount)
+	}
+}
+
+// SyncHunger updates the authoritative Player food/saturation fields, enforces
+// stopping sprint when food drops to <= 6, and notifies the session's
+// HungerController to push HUD updates.
+func (m *Manager) SyncHunger(id uuid.UUID, food int, saturation, exhaustion float32) {
+	m.mu.Lock()
+	p := m.players[id]
+	sprintStopped := false
+	var snap PlayerSnapshot
+	if p != nil {
+		p.Food = food
+		p.Saturation = saturation
+		if p.Sprinting && !p.Creative && p.Gamemode != 1 && p.Gamemode != 3 && food <= 6 {
+			p.Sprinting = false
+			p.Swimming = false
+			sprintStopped = true
+			snap = p.Snapshot()
+		}
+	}
+	m.mu.Unlock()
+
+	if sprintStopped {
+		m.publish(Event{Type: EventSneak, Player: snap})
+		m.syncEnvironment(snap)
+	}
+
+	m.ctrlMu.RLock()
+	c := m.controllers[id]
+	m.ctrlMu.RUnlock()
+	if hc, ok := c.(HungerController); ok {
+		hc.SyncHunger(food, saturation, exhaustion)
+	}
+}
+
+// SetHealth synchronizes the authoritative Player.Health in Manager with a
+// session-level health update. When health reaches <= 0, active fire/sprint/swim
+// flags are cleared and death events are broadcast so all viewers play the death
+// animation and despawn the corpse.
+func (m *Manager) SetHealth(id uuid.UUID, health float32) {
+	m.mu.Lock()
+	p := m.players[id]
+	var snap PlayerSnapshot
+	metaChanged := false
+	justDied := false
+	if p != nil {
+		wasAlive := p.Health > 0
+		if health < 0 {
+			health = 0
+		} else if health > gameplay.MaxHealth {
+			health = gameplay.MaxHealth
+		}
+		p.Health = health
+		if health <= 0 {
+			if wasAlive {
+				justDied = true
+				metaChanged = true
+			}
+			if p.OnFire || p.FireTicks > 0 || p.Sprinting || p.Swimming || p.Sneaking {
+				p.OnFire = false
+				p.FireTicks = 0
+				p.LavaTickCooldown = 0
+				p.Sprinting = false
+				p.Swimming = false
+				p.Sneaking = false
+				metaChanged = true
+			}
+			p.FallDistance = 0
+			snap = p.Snapshot()
+		}
+	}
+	m.mu.Unlock()
+	if justDied {
+		m.publish(Event{Type: EventHurt, Player: snap})
+	}
+	if metaChanged {
+		m.publish(Event{Type: EventSneak, Player: snap})
+		m.syncEnvironment(snap)
+	}
+}
+
+// RespawnPlayer resets a dead player's authoritative state in Manager (full HP,
+// full food/saturation, full air supply, cleared fire/movement flags and status
+// effects) at the given spawn coordinates.
+func (m *Manager) RespawnPlayer(id uuid.UUID, x, y, z float64, pitch, yaw float32) PlayerSnapshot {
+	m.ClearEffects(id)
+	m.mu.Lock()
+	p := m.players[id]
+	var snap PlayerSnapshot
+	if p != nil {
+		p.Health = gameplay.MaxHealth
+		p.Food = 20
+		p.Saturation = 5.0
+		p.AirSupply = 300
+		p.Breathing = true
+		p.OnFire = false
+		p.FireTicks = 0
+		p.LavaTickCooldown = 0
+		p.Sneaking = false
+		p.Sprinting = false
+		p.Swimming = false
+		p.Position.X = x
+		p.Position.Y = y
+		p.Position.Z = z
+		p.Rotation.Pitch = pitch
+		p.Rotation.Yaw = yaw
+		p.OnGround = true
+		snap = p.Snapshot()
+	}
+	m.mu.Unlock()
+	if snap.UUID != (uuid.UUID{}) {
+		m.publish(Event{Type: EventMove, Player: snap, Teleport: true})
+		m.publish(Event{Type: EventSneak, Player: snap})
+		m.syncEnvironment(snap)
+	}
+	return snap
 }

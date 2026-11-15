@@ -52,7 +52,9 @@ func encodePlayerMetadata(p player.PlayerSnapshot) []byte {
 
 	// Index 6: Pose (Pose type, Type 20)
 	var pose int32 = PoseStanding
-	if p.Swimming {
+	if p.Dead {
+		pose = 7 // PoseDying
+	} else if p.Swimming {
 		pose = PoseSwimming
 	} else if p.Sneaking {
 		pose = PoseCrouching

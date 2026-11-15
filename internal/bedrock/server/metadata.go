@@ -111,3 +111,59 @@ func bedrockMovementAttribute() protocol.Attribute {
 		Default:    protocol.AbilityBaseWalkSpeed,
 	}
 }
+
+// bedrockHungerAttributes builds the hunger, saturation, and exhaustion
+// attributes for Bedrock's UpdateAttributes packet so the client HUD food bar
+// updates in real time.
+func bedrockHungerAttributes(food int, saturation, exhaustion float32) []protocol.Attribute {
+	if food < 0 {
+		food = 0
+	} else if food > 20 {
+		food = 20
+	}
+	if saturation < 0 {
+		saturation = 0
+	} else if saturation > 20 {
+		saturation = 20
+	}
+	if exhaustion < 0 {
+		exhaustion = 0
+	} else if exhaustion > 4 {
+		exhaustion = 4
+	}
+	return []protocol.Attribute{
+		{
+			AttributeValue: protocol.AttributeValue{
+				Name:  "minecraft:player.hunger",
+				Value: float32(food),
+				Max:   20,
+				Min:   0,
+			},
+			DefaultMin: 0,
+			DefaultMax: 20,
+			Default:    20,
+		},
+		{
+			AttributeValue: protocol.AttributeValue{
+				Name:  "minecraft:player.saturation",
+				Value: saturation,
+				Max:   20,
+				Min:   0,
+			},
+			DefaultMin: 0,
+			DefaultMax: 20,
+			Default:    5,
+		},
+		{
+			AttributeValue: protocol.AttributeValue{
+				Name:  "minecraft:player.exhaustion",
+				Value: exhaustion,
+				Max:   4,
+				Min:   0,
+			},
+			DefaultMin: 0,
+			DefaultMax: 4,
+			Default:    0,
+		},
+	}
+}

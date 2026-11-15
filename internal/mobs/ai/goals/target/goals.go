@@ -36,7 +36,8 @@ func (HurtByTargetGoal) CanUse(body any, ctx *context.AIContext) bool {
 	if m.AITick-m.HurtByTick > HurtByForgetTicks {
 		return false
 	}
-	return context.FindPlayer(ctx.Players(), m.HurtBy) != nil
+	p := context.FindPlayer(ctx.Players(), m.HurtBy)
+	return p != nil && !p.Dead && p.Gamemode != 1 && p.Gamemode != 3
 }
 
 func (HurtByTargetGoal) CanContinue(body any, ctx *context.AIContext) bool {
@@ -106,13 +107,30 @@ func (NearestAttackableTargetGoal) CanContinue(body any, ctx *context.AIContext)
 		return false
 	}
 	def := mobs.DefFor(m.Type)
+	if isSpiderBrightDaylight(m, def, ctx) && (m.HurtBy != m.Target || m.AITick-m.HurtByTick > HurtByForgetTicks) {
+		return false
+	}
 	p := context.FindPlayer(ctx.Players(), m.Target)
-	if p == nil || p.Gamemode == 1 || p.Gamemode == 3 {
+	if p == nil || p.Dead || p.Gamemode == 1 || p.Gamemode == 3 {
 		return false
 	}
 	dx, dz := p.X-m.X, p.Z-m.Z
 	maxSq := (def.FollowRange + 4) * (def.FollowRange + 4)
 	return dx*dx+dz*dz <= maxSq
+}
+
+func isSpiderBrightDaylight(m *mobs.Mob, def mobs.MobDef, ctx *context.AIContext) bool {
+	if !def.AggressiveAtNight || ctx == nil {
+		return false
+	}
+	if ctx.IsDay != nil && !ctx.IsDay() {
+		return false
+	}
+	if ctx.SkyLightAt != nil {
+		bx, by, bz := int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))
+		return ctx.SkyLightAt(bx, by, bz) >= 12
+	}
+	return ctx.IsDay != nil && ctx.IsDay()
 }
 
 func (NearestAttackableTargetGoal) Stop(body any, ctx *context.AIContext) {
@@ -135,7 +153,7 @@ func DetectTarget(m *mobs.Mob, def mobs.MobDef, players []context.PlayerTarget, 
 	if len(players) == 0 || ctx.SolidAt == nil {
 		return context.ZeroUUID(), false
 	}
-	if def.AggressiveAtNight && ctx.IsDay != nil && ctx.IsDay() {
+	if isSpiderBrightDaylight(m, def, ctx) {
 		return context.ZeroUUID(), false
 	}
 	bestDist := math.MaxFloat64
@@ -143,7 +161,7 @@ func DetectTarget(m *mobs.Mob, def mobs.MobDef, players []context.PlayerTarget, 
 	mx, my, mz := m.X, m.Y+1.0, m.Z
 	for i := range players {
 		p := &players[i]
-		if p.Gamemode == 1 || p.Gamemode == 3 {
+		if p.Dead || p.Gamemode == 1 || p.Gamemode == 3 {
 			continue
 		}
 		if def.AggressiveUnlessGold && p.WearingGold {

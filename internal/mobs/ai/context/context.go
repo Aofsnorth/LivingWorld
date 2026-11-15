@@ -57,6 +57,7 @@ type PlayerTarget struct {
 	WearingHead string
 	WearingGold bool
 	Gamemode    int
+	Dead        bool
 	LookYaw     float64
 	LookPitch   float64
 }

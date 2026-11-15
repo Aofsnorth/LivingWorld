@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"livingworld/internal/permission"
 	"livingworld/internal/player"
 	"livingworld/internal/shared/constants/chat"
 	"livingworld/internal/world"
@@ -16,9 +17,10 @@ type Registry struct {
 	cmds  map[string]*Command // keyed by name AND each alias (lowercase)
 	names []string            // canonical names, registration order
 
-	pm  *player.Manager
-	wm  *world.Manager
-	ops OpController
+	pm    *player.Manager
+	wm    *world.Manager
+	ops   OpController
+	perms *permission.Engine
 }
 
 // Ctx is passed to a command handler.
@@ -28,6 +30,7 @@ type Ctx struct {
 	PM     *player.Manager
 	WM     *world.Manager
 	Ops    OpController
+	Perms  *permission.Engine
 }
 
 var defaultRegistry = New(nil, nil)
@@ -52,8 +55,28 @@ func BindOps(o OpController) {
 	defaultRegistry.mu.Unlock()
 }
 
+// BindPermissions attaches a hierarchical RBAC permission engine to the default registry.
+func BindPermissions(e *permission.Engine) {
+	defaultRegistry.SetPermissions(e)
+}
+
 func New(pm *player.Manager, wm *world.Manager) *Registry {
-	return &Registry{cmds: make(map[string]*Command), pm: pm, wm: wm}
+	eng, _ := permission.NewEngine(permission.DefaultDocument())
+	return &Registry{cmds: make(map[string]*Command), pm: pm, wm: wm, perms: eng}
+}
+
+// SetPermissions sets the RBAC permission engine used by Dispatch and /perm.
+func (r *Registry) SetPermissions(e *permission.Engine) {
+	r.mu.Lock()
+	r.perms = e
+	r.mu.Unlock()
+}
+
+// Permissions returns the active RBAC permission engine.
+func (r *Registry) Permissions() *permission.Engine {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.perms
 }
 
 // Register adds a command (and its aliases). A duplicate name is ignored.
@@ -104,7 +127,16 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 		s.Reply(chat.ColorRed + "Unknown command: /" + fields[0])
 		return true
 	}
-	if cmd.Permission == PermOperator && !s.IsOp() {
+	r.mu.RLock()
+	pm, wm, ops, perms := r.pm, r.wm, r.ops, r.perms
+	r.mu.RUnlock()
+
+	node := "livingworld.command." + strings.ToLower(cmd.Name)
+	allowed := cmd.Permission == PermAll || s.IsOp()
+	if perms != nil {
+		allowed = perms.Allowed(s.Name(), node, s.IsOp(), cmd.Permission == PermAll)
+	}
+	if !allowed {
 		s.Reply(chat.ColorRed + "You don't have permission to use /" + cmd.Name)
 		return true
 	}
@@ -117,10 +149,7 @@ func (r *Registry) Dispatch(s Sender, raw string) (handled bool) {
 		s.Reply(chat.ColorRed + "Usage: /" + usage)
 		return true
 	}
-	r.mu.RLock()
-	pm, wm, ops := r.pm, r.wm, r.ops
-	r.mu.RUnlock()
-	ctx := &Ctx{Sender: s, Args: args, PM: pm, WM: wm, Ops: ops}
+	ctx := &Ctx{Sender: s, Args: args, PM: pm, WM: wm, Ops: ops, Perms: perms}
 	if err := cmd.Handler(ctx); err != nil {
 		s.Reply(chat.ColorRed + "Error: " + err.Error())
 	}

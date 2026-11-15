@@ -32,6 +32,7 @@ import (
 	movement "livingworld/internal/mobs/ai/movement"
 	navigation "livingworld/internal/mobs/ai/navigation"
 	"math"
+	"sort"
 )
 
 // Tick runs one AI pass over every mob. It is the single entry
@@ -59,18 +60,40 @@ func Tick(s *mobs.Store, ctx context.AIContext) {
 	}
 	s.MuLock()
 	mobMap := s.Mobs()
-	moved := make([]mobs.Mob, 0, len(mobMap))
+	type mobBefore struct {
+		m                        *mobs.Mob
+		x, y, z                  float64
+		yaw, headYaw, headPitch  float64
+	}
+	beforeList := make([]mobBefore, 0, len(mobMap))
 	for _, m := range mobMap {
-		before := *m
+		beforeList = append(beforeList, mobBefore{
+			m:         m,
+			x:         m.X,
+			y:         m.Y,
+			z:         m.Z,
+			yaw:       m.Yaw,
+			headYaw:   m.HeadYaw,
+			headPitch: m.HeadPitch,
+		})
 		aiStep(m, &ctx)
-		if m.X != before.X || m.Y != before.Y || m.Z != before.Z ||
-			m.Yaw != before.Yaw || m.HeadYaw != before.HeadYaw || m.HeadPitch != before.HeadPitch {
+	}
+	applyEntityCollisions(mobMap, &ctx)
+	moved := make([]mobs.Mob, 0, len(beforeList))
+	for i := range beforeList {
+		b := &beforeList[i]
+		m := b.m
+		if m.X != b.x || m.Y != b.y || m.Z != b.z ||
+			m.Yaw != b.yaw || m.HeadYaw != b.headYaw || m.HeadPitch != b.headPitch {
 			moved = append(moved, *m)
 		}
 	}
-	snapshot := make([]mobs.Mob, 0, len(mobMap))
-	for _, m := range mobMap {
-		snapshot = append(snapshot, *m)
+	var snapshot []mobs.Mob
+	if ctx.OnSound != nil && len(mobMap) > 0 {
+		snapshot = make([]mobs.Mob, 0, len(mobMap))
+		for _, m := range mobMap {
+			snapshot = append(snapshot, *m)
+		}
 	}
 	s.MuUnlock()
 	cbs := s.OnMoveCBs()
@@ -390,5 +413,170 @@ func BodyRotationSystem(m *mobs.Mob) {
 	if !m.GoalSel.LookGoalActive() {
 		m.HeadYaw = movement.ApproachAngle(m.HeadYaw, m.Yaw, movement.MaxHeadYawTurn)
 		m.HeadPitch = movement.ApproachAngle(m.HeadPitch, 0, movement.MaxHeadPitchTurn)
+	}
+}
+
+const (
+	playerMobPushRadius   = 0.95
+	mobMobPushRadius      = 0.85
+	entityPushVertical    = 1.2
+	maxMobPushStepPerTick = 0.22
+)
+
+func mobCollisionRadius(m *mobs.Mob, base float64) float64 {
+	if (m.Type == "minecraft:slime" || m.Type == "minecraft:magma_cube") && m.Size > 1 {
+		return base + float64(m.Size-1)*0.35
+	}
+	return base
+}
+
+func moveMobWithCollision(m *mobs.Mob, stepX, stepZ float64, ctx *context.AIContext) {
+	if stepX == 0 && stepZ == 0 {
+		return
+	}
+	fy := int(math.Floor(m.Y))
+	if stepX != 0 {
+		nx := m.X + stepX
+		if ctx == nil || ctx.SolidAt == nil || (!ctx.SolidAt(int(math.Floor(nx)), fy, int(math.Floor(m.Z))) && !ctx.SolidAt(int(math.Floor(nx)), fy+1, int(math.Floor(m.Z)))) {
+			m.X = nx
+		}
+	}
+	if stepZ != 0 {
+		nz := m.Z + stepZ
+		if ctx == nil || ctx.SolidAt == nil || (!ctx.SolidAt(int(math.Floor(m.X)), fy, int(math.Floor(nz))) && !ctx.SolidAt(int(math.Floor(m.X)), fy+1, int(math.Floor(nz)))) {
+			m.Z = nz
+		}
+	}
+}
+
+// applyEntityCollisions resolves horizontal soft-collision pushing between
+// players (both Java and Bedrock) and mobs, as well as between overlapping mobs.
+func applyEntityCollisions(mobMap map[int64]*mobs.Mob, ctx *context.AIContext) {
+	if len(mobMap) == 0 {
+		return
+	}
+	var players []context.PlayerTarget
+	if ctx != nil && ctx.Players != nil {
+		players = ctx.Players()
+	}
+
+	ids := make([]int64, 0, len(mobMap))
+	for id := range mobMap {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	// 1. Player -> Mob pushing
+	for _, id := range ids {
+		m := mobMap[id]
+		if m == nil || m.Despawn {
+			continue
+		}
+		radius := mobCollisionRadius(m, playerMobPushRadius)
+		radiusSq := radius * radius
+		var pushX, pushZ float64
+		for _, p := range players {
+			if p.Dead || p.Gamemode == 3 { // dead or spectator never pushes entities
+				continue
+			}
+			if math.Abs(p.Y-m.Y) >= entityPushVertical {
+				continue
+			}
+			dx := m.X - p.X
+			dz := m.Z - p.Z
+			distSq := dx*dx + dz*dz
+			if distSq >= radiusSq {
+				continue
+			}
+			if distSq < 1e-6 {
+				dx = 0.01
+				dz = 0
+				distSq = 1e-4
+			}
+			dist := math.Sqrt(distSq)
+			overlap := (radius - dist) / radius
+			strength := 0.06 + overlap*0.16
+			if strength > maxMobPushStepPerTick {
+				strength = maxMobPushStepPerTick
+			}
+			pushX += (dx / dist) * strength
+			pushZ += (dz / dist) * strength
+		}
+		if pushX != 0 || pushZ != 0 {
+			if pushX > maxMobPushStepPerTick {
+				pushX = maxMobPushStepPerTick
+			} else if pushX < -maxMobPushStepPerTick {
+				pushX = -maxMobPushStepPerTick
+			}
+			if pushZ > maxMobPushStepPerTick {
+				pushZ = maxMobPushStepPerTick
+			} else if pushZ < -maxMobPushStepPerTick {
+				pushZ = -maxMobPushStepPerTick
+			}
+			moveMobWithCollision(m, pushX, pushZ, ctx)
+		}
+	}
+
+	// 2. Mob <-> Mob separation using a 2D spatial hash grid (cell size 2.0 blocks)
+	// so broadphase collision complexity is O(N) instead of O(N^2).
+	const cellSize = 2.0
+	cellKey := func(cx, cz int32) int64 {
+		return int64(uint64(uint32(cx))<<32 | uint64(uint32(cz)))
+	}
+	grid := make(map[int64][]*mobs.Mob, len(ids))
+	for _, id := range ids {
+		m := mobMap[id]
+		if m == nil || m.Despawn {
+			continue
+		}
+		cx := int32(math.Floor(m.X / cellSize))
+		cz := int32(math.Floor(m.Z / cellSize))
+		k := cellKey(cx, cz)
+		grid[k] = append(grid[k], m)
+	}
+
+	for _, id := range ids {
+		m1 := mobMap[id]
+		if m1 == nil || m1.Despawn {
+			continue
+		}
+		cx := int32(math.Floor(m1.X / cellSize))
+		cz := int32(math.Floor(m1.Z / cellSize))
+		r1 := mobCollisionRadius(m1, mobMobPushRadius)
+		for gx := cx - 1; gx <= cx+1; gx++ {
+			for gz := cz - 1; gz <= cz+1; gz++ {
+				cellMobs := grid[cellKey(gx, gz)]
+				for _, m2 := range cellMobs {
+					if m2.EntityID <= m1.EntityID || m2.Despawn {
+						continue
+					}
+					if math.Abs(m1.Y-m2.Y) >= entityPushVertical {
+						continue
+					}
+					r := (r1 + mobCollisionRadius(m2, mobMobPushRadius)) * 0.5
+					dx := m1.X - m2.X
+					dz := m1.Z - m2.Z
+					distSq := dx*dx + dz*dz
+					if distSq >= r*r {
+						continue
+					}
+					if distSq < 1e-6 {
+						dx = 0.01
+						dz = 0
+						distSq = 1e-4
+					}
+					dist := math.Sqrt(distSq)
+					overlap := (r - dist) / r
+					step := overlap * 0.08
+					if step > 0.12 {
+						step = 0.12
+					}
+					ux := (dx / dist) * step
+					uz := (dz / dist) * step
+					moveMobWithCollision(m1, ux, uz, ctx)
+					moveMobWithCollision(m2, -ux, -uz, ctx)
+				}
+			}
+		}
 	}
 }

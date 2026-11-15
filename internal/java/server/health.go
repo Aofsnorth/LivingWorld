@@ -33,6 +33,39 @@ func (s *PlayerSession) sendHealth() error {
 	return s.SendPacket(buildSetHealthPacket(h, f, sat))
 }
 
+// Heal implements player.Controller: restore health up to MaxHealth and push
+// ClientboundGameSetHealth to the Java client.
+func (s *PlayerSession) Heal(amount float32) {
+	if amount <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.Health <= 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.Health += amount
+	if s.Health > MaxHealth {
+		s.Health = MaxHealth
+	}
+	newHealth := s.Health
+	s.mu.Unlock()
+	if s.Bridge != nil && s.Bridge.pm != nil {
+		s.Bridge.pm.SetHealth(s.UUIDVal, newHealth)
+	}
+	_ = s.sendHealth()
+}
+
+// SyncHunger implements player.HungerController: update session food and
+// saturation and push ClientboundGameSetHealth to the Java client.
+func (s *PlayerSession) SyncHunger(food int, saturation, exhaustion float32) {
+	s.mu.Lock()
+	s.Food = int32(food)
+	s.Saturation = saturation
+	s.mu.Unlock()
+	_ = s.sendHealth()
+}
+
 // HandleClientCommand processes ServerboundGameClientCommand (0 = PERFORM_RESPAWN).
 func (s *PlayerSession) HandleClientCommand(p pk.Packet) {
 	var actionID pk.VarInt
@@ -66,14 +99,10 @@ func (s *PlayerSession) HandleClientCommand(p pk.Packet) {
 	s.mu.Unlock()
 
 	if s.Bridge.pm != nil {
-		if pl := s.Bridge.pm.GetPlayer(s.UUIDVal); pl != nil {
-			pl.Health = MaxHealth
-			pl.Food = int(MaxFood)
-			pl.Saturation = MaxSaturation
-			pl.OnFire = false
-			pl.AirSupply = 300
-		}
-		s.Bridge.pm.UpdatePosition(s.UUIDVal, spawnX, spawnY, spawnZ, spawn.Pitch, spawn.Yaw, true)
+		s.Bridge.pm.RespawnPlayer(s.UUIDVal, spawnX, spawnY, spawnZ, spawn.Pitch, spawn.Yaw)
+	}
+	if s.Bridge.wm != nil && s.Bridge.wm.Hunger() != nil {
+		s.Bridge.wm.Hunger().ResetPlayer(s.UUIDVal, s.Bridge.cfg.World.Difficulty)
 	}
 
 	// Send ClientboundGameRespawn matching 26.3 CommonPlayerSpawnInfo + dataToKeep(0).

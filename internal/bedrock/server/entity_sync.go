@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"livingworld/internal/bedrock/inventory"
 	"livingworld/internal/bedrock/skin"
 	"livingworld/internal/item"
@@ -23,6 +25,12 @@ func (s *Server) startPlayerEventLoop() {
 		for ev := range s.playerEvents {
 			s.forEachSession(func(viewer *bedrockSession) {
 				if ev.Player.UUID == viewer.id {
+					if ev.Type == player.EventCrit {
+						viewer.write(&packet.Animate{
+							ActionType:      packet.AnimateActionCriticalHit,
+							EntityRuntimeID: bedrockLocalRuntime,
+						})
+					}
 					return
 				}
 				switch ev.Type {
@@ -42,6 +50,8 @@ func (s *Server) startPlayerEventLoop() {
 					s.updateEquipmentFor(viewer, ev.Player)
 				case player.EventHurt:
 					s.hurtPlayerFor(viewer, ev.Player)
+				case player.EventCrit:
+					s.critPlayerFor(viewer, ev.Player)
 				case player.EventSkin:
 					s.updateSkinFor(viewer, ev.Player)
 				}
@@ -61,6 +71,9 @@ func (s *Server) spawnPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
+	// Ensure any lingering dying actor from a recent death (<950ms ago) is cleared
+	// on the viewer before re-adding the respawned player with the same runtime ID.
+	viewer.write(&packet.RemoveActor{EntityUniqueID: int64(p.EntityRuntimeID)})
 	if p.Edition == player.EditionBedrock {
 		target, ok := s.getSession(p.UUID)
 		if !ok {
@@ -102,11 +115,52 @@ func (s *Server) updateSneakFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
+	if p.Dead || p.Health <= 0 {
+		if snap, ok := viewer.viewers.markDespawnedIfPresent(p.UUID); ok {
+			s.playDeathAndRemovePlayerFor(viewer, snap)
+		}
+		return
+	}
 	viewer.write(&packet.SetActorData{
 		EntityRuntimeID: p.EntityRuntimeID,
 		EntityMetadata:  bedrockPlayerMetadata(p),
 	})
 	s.syncLocatorFor(viewer, p, false)
+}
+
+// playDeathAndRemovePlayerFor plays the vanilla hurt flash + 90-degree fall-over
+// death animation on a Bedrock viewer when another player dies, and then removes
+// the corpse actor after the 20-tick death animation completes.
+func (s *Server) playDeathAndRemovePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
+	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
+		return
+	}
+	p.Health = 0
+	p.Dead = true
+	p.OnFire = false
+	p.Sneaking = false
+	p.Sprinting = false
+	p.Swimming = false
+	s.syncLocatorFor(viewer, p, true)
+	viewer.write(&packet.SetActorData{
+		EntityRuntimeID: p.EntityRuntimeID,
+		EntityMetadata:  bedrockPlayerMetadata(p),
+	})
+	viewer.write(&packet.ActorEvent{
+		EntityRuntimeID: p.EntityRuntimeID,
+		EventType:       packet.ActorEventHurt,
+	})
+	viewer.write(&packet.ActorEvent{
+		EntityRuntimeID: p.EntityRuntimeID,
+		EventType:       packet.ActorEventDeath,
+	})
+	time.AfterFunc(950*time.Millisecond, func() {
+		if viewer.viewers.isSpawned(p.UUID) {
+			return
+		}
+		viewer.write(&packet.PlayerList{Entries: []protocol.PlayerListEntry{{ActionType: protocol.PlayerListActionRemove, UUID: p.UUID}}})
+		viewer.write(&packet.RemoveActor{EntityUniqueID: int64(p.EntityRuntimeID)})
+	})
 }
 
 func (s *Server) removePlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
@@ -165,6 +219,12 @@ func (s *Server) hurtPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) 
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
+	if p.Dead || p.Health <= 0 {
+		if snap, ok := viewer.viewers.markDespawnedIfPresent(p.UUID); ok {
+			s.playDeathAndRemovePlayerFor(viewer, snap)
+		}
+		return
+	}
 	viewer.write(&packet.ActorEvent{EntityRuntimeID: p.EntityRuntimeID, EventType: packet.ActorEventHurt})
 }
 
@@ -184,6 +244,16 @@ func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 		ActionType:      packet.AnimateActionSwingArm,
 		EntityRuntimeID: p.EntityRuntimeID,
 		SwingSource:     packet.AnimateSwingSourceAttack,
+	})
+}
+
+func (s *Server) critPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
+	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
+		return
+	}
+	viewer.write(&packet.Animate{
+		ActionType:      packet.AnimateActionCriticalHit,
+		EntityRuntimeID: p.EntityRuntimeID,
 	})
 }
 

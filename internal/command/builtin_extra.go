@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"livingworld/internal/experience"
 	"livingworld/internal/shared/constants/chat"
 	"livingworld/internal/world"
 )
@@ -46,6 +47,18 @@ func registerExtended(r *Registry) {
 	r.Register(&Command{
 		Name: "me", Description: "Emote in chat", Usage: "me <action>",
 		Permission: PermAll, MinArgs: 1, Handler: cmdMe,
+	})
+	r.Register(&Command{
+		Name: "xp", Aliases: []string{"experience"},
+		Description: "Manage player experience points, levels, and orb splits",
+		Usage:       "xp <add|set|query> <player> [amount] [points|levels]",
+		Permission:  PermOperator, MinArgs: 2, Handler: cmdXP,
+	})
+	r.Register(&Command{
+		Name: "perm", Aliases: []string{"perms", "permission"},
+		Description: "Manage hierarchical RBAC groups and permission nodes",
+		Usage:       "perm <check|group|set> <player> <node|group> [true|false]",
+		Permission:  PermOperator, MinArgs: 3, Handler: cmdPerm,
 	})
 }
 
@@ -223,4 +236,135 @@ func cmdMe(ctx *Ctx) error {
 	}
 	ctx.PM.Broadcast(chat.ColorGray + "* " + ctx.Sender.Name() + " " + strings.Join(ctx.Args, " "))
 	return nil
+}
+
+func cmdXP(ctx *Ctx) error {
+	if ctx.PM == nil {
+		return fmt.Errorf("no player manager")
+	}
+	sub := strings.ToLower(ctx.Args[0])
+	targetName := ctx.Args[1]
+	p := ctx.PM.GetPlayerByName(targetName)
+	if p == nil {
+		return fmt.Errorf("player %q not found", targetName)
+	}
+
+	baseXP := experience.TotalXPForLevel(int32(p.XPLevel))
+	span := experience.XPToNextLevel(int32(p.XPLevel))
+	curTotal := baseXP + int32(math.Round(float64(p.XPProgress)*float64(span)))
+	curState := experience.StateFromTotalXP(curTotal)
+
+	switch sub {
+	case "query":
+		orbs := experience.SplitIntoOrbs(curState.TotalXP)
+		ctx.Sender.Reply(fmt.Sprintf(
+			"%s%s%s is at Level %d (%d total XP, %.0f%% to next level, %d vanilla orbs)",
+			chat.ColorGreen, p.Username, chat.Reset, curState.Level, curState.TotalXP, curState.Progress*100, len(orbs),
+		))
+		return nil
+
+	case "add", "set":
+		if len(ctx.Args) < 3 {
+			return fmt.Errorf("usage: /xp %s <player> <amount> [points|levels]", sub)
+		}
+		rawAmt := ctx.Args[2]
+		isLevels := false
+		if strings.HasSuffix(strings.ToLower(rawAmt), "l") {
+			isLevels = true
+			rawAmt = rawAmt[:len(rawAmt)-1]
+		}
+		if len(ctx.Args) >= 4 && strings.HasPrefix(strings.ToLower(ctx.Args[3]), "l") {
+			isLevels = true
+		}
+		val, err := strconv.Atoi(rawAmt)
+		if err != nil {
+			return fmt.Errorf("invalid XP amount %q", ctx.Args[2])
+		}
+
+		var nextState experience.State
+		if sub == "add" {
+			if isLevels {
+				nextState = curState.AddLevels(int32(val))
+			} else {
+				nextState = curState.AddPoints(int32(val))
+			}
+		} else {
+			if isLevels {
+				if val < 0 {
+					val = 0
+				}
+				nextState = experience.StateFromTotalXP(experience.TotalXPForLevel(int32(val)))
+			} else {
+				if val < 0 {
+					val = 0
+				}
+				nextState = experience.StateFromTotalXP(int32(val))
+			}
+		}
+		p.XPLevel = int(nextState.Level)
+		p.XPProgress = nextState.Progress
+		ctx.Sender.Reply(fmt.Sprintf(
+			"%sUpdated %s XP -> Level %d (%d total XP, %.0f%% progress)",
+			chat.ColorGreen, p.Username, nextState.Level, nextState.TotalXP, nextState.Progress*100,
+		))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand %q (expected add, set, or query)", sub)
+	}
+}
+
+func cmdPerm(ctx *Ctx) error {
+	if ctx.Perms == nil {
+		return fmt.Errorf("permission engine not initialized")
+	}
+	sub := strings.ToLower(ctx.Args[0])
+	targetUser := ctx.Args[1]
+	targetArg := ctx.Args[2]
+
+	isOp := false
+	if ctx.PM != nil {
+		if p := ctx.PM.GetPlayerByName(targetUser); p != nil {
+			isOp = p.Op
+		}
+	}
+
+	switch sub {
+	case "check":
+		allowed := ctx.Perms.Allowed(targetUser, targetArg, isOp, false)
+		prefix := ctx.Perms.Prefix(targetUser)
+		ctx.Sender.Reply(fmt.Sprintf(
+			"%sRBAC check for %s (prefix=%q) on node %q: allowed=%v",
+			chat.ColorYellow, targetUser, prefix, targetArg, allowed,
+		))
+		return nil
+
+	case "group":
+		ctx.Perms.AssignUserGroup(targetUser, targetArg)
+		prefix := ctx.Perms.Prefix(targetUser)
+		ctx.Sender.Reply(fmt.Sprintf(
+			"%sAssigned %s to group %q (active prefix=%q)",
+			chat.ColorGreen, targetUser, targetArg, prefix,
+		))
+		return nil
+
+	case "set":
+		allow := true
+		if len(ctx.Args) >= 4 {
+			parsed, err := strconv.ParseBool(ctx.Args[3])
+			if err != nil {
+				return fmt.Errorf("invalid boolean %q (expected true or false)", ctx.Args[3])
+			}
+			allow = parsed
+		}
+		ctx.Perms.SetUserPermission(targetUser, targetArg, allow)
+		ctx.Sender.Reply(fmt.Sprintf(
+			"%sSet permission node %q=%v for %s",
+			chat.ColorGreen, targetArg, allow, targetUser,
+		))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand %q (expected check, group, or set)", sub)
+	}
 }

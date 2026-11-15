@@ -106,6 +106,9 @@ func toolEfficiency(blockID int32, toolID string) (float64, bool) {
 	if toolID == "" {
 		return 1.0, canHarvestWithHand(blockName)
 	}
+	if len(toolID) < 10 || toolID[:10] != "minecraft:" {
+		toolID = "minecraft:" + toolID
+	}
 
 	// Tool speed multipliers (vanilla values)
 	var speedMultiplier float64
@@ -193,9 +196,8 @@ func canHarvestWithHand(blockName string) bool {
 	switch blockName {
 	case "minecraft:dirt", "minecraft:grass_block", "minecraft:sand",
 		"minecraft:gravel", "minecraft:clay", "minecraft:farmland",
-		"minecraft:soul_sand", "minecraft:soul_soil", "minecraft:snow",
-		"minecraft:snow_block", "minecraft:tnt", "minecraft:slime_block",
-		"minecraft:honey_block":
+		"minecraft:soul_sand", "minecraft:soul_soil", "minecraft:tnt",
+		"minecraft:slime_block", "minecraft:honey_block":
 		return true
 	}
 	return false
@@ -392,7 +394,7 @@ var hardnessTable = map[string]float64{
 	"minecraft:farmland":                0.6,
 	"minecraft:soul_sand":               0.5,
 	"minecraft:soul_soil":               0.5,
-	"minecraft:snow":                    0.1,
+	"minecraft:snow":                    0.2,
 	"minecraft:snow_block":              0.2,
 	"minecraft:powder_snow":             0.25,
 	"minecraft:oak_leaves":              0.2,

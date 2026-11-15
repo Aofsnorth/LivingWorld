@@ -53,6 +53,13 @@ func (v *viewerTracker) markDespawnedIfPresent(id uuid.UUID) (player.PlayerSnaps
 	return snap, ok
 }
 
+func (v *viewerTracker) isSpawned(id uuid.UUID) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, ok := v.spawned[id]
+	return ok
+}
+
 func (v *viewerTracker) spawnedIDs() []uuid.UUID {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -92,14 +99,18 @@ func (s *Server) reconcileViewerFor(viewer *bedrockSession, p player.PlayerSnaps
 	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
 		return
 	}
-	if s.inViewRange(viewer, p) {
+	if !p.Dead && s.inViewRange(viewer, p) {
 		if viewer.viewers.markSpawnedIfAbsent(p.UUID, p) {
 			s.spawnPlayerFor(viewer, p)
 		} else {
 			s.movePlayerFor(viewer, p, teleport)
 		}
 	} else if snap, ok := viewer.viewers.markDespawnedIfPresent(p.UUID); ok {
-		s.removePlayerFor(viewer, snap)
+		if p.Dead {
+			s.playDeathAndRemovePlayerFor(viewer, snap)
+		} else {
+			s.removePlayerFor(viewer, snap)
+		}
 	}
 }
 
@@ -119,7 +130,7 @@ func (s *Server) reconcileViewers(viewer *bedrockSession) {
 			continue
 		}
 		snap := p.Snapshot()
-		if snap.EntityRuntimeID == 0 || !s.inViewRange(viewer, snap) {
+		if snap.Dead || snap.EntityRuntimeID == 0 || !s.inViewRange(viewer, snap) {
 			continue
 		}
 		inRange[p.UUID] = struct{}{}
