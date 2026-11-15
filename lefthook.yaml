@@ -1,0 +1,24 @@
+# Lefthook Git Hooks Configuration — LivingWorld
+# Enforces Conventional Commits 1.0.0, Go formatting/static analysis, and secret scanning.
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: cog verify --file {1}
+
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    govet:
+      glob: "*.go"
+      run: go vet ./...
+    golangci-lint:
+      glob: "*.go"
+      run: golangci-lint run --fix ./...
+      stage_fixed: true
+    gitleaks:
+      run: gitleaks protect --staged --no-banner --redact

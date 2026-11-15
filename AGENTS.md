@@ -4,6 +4,37 @@ LivingWorld is a high-performance, native hybrid Minecraft server (Java Edition 
 
 ---
 
+## 0. Mandatory Professional Engineering, Git Commit & Documentation Standards
+
+Every human contributor and AI coding agent operating in this repository MUST enforce strict, production-grade software engineering discipline inspired by industry benchmarks ([GoCraft](https://github.com/GoCraft-MC/GoCraft), PaperMC, and empirical software engineering best practices):
+
+1. **Strict Conventional Commits 1.0.0 (Zero Vague Commits)**:
+   - Every git commit message MUST follow the format: `<type>(<scope>): <imperative summary>` (under 72 characters in the subject line).
+   - Allowed `<type>` values: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
+   - Allowed `<scope>` examples: `world`, `player`, `mobs`, `java`, `bedrock`, `combat`, `hunger`, `weather`, `skin`, `ci`, `native`.
+   - **STRICTLY FORBIDDEN**: Single-word, ambiguous, or placeholder commit messages such as `Add`, `Idk`, `update`, `fix bug`, `wip`, or `test`.
+   - Write the subject in the **imperative mood** (e.g., `feat(mobs): implement binary-heap A* pathfinding and spatial grid collisions`, `fix(bedrock): synchronize 3-way respawn handshake and death metadata`).
+2. **Atomic Commits, Size Budget & Clean Worktree Discipline**:
+   - **Git Author Attribution**: Every commit in this repository MUST be authored by `Aofsnorth <aidanpitra@gmail.com>` (`git config user.name "Aofsnorth"` and `git config user.email "aidanpitra@gmail.com"`).
+   - **Small Atomic Diffs**: Keep each commit small and focused (ideally `<= 100–150` changed lines per commit) so `git bisect` and code review remain effortless. Split large features into sequential, self-contained atomic commits.
+   - Each commit MUST represent a single, cohesive, and self-contained logical change that compiles cleanly and passes all unit/integration tests.
+   - Never mix unrelated refactors, formatting sweeps, and feature work in the same commit.
+   - Never commit temporary build artifacts (`*.exe`, `*.test`, `*.prof`, `*.out`), secrets, API keys, or local world saves.
+3. **Edition-Agnostic Core Isolation**:
+   - Domain packages (`internal/world`, `internal/player`, `internal/mobs`, `internal/combat`, `internal/drops`, `internal/item`) MUST remain 100% edition-agnostic and MUST NEVER import `internal/java/...` or `internal/bedrock/...`.
+   - Protocol-specific wire formats, packet IDs, and metadata indices belong exclusively in `internal/java` and `internal/bedrock`.
+4. **Pre-Commit Quality & Security Gate**:
+   - Before finalizing any task or commit, the agent MUST verify:
+     1. `go fmt ./...` (zero formatting drift)
+     2. `go build ./...` (zero compilation errors)
+     3. `go vet ./...` (zero static analysis warnings)
+     4. `go test ./...` (100% test pass rate; every bug fix or feature MUST include regression tests)
+     5. `govulncheck ./...` (zero known security vulnerabilities when dependencies change)
+5. **Documentation & Specification Synchronization**:
+   - Keep `README.md`, `AGENTS.md`, package doc comments, and `config/config.yml` comments synchronized whenever protocols, CLI flags, configuration keys, or gameplay systems change.
+
+---
+
 ## 1. Core Mandate #1: Performance & Optimization First
 
 **Performance and resource optimization are the #1 priority across every execution, architectural decision, and code change.** Every modification MUST adhere to the following non-negotiable standards:
