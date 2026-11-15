@@ -58,6 +58,14 @@ func (h *Handler777) SpawnForeignAvatar(s Session, p player.PlayerSnapshot) erro
 		return err
 	}
 
+	// Ensure any lingering dying entity with the same runtime ID (from the 950ms
+	// death animation timer) is cleared on the Java client before re-spawning.
+	_ = s.SendPacket(pk.Marshal(
+		packetid.ClientboundGameRemoveEntities,
+		pk.VarInt(1),
+		pk.VarInt(entityID),
+	))
+
 	err := s.SendPacket(pk.Marshal(
 		packetid.ClientboundGameAddEntity,
 		pk.VarInt(entityID),

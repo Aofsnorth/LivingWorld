@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"livingworld/internal/java/protocol"
 	"livingworld/internal/player"
 
@@ -96,9 +98,49 @@ func (s *PlayerSession) swingForeignAvatar(p player.PlayerSnapshot) {
 	_ = s.version.SwingForeignAvatar(s, p)
 }
 
+// playDeathAndRemoveForeignAvatar plays the vanilla 20-tick fall-over death
+// animation (PoseDying metadata + HurtAnimation + EntityEvent status 3) on a
+// foreign player's avatar and despawns the entity after ~950ms so Java viewers
+// see the full death animation instead of an instant pop-out.
+func (s *PlayerSession) playDeathAndRemoveForeignAvatar(p player.PlayerSnapshot) {
+	if !s.Ready || p.UUID == s.UUID() {
+		return
+	}
+	snap, ok := s.viewers.markDespawnedIfPresent(p.UUID)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	delete(s.lastSentPos, p.UUID)
+	s.mu.Unlock()
+
+	p.Dead = true
+	p.Health = 0
+	_ = s.version.UpdateForeignMetadata(s, p)
+	_ = s.SendPacket(hurtAnimationPacket(int32(snap.EntityRuntimeID)))
+	_ = s.SendPacket(entityEventPacket(int32(snap.EntityRuntimeID), 3))
+
+	deadUUID := snap.UUID
+	time.AfterFunc(950*time.Millisecond, func() {
+		if !s.Ready {
+			return
+		}
+		if s.Bridge != nil && s.Bridge.pm != nil {
+			if pl := s.Bridge.pm.GetPlayer(deadUUID); pl != nil && pl.Health > 0 {
+				return
+			}
+		}
+		s.removeForeignAvatar(snap)
+	})
+}
+
 // hurtForeignAvatar plays the red hurt flash on another player's avatar.
 func (s *PlayerSession) hurtForeignAvatar(p player.PlayerSnapshot) {
 	if !s.Ready || p.UUID == s.UUID() {
+		return
+	}
+	if p.Dead || p.Health <= 0 {
+		s.playDeathAndRemoveForeignAvatar(p)
 		return
 	}
 	_ = s.SendPacket(hurtAnimationPacket(int32(p.EntityRuntimeID)))
@@ -109,7 +151,11 @@ func (s *PlayerSession) critForeignAvatar(p player.PlayerSnapshot) {
 	if !s.Ready {
 		return
 	}
-	_ = s.SendPacket(critAnimationPacket(int32(p.EntityRuntimeID)))
+	entityID := int32(p.EntityRuntimeID)
+	if p.UUID == s.UUID() {
+		entityID = s.EntityID()
+	}
+	_ = s.SendPacket(critAnimationPacket(entityID))
 }
 
 func critAnimationPacket(entityID int32) pk.Packet {
@@ -124,15 +170,11 @@ func (s *PlayerSession) updateForeignMetadata(p player.PlayerSnapshot) {
 	if !s.Ready || p.UUID == s.UUID() {
 		return
 	}
-	_ = s.version.UpdateForeignMetadata(s, p)
-	if p.Dead {
-		if snap, ok := s.viewers.markDespawnedIfPresent(p.UUID); ok {
-			s.removeForeignAvatar(snap)
-			s.mu.Lock()
-			delete(s.lastSentPos, p.UUID)
-			s.mu.Unlock()
-		}
+	if p.Dead || p.Health <= 0 {
+		s.playDeathAndRemoveForeignAvatar(p)
+		return
 	}
+	_ = s.version.UpdateForeignMetadata(s, p)
 }
 
 func (s *PlayerSession) updateForeignEquipment(p player.PlayerSnapshot) {

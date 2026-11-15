@@ -247,14 +247,33 @@ func (s *Server) swingPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot)
 	})
 }
 
-func (s *Server) critPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
-	if p.UUID == viewer.id || p.EntityRuntimeID == 0 {
+func sendBedrockCritParticles(viewer *bedrockSession, runtimeID uint64, x, y, z float64) {
+	if viewer == nil {
 		return
 	}
-	viewer.write(&packet.Animate{
-		ActionType:      packet.AnimateActionCriticalHit,
-		EntityRuntimeID: p.EntityRuntimeID,
+	if runtimeID != 0 {
+		viewer.write(&packet.Animate{
+			ActionType:      packet.AnimateActionCriticalHit,
+			EntityRuntimeID: runtimeID,
+		})
+	}
+	viewer.write(&packet.SpawnParticleEffect{
+		Dimension:      packet.DimensionOverworld,
+		EntityUniqueID: -1,
+		Position:       mgl32.Vec3{float32(x), float32(y + 1.0), float32(z)},
+		ParticleName:   "minecraft:critical_hit_emitter",
 	})
+}
+
+func (s *Server) critPlayerFor(viewer *bedrockSession, p player.PlayerSnapshot) {
+	if p.EntityRuntimeID == 0 {
+		return
+	}
+	runtimeID := p.EntityRuntimeID
+	if p.UUID == viewer.id {
+		runtimeID = bedrockLocalRuntime
+	}
+	sendBedrockCritParticles(viewer, runtimeID, p.Position.X, p.Position.Y, p.Position.Z)
 }
 
 func (s *Server) updateEquipmentFor(viewer *bedrockSession, p player.PlayerSnapshot) {

@@ -108,6 +108,10 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 	isCrit := attacker.CanCrit()
 	if isCrit {
 		dmg *= 1.5
+		if attacker.OnGround {
+			attacker.LastAirborneAt = time.Time{}
+			attacker.LastFallDistance = 0
+		}
 	}
 
 	dx := target.Position.X - attacker.Position.X
@@ -127,7 +131,7 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 		vy = 0.4
 	}
 	targetUUID := target.UUID
-	targetSnap := target.Snapshot()
+	prevTargetHP := target.Health
 	exhaustionFn := m.exhaustionFn
 	m.mu.Unlock()
 
@@ -138,10 +142,33 @@ func (m *Manager) MeleeAttack(attackerUUID uuid.UUID, targetEntityID int32) {
 		m.UpdateSprinting(attackerUUID, false)
 	}
 	m.push(targetUUID, dx/d*kb, vy, dz/d*kb)
-	m.hurt(targetUUID, dmg)                                // target's own health + red flash
-	m.publish(Event{Type: EventHurt, Player: targetSnap}) // hurt flash on all viewers
-	if isCrit {
-		m.publish(Event{Type: EventCrit, Player: targetSnap})
+	m.hurt(targetUUID, dmg) // target's own health + red flash
+
+	m.mu.Lock()
+	var targetSnap PlayerSnapshot
+	if t := m.players[targetUUID]; t != nil {
+		if t.Health == prevTargetHP {
+			t.Health -= dmg
+			if t.Health < 0 {
+				t.Health = 0
+			}
+			if t.Health <= 0 {
+				t.OnFire = false
+				t.FireTicks = 0
+				t.LavaTickCooldown = 0
+				t.Sprinting = false
+				t.Swimming = false
+				t.Sneaking = false
+			}
+		}
+		targetSnap = t.Snapshot()
+	}
+	m.mu.Unlock()
+	if targetSnap.UUID != (uuid.UUID{}) {
+		m.publish(Event{Type: EventHurt, Player: targetSnap}) // hurt flash (or death) on all viewers
+		if isCrit {
+			m.publish(Event{Type: EventCrit, Player: targetSnap})
+		}
 	}
 }
 

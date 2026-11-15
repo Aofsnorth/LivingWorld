@@ -1,6 +1,8 @@
 package player
 
 import (
+	"time"
+
 	"livingworld/internal/world"
 
 	"github.com/google/uuid"
@@ -81,6 +83,8 @@ type Player struct {
 	FireTicks         int
 	LavaTickCooldown  int
 	FallDistance      float64
+	LastFallDistance  float64
+	LastAirborneAt    time.Time
 	Health            float32
 	Food              int
 	Saturation        float32

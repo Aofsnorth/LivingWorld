@@ -44,15 +44,24 @@ func (s *Server) isSolidGroundAt(x, feetY, z float64) bool {
 	if dw == nil {
 		return false
 	}
-	bx := int(math.Floor(x))
-	by := int(math.Floor(feetY - 0.06))
-	bz := int(math.Floor(z))
-	blockID := dw.GetBlock(bx, by, bz).ID()
-	if blockID == 0 || world.IsReplaceableBlock(blockID) || world.IsWaterBlockID(blockID) || world.IsLavaBlockID(blockID) {
+	fracY := feetY - math.Floor(feetY)
+	if fracY > 0.15 && math.Abs(fracY-0.5) > 0.15 && fracY < 0.90 {
 		return false
 	}
-	name := world.StateName(blockID)
-	return name != "minecraft:air" && !isBedrockFallResetBlock(name)
+	by := int(math.Floor(feetY - 0.06))
+	for _, off := range [5][2]float64{{0, 0}, {-0.29, -0.29}, {-0.29, 0.29}, {0.29, -0.29}, {0.29, 0.29}} {
+		bx := int(math.Floor(x + off[0]))
+		bz := int(math.Floor(z + off[1]))
+		blockID := dw.GetBlock(bx, by, bz).ID()
+		if blockID == 0 || world.IsReplaceableBlock(blockID) || world.IsWaterBlockID(blockID) || world.IsLavaBlockID(blockID) {
+			continue
+		}
+		name := world.StateName(blockID)
+		if name != "minecraft:air" && !isBedrockFallResetBlock(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) trackBedrockFall(bs *bedrockSession, x, oldY, newY, z float64, onGround bool) {
@@ -189,13 +198,18 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 		// it as the primary movement source and ignore duplicate MovePlayer bursts.
 		bs.lastAuthInputAt = time.Now()
 		fx, fy, fz := bedrockSharedFeetFromLocalClient(p.Position)
-		onGround := p.Delta[1] <= 0.02 && (p.InputData.Load(packet.InputFlagVerticalCollision) || (math.Abs(float64(p.Delta[1])) < 0.001 && s.isSolidGroundAt(fx, fy, fz)))
+		jumping := p.InputData.Load(packet.InputFlagStartJumping) || p.InputData.Load(packet.InputFlagJumping)
+		solidBelow := s.isSolidGroundAt(fx, fy, fz)
+		onGround := !jumping && p.Delta[1] <= 0.02 && solidBelow && (p.InputData.Load(packet.InputFlagVerticalCollision) || math.Abs(float64(p.Delta[1])) < 0.08)
 		s.publishBedrockMove(bs, p.Position, p.Pitch, p.HeadYaw, onGround)
-		if !onGround && p.Delta[1] < -0.005 {
-			s.pm.SyncFallState(bs.id, false, float64(-p.Delta[1]))
-		}
-		if !onGround && p.Delta[1] < -0.005 {
-			s.pm.SyncFallState(bs.id, false, float64(-p.Delta[1]))
+		if !onGround {
+			fallStep := 0.05
+			if p.Delta[1] < 0 {
+				if d := float64(-p.Delta[1]); d > fallStep {
+					fallStep = d
+				}
+			}
+			s.pm.SyncFallState(bs.id, false, fallStep)
 		}
 
 		// Update sneaking, sprinting, jumping, and swimming state
@@ -669,7 +683,23 @@ func (s *Server) handlePacket(bs *bedrockSession, pk packet.Packet, chunkCache *
 
 	case *packet.Respawn:
 		switch p.State {
-		case packet.RespawnStateSearchingForSpawn, packet.RespawnStateClientReadyToSpawn:
+		case packet.RespawnStateSearchingForSpawn:
+			// Client just opened the Death Screen and is querying the spawn
+			// position. Acknowledge with RespawnStateReadyToSpawn and preload
+			// chunks, but do NOT revive the player until they click Respawn
+			// (which sends RespawnStateClientReadyToSpawn / PlayerActionRespawn).
+			feetX, feetY, feetZ := s.safeSpawnFeet()
+			spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)
+			bs.mu.Lock()
+			bs.spawnPos = spawnClientPos
+			bs.mu.Unlock()
+			s.updateBedrockChunks(bs, int32(math.Floor(feetX))>>4, int32(math.Floor(feetZ))>>4)
+			bs.write(&packet.Respawn{
+				Position:        spawnClientPos,
+				State:           packet.RespawnStateReadyToSpawn,
+				EntityRuntimeID: bedrockLocalRuntime,
+			})
+		case packet.RespawnStateClientReadyToSpawn:
 			s.handleBedrockRespawn(bs, conn)
 		}
 
@@ -696,6 +726,7 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 	spawnClientPos := bedrockLocalClientPosFromFeet(feetX, feetY, feetZ)
 
 	bs.mu.Lock()
+	wasDead := bs.health <= 0
 	bs.health = 20
 	bs.fallDistance = 0
 	bs.lastX = feetX
@@ -705,12 +736,20 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 	bs.spawnPos = spawnClientPos
 	bs.mu.Unlock()
 
-	_ = s.pm.RespawnPlayer(bs.id, feetX, feetY, feetZ, spawn.Pitch, spawn.Yaw)
-	if s.wm != nil && s.wm.Hunger() != nil {
-		s.wm.Hunger().ResetPlayer(bs.id, s.cfg.World.Difficulty)
+	if pl := s.pm.GetPlayer(bs.id); pl != nil && pl.Health <= 0 {
+		wasDead = true
 	}
 
-	s.updateBedrockChunks(bs, int32(math.Floor(feetX))>>4, int32(math.Floor(feetZ))>>4)
+	if wasDead {
+		_ = s.pm.RespawnPlayer(bs.id, feetX, feetY, feetZ, spawn.Pitch, spawn.Yaw)
+		if s.wm != nil && s.wm.Hunger() != nil {
+			s.wm.Hunger().ResetPlayer(bs.id, s.cfg.World.Difficulty)
+		}
+	}
+
+	cx, cz := int32(math.Floor(feetX))>>4, int32(math.Floor(feetZ))>>4
+	bs.setChunkCenter(cx, cz)
+	s.updateBedrockChunks(bs, cx, cz)
 
 	bs.write(&packet.Respawn{
 		Position:        spawnClientPos,
@@ -723,47 +762,22 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 		Pitch:           spawn.Pitch,
 		Yaw:             spawn.Yaw,
 		HeadYaw:         spawn.Yaw,
-		Mode:            packet.MoveModeReset,
+		Mode:            packet.MoveModeTeleport,
 		OnGround:        true,
 	})
-	bs.write(&packet.PlayStatus{Status: packet.PlayStatusPlayerSpawn})
+	bs.write(&packet.SetActorMotion{
+		EntityRuntimeID: bedrockLocalRuntime,
+		Velocity:        mgl32.Vec3{0, 0, 0},
+	})
+
+	attrs := []protocol.Attribute{
+		bedrockHealthAttribute(20),
+		bedrockMovementAttribute(),
+	}
+	attrs = append(attrs, bedrockHungerAttributes(20, 5.0, 0)...)
 	bs.write(&packet.UpdateAttributes{
 		EntityRuntimeID: bedrockLocalRuntime,
-		Attributes: []protocol.Attribute{
-			{
-				AttributeValue: protocol.AttributeValue{
-					Name:  "minecraft:health",
-					Value: 20,
-					Min:   0,
-					Max:   20,
-				},
-				Default:    20,
-				DefaultMin: 0,
-				DefaultMax: 20,
-			},
-			{
-				AttributeValue: protocol.AttributeValue{
-					Name:  "minecraft:player.hunger",
-					Value: 20,
-					Min:   0,
-					Max:   20,
-				},
-				Default:    20,
-				DefaultMin: 0,
-				DefaultMax: 20,
-			},
-			{
-				AttributeValue: protocol.AttributeValue{
-					Name:  "minecraft:movement",
-					Value: 0.10,
-					Min:   0,
-					Max:   math.MaxFloat32,
-				},
-				Default:    0.10,
-				DefaultMin: 0,
-				DefaultMax: math.MaxFloat32,
-			},
-		},
+		Attributes:      attrs,
 	})
 
 	mode := s.cfg.DefaultGamemode
@@ -773,6 +787,7 @@ func (s *Server) handleBedrockRespawn(bs *bedrockSession, conn *minecraft.Conn) 
 	}
 	s.sendBedrockGameMode(conn, bedrockLocalRuntime, mode)
 	s.sendLocalPlayerActorData(conn)
+	bs.write(&packet.PlayStatus{Status: packet.PlayStatusPlayerSpawn})
 	s.reconcileViewers(bs)
 
 	s.forEachSession(func(v *bedrockSession) {

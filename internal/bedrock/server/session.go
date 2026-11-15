@@ -194,7 +194,6 @@ func (s *bedrockSession) Hurt(amount float32) {
 	}
 	hp := s.health
 	died := wasAlive && hp <= 0
-	spawnPos := s.spawnPos
 	if died {
 		s.fallDistance = 0
 	}
@@ -211,11 +210,6 @@ func (s *bedrockSession) Hurt(amount float32) {
 		s.write(&packet.ActorEvent{
 			EntityRuntimeID: bedrockLocalRuntime,
 			EventType:       packet.ActorEventDeath,
-		})
-		s.write(&packet.Respawn{
-			Position:        spawnPos,
-			State:           packet.RespawnStateReadyToSpawn,
-			EntityRuntimeID: bedrockLocalRuntime,
 		})
 	}
 }

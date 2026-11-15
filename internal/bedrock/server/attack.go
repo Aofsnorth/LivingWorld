@@ -48,15 +48,8 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 				base *= 1.5
 				isCrit = true
 			} else if !p.OnGround && !p.Swimming && !p.Flying && p.Health > 0 {
-				if bs, ok := s.getSession(attacker); ok {
-					bs.mu.Lock()
-					fd := bs.fallDistance
-					bs.mu.Unlock()
-					if fd > 0 {
-						base *= 1.5
-						isCrit = true
-					}
-				}
+				base *= 1.5
+				isCrit = true
 			}
 			// combat.Knockback negates (dirX, dirZ): out.X = vel.X/2 - px.
 			// Pass (attacker - victim) so the mob is knocked away from the attacker.
@@ -83,10 +76,7 @@ func (s *Server) routeBedrockAttack(attacker uuid.UUID, targetEntityRuntimeID in
 				EventType:       packet.ActorEventHurt,
 			})
 			if isCrit {
-				v.write(&packet.Animate{
-					ActionType:      packet.AnimateActionCriticalHit,
-					EntityRuntimeID: uint64(targetEntityRuntimeID),
-				})
+				sendBedrockCritParticles(v, uint64(targetEntityRuntimeID), m.X, m.Y, m.Z)
 			}
 		})
 		// Sweep fan-out (swords only).

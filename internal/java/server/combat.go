@@ -47,6 +47,11 @@ func hurtAnimationPacket(entityID int32) pk.Packet {
 	return pk.Marshal(packetid.ClientboundGameHurtAnimation, pk.VarInt(entityID), pk.Float(0))
 }
 
+// entityEventPacket sends ClientboundGameEntityEvent (e.g. status=3 for LivingEntity death animation).
+func entityEventPacket(entityID int32, status byte) pk.Packet {
+	return pk.Marshal(packetid.ClientboundGameEntityEvent, pk.Int(entityID), pk.Byte(status))
+}
+
 // SyncEnvironment implements player.EnvironmentController: pushes updated
 // server-authoritative environment metadata (on-fire flag and air supply bubbles)
 // to this Java player's own client without overwriting client-controlled pose

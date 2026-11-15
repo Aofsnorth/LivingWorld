@@ -2,6 +2,7 @@ package player
 
 import (
 	"math"
+	"time"
 
 	"livingworld/internal/shared/constants/gameplay"
 	"livingworld/internal/world"
@@ -75,14 +76,13 @@ func resolveSwimState(w *world.World, x, y, z float64, sprinting, currentlySwimm
 }
 
 // CanCrit reports whether the player currently satisfies Vanilla 1.20 critical
-// hit conditions: airborne, falling downward (FallDistance > 0), not sprinting
-// (on Java; Bedrock clients keep InputFlagSprinting latched during forward jumps),
-// not swimming, not flying, not in water/lava/climbable, and not blinded.
+// hit conditions: airborne descending (or within the short packet-batch grace
+// window on Bedrock where PlayerAuthInput lands in the same frame as the attack
+// transaction), not sprinting (on Java; Bedrock clients keep InputFlagSprinting
+// latched during forward jumps), not swimming, not flying, not in water/lava/
+// climbable, and not blinded.
 func (p *Player) CanCrit() bool {
-	if p == nil || p.Health <= 0 || p.OnGround || p.FallDistance <= 0 || p.Swimming || p.Flying {
-		return false
-	}
-	if p.Sprinting && p.Edition != EditionBedrock {
+	if p == nil || p.Health <= 0 || p.Swimming || p.Flying || p.Creative || p.Gamemode == 1 || p.Gamemode == 3 {
 		return false
 	}
 	if p.Sprinting && p.Edition != EditionBedrock {
@@ -90,6 +90,19 @@ func (p *Player) CanCrit() bool {
 	}
 	if p.effects.has(EffectBlindness) {
 		return false
+	}
+	if p.Edition == EditionBedrock {
+		airborneCrit := !p.OnGround && (p.FallDistance > 0 || p.LastFallDistance > 0)
+		recentLandingCrit := !p.LastAirborneAt.IsZero() && time.Since(p.LastAirborneAt) <= 250*time.Millisecond && (p.FallDistance > 0 || p.LastFallDistance > 0)
+		if !airborneCrit && !recentLandingCrit {
+			return false
+		}
+	} else {
+		airborneCrit := !p.OnGround && p.FallDistance > 0
+		recentLandingCrit := !p.LastAirborneAt.IsZero() && time.Since(p.LastAirborneAt) <= 150*time.Millisecond && p.LastFallDistance > 0
+		if !airborneCrit && !recentLandingCrit {
+			return false
+		}
 	}
 	if p.World != nil {
 		if isPlayerInWater(p.World, p.Position.X, p.Position.Y, p.Position.Z) {
@@ -142,19 +155,36 @@ func (m *Manager) UpdatePosition(id uuid.UUID, x, y, z float64, pitch, yaw float
 			}
 			exhaustionFn = m.exhaustionFn
 		}
+		prevOnGround := p.OnGround
 		p.Position = world.Position{X: x, Y: y, Z: z}
 		p.Rotation = world.Rotation{Pitch: pitch, Yaw: yaw}
 		p.OnGround = onGround
-		if isTeleport || onGround || p.Swimming || p.Flying || p.Health <= 0 {
+		now := time.Now()
+		if isTeleport || p.Swimming || p.Flying || p.Health <= 0 {
 			p.FallDistance = 0
-		} else if dy > 0.02 {
+			p.LastFallDistance = 0
+			p.LastAirborneAt = time.Time{}
+		} else if onGround {
+			if !prevOnGround && p.FallDistance > 0 {
+				p.LastFallDistance = p.FallDistance
+				p.LastAirborneAt = now
+			}
 			p.FallDistance = 0
-		} else if dy < 0 {
-			p.FallDistance += -dy
+		} else {
+			p.LastAirborneAt = now
+			if dy > 0.05 {
+				p.FallDistance = 0
+				p.LastFallDistance = 0
+			} else if dy < 0 {
+				p.FallDistance += -dy
+				p.LastFallDistance = p.FallDistance
+			}
 		}
 		if p.World != nil && p.Health > 0 {
 			if isPlayerInWater(p.World, x, y, z) {
 				p.FallDistance = 0
+				p.LastFallDistance = 0
+				p.LastAirborneAt = time.Time{}
 			}
 			wantSwim := resolveSwimState(p.World, x, y, z, p.Sprinting, p.Swimming)
 			if p.Swimming != wantSwim {
@@ -266,11 +296,27 @@ func (m *Manager) AddJumpExhaustion(id uuid.UUID) {
 func (m *Manager) SyncFallState(id uuid.UUID, onGround bool, fallDistance float64) {
 	m.mu.Lock()
 	if p := m.players[id]; p != nil && p.Health > 0 {
+		now := time.Now()
+		prevOnGround := p.OnGround
 		p.OnGround = onGround
-		if onGround || p.Swimming || p.Flying {
+		if p.Swimming || p.Flying {
 			p.FallDistance = 0
-		} else if fallDistance > p.FallDistance {
-			p.FallDistance = fallDistance
+			p.LastFallDistance = 0
+			p.LastAirborneAt = time.Time{}
+		} else if onGround {
+			if !prevOnGround && p.FallDistance > 0 {
+				p.LastFallDistance = p.FallDistance
+				p.LastAirborneAt = now
+			}
+			p.FallDistance = 0
+		} else {
+			p.LastAirborneAt = now
+			if fallDistance > p.FallDistance {
+				p.FallDistance = fallDistance
+			}
+			if p.FallDistance > 0 {
+				p.LastFallDistance = p.FallDistance
+			}
 		}
 	}
 	m.mu.Unlock()

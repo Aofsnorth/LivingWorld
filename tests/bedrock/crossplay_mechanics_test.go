@@ -592,6 +592,7 @@ func TestSnowBreakTicksAndPeacefulHungerAndCritAndDeadSnapshot(t *testing.T) {
 	pm := player.NewManager()
 	dw := wm.GetDefaultWorld()
 	p := player.NewPlayer(id, "CritTester", player.EditionBedrock)
+	p.EntityRuntimeID = 101
 	p.World = dw
 	p.Position = world.Position{X: 0.5, Y: 64.0, Z: 0.5}
 	pm.AddPlayer(p)
@@ -601,10 +602,37 @@ func TestSnowBreakTicksAndPeacefulHungerAndCritAndDeadSnapshot(t *testing.T) {
 	if pm.GetPlayer(id).CanCrit() {
 		t.Fatalf("expected ascending jump not to allow critical hits")
 	}
-	// Descending from apex while airborne: FallDistance > 0 and CanCrit must be true.
+	// Descending from apex while airborne: FallDistance > 0 and CanCrit must be true even if Sprinting flag is latched on Bedrock.
+	pm.UpdateSprinting(id, true)
 	pm.UpdatePosition(id, 0.5, 64.10, 0.5, 0, 0, false)
 	if !pm.GetPlayer(id).CanCrit() {
-		t.Fatalf("expected descending airborne player to allow critical hits")
+		t.Fatalf("expected descending airborne Bedrock player to allow critical hits even with Sprinting flag set")
+	}
+	// Landing packet arriving right before attack packet within 250ms grace window: CanCrit must still succeed once, then clear after MeleeAttack.
+	pm.SyncFallState(id, true, 0)
+	if !pm.GetPlayer(id).CanCrit() {
+		t.Fatalf("expected Bedrock player within 250ms landing grace window to allow critical hit")
+	}
+
+	victimID := [16]byte{88}
+	victim := player.NewPlayer(victimID, "VictimBedrock", player.EditionBedrock)
+	victim.EntityRuntimeID = 102
+	victim.World = dw
+	victim.Position = world.Position{X: 1.5, Y: 64.0, Z: 0.5}
+	victim.Health = 1.0
+	pm.AddPlayer(victim)
+	victimCtrl := &envRecorderController{}
+	pm.SetController(victimID, victimCtrl)
+
+	pm.MeleeAttack(id, int32(victim.EntityRuntimeID))
+	if victimCtrl.hurtCount != 1 || victimCtrl.lastDamage != 1.5 {
+		t.Fatalf("expected 1.5x critical hit damage (1.5), got hurtCount=%d lastDamage=%v", victimCtrl.hurtCount, victimCtrl.lastDamage)
+	}
+	if !pm.GetPlayer(victimID).Snapshot().Dead || pm.GetPlayer(victimID).Health != 0 {
+		t.Fatalf("expected lethal critical hit on victim to mark Dead=true and Health=0, got Dead=%v Health=%v", pm.GetPlayer(victimID).Snapshot().Dead, pm.GetPlayer(victimID).Health)
+	}
+	if pm.GetPlayer(id).CanCrit() {
+		t.Fatalf("expected landing grace crit state to be consumed after melee attack")
 	}
 
 	// Killing the player marks Snapshot().Dead = true; RespawnPlayer clears it.
